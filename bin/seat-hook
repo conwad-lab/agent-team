@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# seat-hook install <seat>   — make every commit in this clone carry `Seat: <seat>`.
+# Works with or without a project hooks path (husky etc.): if core.hooksPath is set, the
+# clone gets its own local hooks dir that forwards every hook to the project's and adds the
+# trailer in prepare-commit-msg. Nothing tracked is changed; it is clone-local git config.
+set -uo pipefail
+[ "${1:-}" = install ] || { echo "usage: seat-hook install <seat>" >&2; exit 2; }
+seat="${2:?seat}"
+top="$(git rev-parse --show-toplevel)" || exit 1
+gitdir="$(git rev-parse --absolute-git-dir)"
+hooks="$gitdir/agent-team-hooks"
+orig="$(git config --local --get agent-team.origHooksPath || true)"
+cur="$(git config --get core.hooksPath || true)"
+if [ -z "$orig" ]; then
+  if [ -n "$cur" ] && [ "$cur" != "$hooks" ]; then orig="$cur"; else orig="$gitdir/hooks"; fi
+  git config --local agent-team.origHooksPath "$orig"
+fi
+case "$orig" in /*) ;; *) orig="$top/$orig" ;; esac
+mkdir -p "$hooks"
+for h in applypatch-msg pre-applypatch post-applypatch pre-commit pre-merge-commit commit-msg post-commit pre-rebase post-checkout post-merge pre-push post-rewrite; do
+  printf '#!/usr/bin/env bash\n[ -x "%s/%s" ] && exec "%s/%s" "$@"\nexit 0\n' "$orig" "$h" "$orig" "$h" > "$hooks/$h"
+  chmod +x "$hooks/$h"
+done
+cat > "$hooks/prepare-commit-msg" <<HOOK
+#!/usr/bin/env bash
+if [ -x "$orig/prepare-commit-msg" ]; then "$orig/prepare-commit-msg" "\$@" || exit \$?; fi
+git interpret-trailers --in-place --if-exists doNothing --trailer "Seat: $seat" "\$1"
+HOOK
+chmod +x "$hooks/prepare-commit-msg"
+git config --local core.hooksPath "$hooks"
+git config --local agent-team.seat "$seat"

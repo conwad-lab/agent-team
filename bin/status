@@ -10,6 +10,7 @@
 #   in-review          PR open, no review yet or new commits since → reviewer
 #   changes-requested  review file on the branch says so           → coder
 #   approved           review file on the branch says so           → human (merge)
+#   escalated          review says `verdict: escalate` (Must fix disputed 3 rounds) → po (puts it to the human)
 # The verdict is the `verdict:` line of .team/reviews/NNN-*.md on the PR branch — git, not
 # GitHub's review decision (which GitHub refuses when one account authored the PR and reviews it).
 #   done / closed      PR merged / closed                         → —
@@ -17,7 +18,7 @@
 set -uo pipefail
 TSV=0; [ "${1:-}" = "--tsv" ] && TSV=1   # machine-readable: id<TAB>status<TAB>title<TAB>next<TAB>where, no header
 cd "$(git rev-parse --show-toplevel)" || exit 1
-if ! git fetch -q origin 2>/dev/null; then
+if ! git fetch -q --prune origin 2>/dev/null; then
   echo "warning: git fetch failed — no network from here? the board may be stale" >&2
 fi
 
@@ -35,8 +36,8 @@ prs=""
 if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
   gh_why="no gh"
   echo "warning: gh missing, not authenticated, or no network — PR states unknown; branches show as unknown" >&2
-elif prs="$(gh pr list --state all --limit 500 --json number,state,headRefName \
-            --jq '.[] | [.headRefName, .number, .state] | @tsv' 2>/dev/null)"; then
+elif prs="$(gh pr list --state all --limit 500 --json number,state,headRefName,updatedAt \
+            --jq '.[] | [.headRefName, .number, .state, .updatedAt] | @tsv' 2>/dev/null)"; then
   have_gh=1
 else
   # The distinction that matters. A failed query and a repo with no PRs both
@@ -60,55 +61,83 @@ while IFS= read -r story; do
   title="$(first_line "$story" title)"
   plan="$(git ls-tree -r --name-only "$MAIN" -- .team/plans/ | grep "/${id}-" | head -1)"
   note="$(git ls-tree -r --name-only "$MAIN" -- .team/notes/ | grep "/${id}-" | head -1)"
-  branch="$(git branch -r --list "origin/feat/${id}-*" | head -1 | sed 's|^ *origin/||')"
+  branches="$(git branch -r --list "origin/feat/${id}-*" | sed 's|^ *origin/||')"
+  branch="$(printf '%s\n' "$branches" | head -1)"
+  branch_count="$(printf '%s\n' "$branches" | grep -c . || true)"
+  branch_note=""
+  if [ "$branch_count" -gt 1 ]; then
+    echo "note: story $id has $branch_count branches: $(printf '%s\n' "$branches" | awk 'NF { printf "%s%s", separator, $0; separator=", " }')" >&2
+    branch_note=" ($branch_count grenar)"
+  fi
+  # A PR retains its headRefName after GitHub deletes the branch. Rank PRs
+  # before considering branches, then prefer OPEN, MERGED, CLOSED and newest.
+  pr=""
+  if [ "$have_gh" -eq 1 ]; then
+    pr="$(printf '%s\n' "$prs" | awk -F'\t' -v prefix="feat/${id}-" '
+      index($1, prefix) == 1 {
+        rank = $3 == "OPEN" ? 0 : ($3 == "MERGED" ? 1 : 2)
+        if (!found || rank < best_rank || (rank == best_rank && $4 > best_time)) {
+          found = 1; best_rank = rank; best_time = $4
+          best = $1 "\t" $2 "\t" $3
+        }
+      }
+      END { if (found) print best }
+    ')"
+  fi
   status=""; next=""; where=""
 
-  if [ -z "$plan" ]; then
+  if [ -n "$pr" ]; then
+    IFS=$'\t' read -r pr_branch num state <<< "$pr"
+  else
+    pr_branch=""; num=""; state=""
+  fi
+
+  if [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ]; then
+    if [ "$state" = "MERGED" ]; then status=done; else status=closed; fi
+    next="—"; where="#$num"
+  elif [ -z "$plan" ]; then
     status=ready; next=architect
   elif [ "$(first_line "$plan" verdict)" = "needs-split" ]; then
     status=needs-split; next=po
   elif [ -n "$note" ] && [ "$(ctime "$note")" -gt "$(ctime "$plan")" ]; then
     status=needs-replan; next=architect; where="$note"
-  elif [ -z "$branch" ]; then
-    status=planned; next=coder; where="$plan"
   elif [ "$have_gh" -eq 0 ]; then
     # Not `in-progress`: we do not know, and `next` must not name a role, or an
     # unattended Coder picks the row up. `wait-for` matches the role exactly.
-    status=unknown; next="—"; where="$branch ($gh_why)"
+    status=unknown; next="—"; where="${branch:-$plan} ($gh_why)"
   else
-    pr="$(printf '%s\n' "$prs" | awk -F'\t' -v b="$branch" '$1==b {print $2"\t"$3; exit}')"
     if [ -z "$pr" ]; then
-      status=in-progress; next=coder; where="$branch"
+      if [ -z "$branch" ]; then
+        status=planned; next=coder; where="$plan"
+      else
+        status=in-progress; next=coder; where="$branch"
+      fi
     else
-      IFS=$'\t' read -r num state <<< "$pr"
       where="#$num"
-      case "$state" in
-        MERGED) status=done; next="—" ;;
-        CLOSED) status=closed; next="—" ;;
-        *)
-          # The verdict lives in .team/reviews/NNN-*.md on the PR branch (frontmatter `verdict:`).
-          # It counts only if the review commit is at least as new as the last non-review commit;
-          # a Coder push after the review puts the story back in the Reviewer's lane.
-          review="$(git ls-tree -r --name-only "origin/$branch" -- .team/reviews/ 2>/dev/null | grep "/${id}-" | head -1)"
-          if [ -n "$review" ]; then
-            verdict="$(git show "origin/$branch:$review" 2>/dev/null | sed -n 's/^verdict: *//p' | head -1)"
-            review_ts="$(git log -1 --format=%ct "origin/$branch" -- "$review" 2>/dev/null || echo 0)"
-            work_ts="$(git log -1 --format=%ct "origin/$branch" -- . ':(exclude).team/reviews' 2>/dev/null || echo 0)"
-            if [ "${review_ts:-0}" -ge "${work_ts:-0}" ]; then
-              case "$verdict" in
-                approve*)  status=approved; next=human ;;
-                request*|changes*) status=changes-requested; next=coder ;;
-                *) status=in-review; next=reviewer; where="$where (review has no verdict)" ;;
-              esac
-            else
-              status=in-review; next=reviewer
-            fi
-          else
-            status=in-review; next=reviewer
-          fi ;;
-      esac
+      # The verdict lives in .team/reviews/NNN-*.md on the PR branch (frontmatter `verdict:`).
+      # It counts only if the review commit is at least as new as the last non-review commit;
+      # a Coder push after the review puts the story back in the Reviewer's lane.
+      review="$(git ls-tree -r --name-only "origin/$pr_branch" -- .team/reviews/ 2>/dev/null | grep "/${id}-" | head -1)"
+      if [ -n "$review" ]; then
+        verdict="$(git show "origin/$pr_branch:$review" 2>/dev/null | sed -n 's/^verdict: *//p' | head -1)"
+        review_ts="$(git log -1 --format=%ct "origin/$pr_branch" -- "$review" 2>/dev/null || echo 0)"
+        work_ts="$(git log -1 --format=%ct "origin/$pr_branch" -- . ':(exclude).team/reviews' 2>/dev/null || echo 0)"
+        if [ "${review_ts:-0}" -ge "${work_ts:-0}" ]; then
+          case "$verdict" in
+            approve*)  status=approved; next=human ;;
+            request*|changes*) status=changes-requested; next=coder ;;
+            escalat*) status=escalated; next=po ;;
+            *) status=in-review; next=reviewer; where="$where (review has no verdict)" ;;
+          esac
+        else
+          status=in-review; next=reviewer
+        fi
+      else
+        status=in-review; next=reviewer
+      fi
     fi
   fi
+  where="$where$branch_note"
   if [ "$TSV" -eq 1 ]; then printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$status" "$title" "$next" "$where"
   else printf '%-4s %-18s %-38s %-10s %s\n' "$id" "$status" "${title:0:38}" "$next" "$where"; fi
 done <<< "$stories"

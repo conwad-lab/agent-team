@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agent-team new-project — everything from "I want a project" to a running workspace.
 #
-#   curl -sL https://raw.githubusercontent.com/fltman/agent-team/main/new-project.sh | bash -s -- <name>
+#   curl -sL https://raw.githubusercontent.com/conwad-lab/agent-team/main/new-project.sh | bash -s -- <name>
 #   # or, from a clone of agent-team:
 #   ~/Projekt/agent-team/new-project.sh <name>
 #
@@ -11,7 +11,7 @@
 #   <name>          GitHub repo. Created if it does not exist (private by default).
 #   --dir DIR       workspace directory (default: ./<name>-team)
 #   --team-url      the agent-team repo to pin (default: the clone this script runs from,
-#                   else https://github.com/fltman/agent-team.git)
+#                   else https://github.com/conwad-lab/agent-team.git)
 #   --team-version  tag to pin (default: newest tag on the team repo)
 #   --no-open       do not open the four role windows at the end
 #
@@ -52,7 +52,7 @@ if [ -z "$TEAM_URL" ]; then
     TEAM_URL="$(git -C "$self_dir" remote get-url origin 2>/dev/null || true)"
   fi
 fi
-[ -n "$TEAM_URL" ] || TEAM_URL="https://github.com/fltman/agent-team.git"
+[ -n "$TEAM_URL" ] || TEAM_URL="https://github.com/conwad-lab/agent-team.git"
 
 if [ -z "$TEAM_VERSION" ]; then
   TEAM_VERSION="$(git ls-remote --tags --refs "$TEAM_URL" 2>/dev/null | sed 's|.*refs/tags/||' | sort -V | tail -1 || true)"

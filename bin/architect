@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Architect (Fable 5.1). Picks up stories without a plan.
+# Architect. Picks up stories without a plan.
+# Runs on Claude (${AGENT_TEAM_CLAUDE_MODEL:-claude-fable-5-1}). The Coder runs on Codex, so the
+# Reviewer and the Coder are always different model families — that is the point of the review.
 [ $# -gt 0 ] || set -- 'Begin. Follow the "On start" section of your role.'
 exec "$(dirname "$0")/_start" architect architect.md \
-  claude --model claude-fable-5-1 --append-system-prompt-file ROLEFILE "$@"
+  claude --model "${AGENT_TEAM_CLAUDE_MODEL:-claude-fable-5-1}" --append-system-prompt-file ROLEFILE "$@"

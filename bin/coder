@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-# Coder (Opus 5). Picks up planned stories and review feedback.
-[ $# -gt 0 ] || set -- 'Begin. Follow the "On start" section of your role.'
+# Coder on Codex (GPT). The heaviest role runs on the OpenAI plan; the Reviewer runs on Claude,
+# so the two are different model families.
+# `codex exec` (non-interactive): interactive Codex ended its turn after each story and sat idle
+# with the process alive, so the supervisor never restarted it. exec exits when the turn ends;
+# open-team.sh's supervisor restarts it after 60 s and it re-reads the board.
+# Codex's default sandbox blocks the network (git fetch, gh, the board), hence full access in its own clone.
+: "${AGENT_TEAM_CODEX_FLAGS:=--sandbox danger-full-access -m gpt-6-sol -c model_reasoning_effort=medium}"
+# shellcheck disable=SC2086
 exec "$(dirname "$0")/_start" coder coder.md \
-  claude --model opus --append-system-prompt-file ROLEFILE "$@"
+  codex exec $AGENT_TEAM_CODEX_FLAGS "You are the Coder. Read AGENTS.md, then your role file at ROLEFILE, and follow its \"On start\" section." "$@"

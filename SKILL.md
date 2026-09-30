@@ -1,6 +1,6 @@
 ---
 name: agent-team
-description: A multi-model agent team — Product Owner and Architect on Fable 5.1, Coder on Opus 5, Reviewer on Codex (GPT) — that lives in the project as a pinned git submodule and works from separate clones, one terminal per role, coordinating only through git. /agent-team init sets up the workspace, /agent-team status shows the board, /agent-team upgrade bumps the pinned version.
+description: A multi-model agent team — Product Owner, Architect and Reviewer on Claude (Fable 5.1), Coder on Codex (GPT) — that lives in the project as a pinned git submodule and works from separate clones, one terminal per role, coordinating only through git. /agent-team init sets up the workspace, /agent-team status shows the board, /agent-team upgrade bumps the pinned version.
 argument-hint: "init [--name project] | status | upgrade"
 disable-model-invocation: true
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep

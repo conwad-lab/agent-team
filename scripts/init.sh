@@ -81,6 +81,7 @@ done
 
 # launcher
 cp "$SKILL_DIR/workspace/team.shim" "$WS/team"
+for f in open-team.sh stop-team.sh; do cp "$SKILL_DIR/workspace/$f" "$WS/$f"; chmod +x "$WS/$f"; done
 chmod +x "$WS/team"
 
 echo

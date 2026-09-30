@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
-# Reviewer (Codex / GPT). Reviews open PRs.
-# Codex reads AGENTS.md on its own; the prompt tells it which role it has.
-# Set reasoning effort to high in ~/.codex/config.toml — this is where the thinking pays.
-#
-# Codex's default sandbox (workspace-write) blocks the network, which silently breaks
-# git fetch, gh and therefore the board. The reviewer works in its own clone and needs
-# git + gh, so it runs with the sandbox open. Override with AGENT_TEAM_CODEX_FLAGS.
-: "${AGENT_TEAM_CODEX_FLAGS:=--sandbox danger-full-access --ask-for-approval on-request}"
-# shellcheck disable=SC2086
+# Reviewer. Reviews open PRs; merges on approve when team.md says merge: auto.
+# Runs on Claude (${AGENT_TEAM_CLAUDE_MODEL:-claude-fable-5-1}). The Coder runs on Codex, so the
+# Reviewer and the Coder are always different model families — that is the point of the review.
+[ $# -gt 0 ] || set -- 'Begin. Follow the "On start" section of your role.'
 exec "$(dirname "$0")/_start" reviewer reviewer.md \
-  codex $AGENT_TEAM_CODEX_FLAGS "You are the Reviewer. Read AGENTS.md, then your role file at ROLEFILE, and follow its \"On start\" section." "$@"
+  claude --model "${AGENT_TEAM_CLAUDE_MODEL:-claude-fable-5-1}" --append-system-prompt-file ROLEFILE "$@"

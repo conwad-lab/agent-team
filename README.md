@@ -1,7 +1,9 @@
 # agent-team
 
 A Claude Code skill that runs a multi-model agent team on a GitHub repo:
-Product Owner and Architect on Fable 5.1, Coder on Opus 5, Reviewer on Codex (GPT).
+Product Owner, Architect and Reviewer on Claude (Fable 5.1), Coder on Codex (GPT).
+
+This is Conny Wadbro's fork of [fltman/agent-team](https://github.com/fltman/agent-team): unattended roles under a tmux supervisor, a work order (`.team/ORDER.md`), project settings in `AGENTS.md` § Team settings, review as a numbered dialogue with escalation, seats, and a watchdog.
 The team lives **in the project** as a pinned git submodule. One clone per role, one terminal per clone, all communication through git. Status is derived, never written. The human merges.
 
 See [SKILL.md](SKILL.md) for the design and [team/TEAM.md](team/TEAM.md) for the rulebook the agents get.
@@ -11,7 +13,7 @@ See [SKILL.md](SKILL.md) for the design and [team/TEAM.md](team/TEAM.md) for the
 One command, from nothing to a running workspace:
 
 ```bash
-curl -sL https://raw.githubusercontent.com/fltman/agent-team/main/new-project.sh | bash -s -- myproj
+curl -sL https://raw.githubusercontent.com/conwad-lab/agent-team/main/new-project.sh | bash -s -- myproj
 ```
 
 It creates the GitHub repo if needed (private by default, `--public` to change), makes `./myproj-team/`, clones `po/`, pins the newest tagged team version as a submodule, scaffolds, pushes, clones `architect/`, `coder/`, `reviewer/`, writes `./team` — and opens the four roles, each in its own window: a 2×2 grid of Terminal windows on macOS, a 2×2 tmux session elsewhere (`--no-open` to skip). From a clone of this repo, `./new-project.sh myproj` does the same.
@@ -51,4 +53,6 @@ workspace/team    the ./team launcher
 
 ## Changing the team
 
-For every future project: edit `team/roles/*.md` here, commit, tag. For one project: drop a file in that project's `.team/roles/<role>.md`; the launcher prefers it over the submodule's. Keep roles short — if an agent misbehaves, the fix is usually fewer instructions, not more.
+For every project: edit `team/roles/*.md` here, commit, tag, then upgrade each project's submodule. What differs per project (test commands, review checks, second-reviewer paths, operator triggers) goes in that project's `AGENTS.md` § Team settings — not in `.team/roles/`, because an override replaces the whole role file and the project stops receiving upgrades.
+
+`./open-team.sh` starts all four roles unattended in one tmux session with a restart supervisor; `./stop-team.sh` stops them. `tools/agent-team-watchdog.sh` (see `tools/README.md`) restarts missing sessions, answers known dialogs and nudges idle roles across every workspace. `skills/verify-docs/` checks the rulebook against the code; link it into a project with `ln -s ../agent-team/skills/verify-docs .claude/skills/verify-docs`. Keep roles short — if an agent misbehaves, the fix is usually fewer instructions, not more.

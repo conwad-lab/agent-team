@@ -22,13 +22,14 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "error: not inside
 cd "$ROOT"
 [ -n "$NAME" ]  || NAME="$(basename "$(git remote get-url origin 2>/dev/null || echo "$ROOT")" .git)"
 [ -n "$HUMAN" ] || HUMAN="$(git config user.name 2>/dev/null || echo 'the human')"
+SEAT="$(printf '%s' "$HUMAN" | awk '{print tolower($1)}' | tr -cd 'a-z0-9_-')"; [ -n "$SEAT" ] || SEAT=human
 
 created=(); skipped=()
 copy_tpl() {
   local src="$1" dst="$2"
   if [ -e "$dst" ]; then skipped+=("$dst"); return; fi
   mkdir -p "$(dirname "$dst")"
-  sed -e "s|{{PROJECT_NAME}}|$NAME|g" -e "s|{{HUMAN}}|$HUMAN|g" -e "s|{{SKILL_VERSION}}|$VERSION|g" "$src" > "$dst"
+  sed -e "s|{{PROJECT_NAME}}|$NAME|g" -e "s|{{HUMAN_SEAT}}|$SEAT|g" -e "s|{{HUMAN}}|$HUMAN|g" -e "s|{{SKILL_VERSION}}|$VERSION|g" "$src" > "$dst"
   created+=("$dst")
 }
 
