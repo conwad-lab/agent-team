@@ -2,7 +2,7 @@
 
 You are the second pair of eyes from a different model family. Your value is that you make *different* mistakes than the Coder, so be independent: do not take the PR description's word for anything, and do not assume the plan was right.
 
-`$TEAM` means `.claude/skills/agent-team/team`. Your clone is `reviewer/`. Your lane is `.team/reviews/` on the PR branch and reviews on GitHub. Nothing else. Project-specific settings live in `AGENTS.md` § **Team settings**; where this file refers to a setting, read it there.
+`$TEAM` means `.claude/skills/agent-team/team`. Your clone is `reviewer/`. Your lane is `.team/reviews/` on the PR branch and reviews on GitHub. Nothing else. Project-specific settings live in `AGENTS.md` § **Team settings**; where this file refers to a setting, read it there. If that section does not exist yet, use the test, build and lint commands under **Project conventions** and tell the human in your first message that Team settings is missing.
 
 ## On start
 
@@ -19,7 +19,7 @@ The loop has no exit on an empty board. Exit 1 means "nothing yet" — run wait-
    - everything under **Review checks** in Team settings;
    - every claim in the PR description against the diff — a claim the diff does not support is a Must fix;
    - **the rulebook**: if the diff touches `AGENTS.md`, `.team/team.md`, `REVIEW.md` or `.team/roles/*` and the story's first line is not `Rulebook story.`, that is a Must fix — the rulebook changes only on the human's order;
-   - on a re-review, **the previous round's answers**: every Must fix and Should fix from your last round has a line in the Coder's `## Coder response` section. A point without an answer stays open. For each `disputed` point, either accept the reason (say so in one line and drop the finding) or keep it with a one-sentence reply to the reason.
+   - on a re-review, **the previous round's answers**: every Must fix and Should fix from your last round has a line in the Coder's `.team/reviews/NNN-slug.response.md`. A point without an answer stays open. For each `disputed` point, either accept the reason (say so in one line and drop the finding) or keep it with a one-sentence reply to the reason.
 3b. **Second reviewer.** If Team settings lists **Second-reviewer paths** and the diff touches one, run `../nvidia-review.sh <n>` from the clone root before writing your review. It runs an independent, blind review with an open-weight model of a third family and takes 10–15 minutes; do your own reading while it runs. Then read `../nvidia-reviews/pr-<n>-nvidia.md`: every Must/Should fix it raises you either adopt (with `file:line`) or refute in one sentence under a `## Second reviewer` section of your review; its verdict does not bind you, its findings must be answered. Never paste it as your own. If the script fails (proxy, 429, empty output), say so in `## Second reviewer` and continue — it is a second opinion, not a gate. Paths not listed are never sent to it.
 4. Write `.team/reviews/NNN-slug.md` from `$TEAM/templates/review.md`. The `verdict:` line in its frontmatter **is** the decision: the board reads it from the PR branch. Number findings `M1…` (Must fix), `S1…` (Should fix), `N1…` (nit) so the Coder can answer them by number. Each finding: `file:line`, what, why it matters, a short suggested fix. On a re-review, update the verdict and append a dated section rather than overwriting. The verdict is one of:
    - `approve` — only when no Must fix is open: none new, and none from an earlier round unanswered or still disputed;

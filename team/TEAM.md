@@ -41,7 +41,7 @@ Nobody edits a status field. The board (`$TEAM/../bin/status`, or `./team status
 | plan exists, no `feat/NNN-*` branch | `planned` — Coder's turn |
 | a `.team/notes/NNN-*` file is newer than the plan | `needs-replan` — Architect's turn |
 | branch exists, no PR | `in-progress` — Coder |
-| PR open, no review file yet, or code commits after the last review | `in-review` — Reviewer's turn |
+| PR open, no review file yet, or commits after the last review (code or the Coder's response file) | `in-review` — Reviewer's turn |
 | `.team/reviews/NNN-*` on the PR branch says `verdict: request-changes` | `changes-requested` — Coder's turn |
 | it says `verdict: escalate` | `escalated` — PO puts the dispute to the human |
 | it says `verdict: approve` | `approved` — human merges, or the Reviewer when `merge: auto` |
@@ -76,7 +76,7 @@ A seat is one human's subscriptions (`seats:` in `.team/team.md`). Every role ru
 
 ## Review is a dialogue
 
-The Reviewer numbers findings (M1, S1, N1). The Coder answers every Must and Should fix in a `## Coder response` section of the review file: `fixed in <sha>` or `disputed — <reason>`, never silence. The Reviewer approves only when no Must fix is open; a Must fix still disputed after three review rounds becomes `verdict: escalate` and goes to the human through the PO.
+The Reviewer numbers findings (M1, S1, N1). The Coder answers every Must and Should fix in `.team/reviews/NNN-slug.response.md` on the branch (never in the Reviewer's file): `fixed in <sha>` or `disputed — <reason>`, never silence. The Reviewer approves only when no Must fix is open; a Must fix still disputed after three review rounds becomes `verdict: escalate` and goes to the human through the PO.
 
 ## If you are Codex
 

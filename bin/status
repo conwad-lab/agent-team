@@ -3,6 +3,7 @@
 #
 #   ready              story on main, no plan                     → architect
 #   needs-split        plan says the story is too big             → po
+#   split              story has `superseded-by:` (the PO split it) → —
 #   planned            plan on main, no branch yet                → coder
 #   needs-replan       coder note newer than the plan             → architect
 #   in-progress        remote branch exists, no PR                → coder
@@ -97,6 +98,8 @@ while IFS= read -r story; do
     next="—"; where="#$num"
   elif [ -z "$plan" ]; then
     status=ready; next=architect
+  elif [ -n "$(first_line "$story" superseded-by)" ]; then
+    status=split; next="—"; where="→ $(first_line "$story" superseded-by)"
   elif [ "$(first_line "$plan" verdict)" = "needs-split" ]; then
     status=needs-split; next=po
   elif [ -n "$note" ] && [ "$(ctime "$note")" -gt "$(ctime "$plan")" ]; then
@@ -117,11 +120,12 @@ while IFS= read -r story; do
       # The verdict lives in .team/reviews/NNN-*.md on the PR branch (frontmatter `verdict:`).
       # It counts only if the review commit is at least as new as the last non-review commit;
       # a Coder push after the review puts the story back in the Reviewer's lane.
-      review="$(git ls-tree -r --name-only "origin/$pr_branch" -- .team/reviews/ 2>/dev/null | grep "/${id}-" | head -1)"
+      review="$(git ls-tree -r --name-only "origin/$pr_branch" -- .team/reviews/ 2>/dev/null | grep "/${id}-" | grep -v '\.response\.md$' | head -1)"
       if [ -n "$review" ]; then
         verdict="$(git show "origin/$pr_branch:$review" 2>/dev/null | sed -n 's/^verdict: *//p' | head -1)"
         review_ts="$(git log -1 --format=%ct "origin/$pr_branch" -- "$review" 2>/dev/null || echo 0)"
-        work_ts="$(git log -1 --format=%ct "origin/$pr_branch" -- . ':(exclude).team/reviews' 2>/dev/null || echo 0)"
+        # work = every commit except the review file itself; the Coder's response file counts as work
+        work_ts="$(git log -1 --format=%ct "origin/$pr_branch" -- . ":(exclude)$review" 2>/dev/null || echo 0)"
         if [ "${review_ts:-0}" -ge "${work_ts:-0}" ]; then
           case "$verdict" in
             approve*)  status=approved; next=human ;;

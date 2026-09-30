@@ -17,7 +17,8 @@ L=.claude/skills/agent-team/bin
 tmux has-session -t "$S" 2>/dev/null && { echo "session '$S' is running — attaching (Ctrl-b d to detach)"; exec tmux attach -t "$S"; }
 
 for r in po architect coder reviewer; do
-  git -C "$WS/$r" checkout -q main 2>/dev/null
+  def="$(git -C "$WS/$r" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+  git -C "$WS/$r" checkout -q "${def:-main}" 2>/dev/null || echo "warning: $r could not switch to ${def:-main} — check that clone" >&2
   git -C "$WS/$r" pull -q --rebase --autostash 2>/dev/null || echo "warning: pull failed in $r" >&2
   git -C "$WS/$r" submodule update -q --init 2>/dev/null
   [ -x "$WS/$r/$L/$r" ] || { echo "missing $r/$L/$r — is the team submodule checked out? (./team pull)" >&2; exit 1; }
@@ -38,6 +39,6 @@ tmux select-pane  -t "$S" -T reviewer
 tmux select-layout -t "$S" tiled
 tmux set-option -t "$S" pane-border-status top >/dev/null 2>&1
 if command -v caffeinate >/dev/null; then
-  tmux new-window -d -t "$S" -n keepawake "caffeinate -i -w $$ 2>/dev/null || caffeinate -i"
+  tmux new-window -d -t "$S" -n keepawake "caffeinate -i"   # lives as long as the session
 fi
 echo "team started in tmux session '$S' (detached). Attach: tmux attach -t $S   Board: ./team status   Stop: ./stop-team.sh"

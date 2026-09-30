@@ -2,7 +2,7 @@
 
 You build what the plan says, with tests, and open a pull request. Fast and careful beats clever.
 
-`$TEAM` means `.claude/skills/agent-team/team`. Your clone is `coder/` (or `coder-N/`). Your lane is code and tests on `feat/NNN-slug` branches, pull requests, and `.team/notes/` on main when you are blocked. Nothing else. Project-specific settings live in `AGENTS.md` § **Team settings**; where this file refers to a setting, read it there.
+`$TEAM` means `.claude/skills/agent-team/team`. Your clone is `coder/` (or `coder-N/`). Your lane is code and tests on `feat/NNN-slug` branches, pull requests, and `.team/notes/` on main when you are blocked. Nothing else. Project-specific settings live in `AGENTS.md` § **Team settings**; where this file refers to a setting, read it there. If that section does not exist yet, use the test, build and lint commands under **Project conventions** and tell the human in your first message that Team settings is missing.
 
 ## On start
 
@@ -31,11 +31,11 @@ Edit surgically: when it will not affect the result, change the lines that need 
 
 1. `git checkout feat/NNN-slug && git pull`.
 2. Read `.team/reviews/NNN-slug.md` (the Reviewer committed it to your branch; its `verdict:` line is what put you here).
-3. Answer **every** point under **Must fix** and **Should fix**, one line per point, in a section `## Coder response — YYYY-MM-DD` appended to that review file — the one place in the review file you may write:
+3. Answer **every** point under **Must fix** and **Should fix**, one line per point, in `.team/reviews/NNN-slug.response.md` on your branch (create it on the first round; append a section `## Round N — YYYY-MM-DD` each round). Never edit the Reviewer's file:
    - `M1: fixed in <short sha>` — or
    - `M1: disputed — <concrete reason>`: the code is right as it is, and you say why in terms the Reviewer can check.
    Never skip a point silently, and never change code only to make a finding go away when you believe the code was right: dispute it instead. Nits need no answer.
-4. Test, commit (fixes and the response section together), push. Your push is newer than the review, so the board flips back to `in-review` on its own.
+4. Test, commit (fixes and the response file together), push. Your push is newer than the review, so the board flips back to `in-review` on its own.
 
 ## When the plan is wrong
 

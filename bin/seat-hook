@@ -18,13 +18,15 @@ fi
 case "$orig" in /*) ;; *) orig="$top/$orig" ;; esac
 mkdir -p "$hooks"
 for h in applypatch-msg pre-applypatch post-applypatch pre-commit pre-merge-commit commit-msg post-commit pre-rebase post-checkout post-merge pre-push post-rewrite; do
-  printf '#!/usr/bin/env bash\n[ -x "%s/%s" ] && exec "%s/%s" "$@"\nexit 0\n' "$orig" "$h" "$orig" "$h" > "$hooks/$h"
+  q="$(printf '%q' "$orig/$h")"
+  printf '#!/usr/bin/env bash\n[ -x %s ] && exec %s "$@"\nexit 0\n' "$q" "$q" > "$hooks/$h"
   chmod +x "$hooks/$h"
 done
+qp="$(printf '%q' "$orig/prepare-commit-msg")"; qs="$(printf '%q' "Seat: $seat")"
 cat > "$hooks/prepare-commit-msg" <<HOOK
 #!/usr/bin/env bash
-if [ -x "$orig/prepare-commit-msg" ]; then "$orig/prepare-commit-msg" "\$@" || exit \$?; fi
-git interpret-trailers --in-place --if-exists doNothing --trailer "Seat: $seat" "\$1"
+if [ -x $qp ]; then $qp "\$@" || exit \$?; fi
+git interpret-trailers --in-place --if-exists doNothing --trailer $qs "\$1"
 HOOK
 chmod +x "$hooks/prepare-commit-msg"
 git config --local core.hooksPath "$hooks"

@@ -7,7 +7,7 @@
 # usage: po-wait [MAX seconds, default 3300] [POLL seconds, default 120]
 # "Idle" = no story in flight. That is a WIP limit of one story: the next order row is taken
 # only when the last one is merged. Parked stories (needs-split) do not count as in flight;
-# an escalated story does — it waits for the human.
+# an escalated story does — it waits for the human. Only rows under **Kö** count.
 set -uo pipefail
 max="${1:-3300}"; every="${2:-120}"
 cd "$(git rev-parse --show-toplevel)" || exit 1
@@ -24,8 +24,17 @@ while :; do
     mine="$mine$id	$st	$title"$'\n'
   done <<< "$rows"
   if [ -n "$mine" ]; then echo "board needs the PO:"; printf '%s' "$mine"; exit 0; fi
-  active="$(printf '%s\n' "$rows" | awk -F'\t' 'NF && $2!="done" && $2!="closed" && $2!="needs-split"')"
-  next="$(grep -m1 -E '^- \[ \] ' .team/ORDER.md 2>/dev/null || true)"
+  active="$(printf '%s\n' "$rows" | awk -F'\t' 'NF && $2!="done" && $2!="closed" && $2!="needs-split" && $2!="split"')"
+  next="$(awk '/^## /{inq=($0 ~ /^## K[öo]/)} inq && /^- \[ \] /{print; exit}' .team/ORDER.md 2>/dev/null || true)"
+  # parked stories (_NNN-slug.md with `parked-until: MMM`) whose MMM is merged: the PO un-parks them
+  unpark=""
+  for f in .team/backlog/_*.md; do
+    [ -e "$f" ] || continue
+    dep="$(sed -n 's/^parked-until: *\([0-9][0-9][0-9]\).*/\1/p' "$f" | head -1)"
+    [ -n "$dep" ] || continue
+    printf '%s\n' "$rows" | awk -F'\t' -v d="$dep" '$1==d && $2=="done" {found=1} END {exit !found}' && unpark="$unpark$f (parked-until $dep, now done)"$'\n'
+  done
+  if [ -n "$unpark" ]; then echo "parked stories ready to un-park:"; printf '%s' "$unpark"; exit 0; fi
   if [ -z "$active" ] && [ -n "$next" ]; then echo "board idle — next order row:"; echo "$next"; exit 0; fi
   if [ "$t" -ge "$max" ]; then echo "nothing for po after ${max}s — run po-wait again"; exit 1; fi
   sleep "$every"; t=$((t + every))

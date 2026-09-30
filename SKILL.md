@@ -63,7 +63,7 @@ git submodule update --remote .claude/skills/agent-team
 git -C .claude/skills/agent-team describe
 ```
 
-Show the user what changed (`git -C .claude/skills/agent-team log --oneline <old>..<new>`), then commit the new pointer: `team: agent-team → <version>`, push. The other clones pick it up on their next start (`bin/_start` runs `git submodule update`). Update the `team:` line in `.team/team.md` in the same commit.
+Show the user what changed (`git -C .claude/skills/agent-team log --oneline <old>..<new>`), then commit the new pointer: `team: agent-team → <version>`, push. The other clones pick it up on their next start (`bin/_start` runs `git submodule update`). Update the `team:` line in `.team/team.md` in the same commit. From v0.6.0: copy `workspace/open-team.sh` and `workspace/stop-team.sh` into the workspace; move project specifics from `.team/roles/*.md` into `AGENTS.md` § Team settings (see `assets/root/AGENTS.md`) and delete the overrides — an override replaces the whole role and hides the upgrade; if the submodule URL changed, run `git submodule sync` in every clone.
 
 ## Why it is shaped like this
 

@@ -23,4 +23,4 @@ PR: #<n> · YYYY-MM-DD
 - tried to break:
 - scope vs story:
 
-<!-- The Coder appends `## Coder response — YYYY-MM-DD` below: one line per M/S point, `fixed in <sha>` or `disputed — <reason>`. -->
+<!-- The Coder answers in .team/reviews/NNN-slug.response.md: one line per M/S point, `fixed in <sha>` or `disputed — <reason>`. -->
