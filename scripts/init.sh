@@ -68,7 +68,7 @@ fi
 
 # sibling clones
 echo
-for r in "architect|Architect (Fable 5.1)" "coder|Coder (Opus 5)" "reviewer|Reviewer (Codex)"; do
+for r in "architect|Architect (Fable 5.1)" "coder|Coder (Codex)" "reviewer|Reviewer (Fable 5.1)"; do
   IFS='|' read -r folder author <<< "$r"
   if [ -d "$WS/$folder" ]; then echo "exists: $folder/ (left alone)"; continue; fi
   git clone -q --recurse-submodules "$URL" "$WS/$folder" 2>&1 | grep -v -e 'cloned an empty' -e 'nonexistent ref' || true

@@ -4,7 +4,7 @@
 #   ./team po                start the Product Owner (talk to this one)
 #   ./team architect         start the Architect
 #   ./team coder [N]         start the Coder (N=2 → coder-2/)
-#   ./team reviewer [N]      start the Reviewer (Codex)
+#   ./team reviewer [N]      start the Reviewer (Fable 5.1)
 #   ./team add coder|reviewer   clone another coder-N/ or reviewer-N/
 #   ./team status            the board (derived from git + GitHub)
 #   ./team log               recent team activity across all roles
@@ -35,8 +35,8 @@ author_for() {
   case "$1" in
     po) echo "Product Owner (Fable 5.1)" ;;
     architect) echo "Architect (Fable 5.1)" ;;
-    coder) echo "Coder (Opus 5)" ;;
-    reviewer) echo "Reviewer (Codex)" ;;
+    coder) echo "Coder (Codex)" ;;
+    reviewer) echo "Reviewer (Fable 5.1)" ;;
   esac
 }
 
