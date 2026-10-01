@@ -43,6 +43,7 @@ Inside any clone: `/agent-team upgrade` — or by hand, `git submodule update --
 SKILL.md          what Claude reads when you run /agent-team
 bin/              po architect coder reviewer  — launchers (pull, pick role file, start)
                   status                       — the board, derived from git + GitHub
+                  status-selftest              — offline tests for the board (temp repos, stubbed gh)
 team/TEAM.md      the rulebook every agent reads
 team/roles/       product-owner architect coder reviewer
 team/templates/   story plan note review

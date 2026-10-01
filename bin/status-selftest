@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Offline selftest for bin/status. Builds throwaway repos (bare origin + clone,
+# `gh` stubbed on PATH) and checks the derived rows. No network, no real GitHub.
+#
+#   .claude/skills/agent-team/bin/status-selftest      # exit 0 = all pass
+set -uo pipefail
+STATUS="$(cd "$(dirname "$0")" && pwd)/status"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/status-selftest.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_AUTHOR_DATE GIT_COMMITTER_DATE
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+fail=0; n=0
+
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/gh" <<'EOF'
+#!/bin/sh
+[ "$1" = auth ] && exit 0
+printf '%s' "${GH_PRS:-}"
+EOF
+chmod +x "$TMP/bin/gh"
+
+# fresh <name>: origin + clone with story 031 on main; cd into the clone
+fresh() {
+  local d="$TMP/$1"
+  git init -q --bare -b main "$d/origin.git"
+  git clone -q "$d/origin.git" "$d/repo" 2>/dev/null
+  cd "$d/repo" || exit 1
+  git config user.name "Selftest"; git config user.email "selftest@example.invalid"
+  mkdir -p .team/backlog .team/plans .team/reviews
+  printf -- '---\nid: 031\ntitle: Fixture\n---\n' > .team/backlog/031-fixture.md
+  git add .; git commit -qm story; git push -q -u origin main
+}
+plan()   { printf -- '---\nverdict: plan\n---\n' > .team/plans/031-fixture.md; git add .; git commit -qm plan; git push -q origin main; }
+# at <epoch> <cmd...>: run a git command with both dates pinned to that second
+at()     { local t="$1"; shift; GIT_AUTHOR_DATE="@$t +0000" GIT_COMMITTER_DATE="@$t +0000" "$@"; }
+row()    { PATH="$TMP/bin:$PATH" GH_PRS="${1:-}" "$STATUS" --tsv 2>/dev/null | cut -f1,2,4,5; }
+expect() {
+  local name="$1" want="$2" got="$3"; n=$((n+1))
+  if [ "$got" = "$want" ]; then echo "ok   $name"
+  else echo "FAIL $name"; echo "     want: $want"; echo "     got:  $got"; fail=$((fail+1)); fi
+}
+T=$'\t'
+OPEN="feat/031-fixture${T}7${T}OPEN${T}2026-09-20T00:00:00Z"
+
+# 1. Superseded story with no plan: split, not ready (the PO split it before planning).
+fresh split-no-plan
+printf -- 'superseded-by: 032, 033\n' >> .team/backlog/031-fixture.md
+git commit -qam split; git push -q origin main
+expect "superseded, no plan → split" "031${T}split${T}—${T}→ 032, 033" "$(row)"
+
+# 2. Superseded story with a plan and an open PR: still split.
+fresh split-with-pr
+plan
+printf -- 'superseded-by: 032\n' >> .team/backlog/031-fixture.md
+git commit -qam split; git push -q origin main
+git checkout -qb feat/031-fixture; git push -q -u origin feat/031-fixture; git checkout -q main
+expect "superseded, plan + open PR → split" "031${T}split${T}—${T}→ 032" "$(row "$OPEN")"
+
+# review-branch setup: plan, branch with one code commit at second $1
+review_setup() {
+  fresh "$2"; plan
+  git checkout -qb feat/031-fixture
+  echo code > code.txt; git add code.txt; at "$1" git commit -qm code
+}
+review() { printf -- '---\nverdict: %s\n---\n' "$2" > .team/reviews/031-fixture.md; git add .team/reviews; at "$1" git commit -qm review; }
+response() { echo fixed > .team/reviews/031-fixture.response.md; echo fix >> code.txt; git add .; at "$1" git commit -qm fix; }
+
+# 3. Coder answers a request-changes review within the same second: the fix is
+#    newer than the review, so it is the Reviewer's turn — not the Coder's again.
+review_setup 1790000000 same-second-fix
+review 1790000000 request-changes
+response 1790000000
+git push -q -u origin feat/031-fixture
+expect "fix in the same second as the review → in-review" "031${T}in-review${T}reviewer${T}#7" "$(row "$OPEN")"
+
+# 4. Same, with an approve: a same-second push after approval must not stay approved.
+review_setup 1790000000 same-second-after-approve
+review 1790000000 approve
+response 1790000000
+git push -q -u origin feat/031-fixture
+expect "push in the same second as an approve → in-review" "031${T}in-review${T}reviewer${T}#7" "$(row "$OPEN")"
+
+# 5. Review committed in the same second as the code it reviews: the review is
+#    a descendant of that code, so it counts.
+review_setup 1790000000 same-second-review
+review 1790000000 request-changes
+git push -q -u origin feat/031-fixture
+expect "review in the same second as the code → changes-requested" "031${T}changes-requested${T}coder${T}#7" "$(row "$OPEN")"
+
+# 6. Ordinary timing still works both ways.
+review_setup 1790000000 later-fix
+review 1790000060 approve
+git push -q -u origin feat/031-fixture
+expect "review after code → approved" "031${T}approved${T}human${T}#7" "$(row "$OPEN")"
+response 1790000120; git push -q origin feat/031-fixture
+expect "fix after review → in-review" "031${T}in-review${T}reviewer${T}#7" "$(row "$OPEN")"
+
+# 7. A review committed with an older clock than the code before it (skewed
+#    machine) still counts: order is the commit graph, not the wall clock.
+review_setup 1790000060 skewed-clock
+review 1790000000 approve
+git push -q -u origin feat/031-fixture
+expect "review with an older timestamp but later commit → approved" "031${T}approved${T}human${T}#7" "$(row "$OPEN")"
+
+echo "$((n-fail))/$n passed"
+[ "$fail" -eq 0 ]
