@@ -19,12 +19,13 @@
 set -uo pipefail
 TSV=0; [ "${1:-}" = "--tsv" ] && TSV=1   # machine-readable: id<TAB>status<TAB>title<TAB>next<TAB>where, no header
 cd "$(git rev-parse --show-toplevel)" || exit 1
-# Retry before warning. A single failed fetch made wait-for/po-wait exit 2, and the role
+# Retry the fetch before warning (gh is not retried: a failed PR query must fail closed fast).
+# AGENT_TEAM_FETCH_WAITS overrides the waits, e.g. "0" in tests. A single failed fetch made wait-for/po-wait exit 2, and the role
 # stopped: on 2026-10-06 a reviewer pane closed that way while `git fetch` worked from every
 # shell tried by hand. The last error is kept in .git/agent-team-fetch.log so the cause shows.
 FETCH_LOG="$(git rev-parse --absolute-git-dir)/agent-team-fetch.log"
 fetch_ok=0
-for wait_s in 0 5 15; do
+for wait_s in ${AGENT_TEAM_FETCH_WAITS:-0 5 15}; do
   sleep "$wait_s"
   if err="$(git fetch -q --prune origin 2>&1)"; then fetch_ok=1; break; fi
   printf '%s attempt after %ss: %s\n' "$(date '+%F %T')" "$wait_s" "$err" >> "$FETCH_LOG"
@@ -48,9 +49,7 @@ if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
   gh_why="no gh"
   echo "warning: gh missing, not authenticated, or no network — PR states unknown; branches show as unknown" >&2
 elif prs="$(gh pr list --state all --limit 500 --json number,state,headRefName,updatedAt \
-            --jq '.[] | [.headRefName, .number, .state, .updatedAt] | @tsv' 2>>"$FETCH_LOG")" \
-  || { sleep 10; prs="$(gh pr list --state all --limit 500 --json number,state,headRefName,updatedAt \
-            --jq '.[] | [.headRefName, .number, .state, .updatedAt] | @tsv' 2>>"$FETCH_LOG")"; }; then
+            --jq '.[] | [.headRefName, .number, .state, .updatedAt] | @tsv' 2>>"$FETCH_LOG")"; then
   have_gh=1
 else
   # The distinction that matters. A failed query and a repo with no PRs both
