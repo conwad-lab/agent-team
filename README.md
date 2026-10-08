@@ -23,7 +23,7 @@ cd myproj-team
 ./team open        # (again) PO top-left, Architect top-right, Coder and Reviewer below; --tmux for tmux anywhere
                    # every role starts working on launch; Architect/Coder/Reviewer wait on the board and wake up when it's their turn
 ./team board       # the board, refreshed every 30 s — park it in a corner
-./team monitor     # live page in the browser: who is working on what, stories by phase, timeline
+./team monitor     # live page in the browser: who is working on what, stories by phase, timeline — switch between all your teams
 ./team po          # or start any single role by hand — PO is the one you talk to; ask it to fill in Project conventions first
 ./team status      # the board, once
 ./team log         # who did what

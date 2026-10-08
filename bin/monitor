@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """agent-team monitor — a live page showing what the team is doing.
 
-    ./team monitor [--port 8765] [--no-open]
+    ./team monitor [--port 8765] [--no-open] [--only]
+    bin/monitor ~/WebProjects            # every *-team workspace in a folder
+
+Every agent-team workspace next to the one it starts from (siblings that hold po/ with the
+team inside) shows up in a team picker at the top of the page, so one monitor follows them all.
+--only keeps it to the one workspace.
 
 Reads, never writes (except its own .monitor-state.json in the workspace):
   * the board        — bin/status --tsv in the po clone, every 30 s (same derivation as ./team status)
@@ -21,6 +26,10 @@ ROLE_PREFIX = {"product owner": "po", "architect": "architect", "coder": "coder"
 BOARD_EVERY = int(os.environ.get("AGENT_TEAM_MONITOR_BOARD_EVERY", "30"))
 ACTIVE_GAP = 120          # seconds between events that still count as one stretch of work
 WAIT_TOOLS = re.compile(r"\b(wait-for|po-wait)\b")
+# Foreground commands in a role's tmux pane that mean a model session is running. Anything else
+# in a live pane (bash, sleep, a team-loop.sh waiting on the board) means the role is waiting.
+AGENT_CMDS = {"claude", "codex", "node", "bun"}
+TEAM_BIN = os.path.join(".claude", "skills", "agent-team", "bin")
 
 
 def sh(args, cwd=None, timeout=60):
@@ -52,6 +61,20 @@ class Workspace:
     def __init__(self, ws):
         self.ws = os.path.realpath(ws)
         self.po = os.path.join(self.ws, "po")
+        self.id = os.path.basename(self.ws)
+        self.label = re.sub(r"-team$", "", self.id)
+        try:
+            with open(os.path.join(self.po, ".team", "team.md"), encoding="utf-8") as f:
+                m = re.search(r"^project:\s*(\S.*?)\s*$", f.read(), re.M)
+                if m and "{{" not in m.group(1):
+                    self.label = m.group(1)
+        except OSError:
+            pass
+
+    def status_script(self):
+        """The board script pinned in this workspace (its own team version), else the monitor's."""
+        own = os.path.join(self.po, TEAM_BIN, "status")
+        return own if os.access(own, os.X_OK) else os.path.join(BIN, "status")
 
     def clones(self):
         out = []
@@ -62,6 +85,32 @@ class Workspace:
                 out.append({"name": name, "role": m.group(1), "path": d})
         out.sort(key=lambda c: (ROLES.index(c["role"]), c["name"]))
         return out
+
+
+def is_workspace(path):
+    return os.path.isdir(os.path.join(path, "po", ".git"))
+
+
+def find_workspaces(path, only=False):
+    """The workspace at path plus its siblings, or every workspace inside path."""
+    path = os.path.realpath(os.path.expanduser(path))
+    if is_workspace(path):
+        if only:
+            return [path]
+        parent = os.path.dirname(path)
+    else:
+        parent = path
+    found = []
+    try:
+        for name in sorted(os.listdir(parent)):
+            d = os.path.join(parent, name)
+            if is_workspace(d) and os.path.isdir(os.path.join(d, "po", TEAM_BIN)):
+                found.append(d)
+    except OSError:
+        pass
+    if is_workspace(path) and path not in found:
+        found.insert(0, path)
+    return found
 
 
 # ---------------------------------------------------------------- session logs
@@ -294,8 +343,7 @@ class Board(threading.Thread):
             self.wake.clear()
 
     def refresh(self):
-        status = os.path.join(BIN, "status")
-        rc, out, err = sh([status, "--tsv"], cwd=self.ws.po, timeout=120)
+        rc, out, err = sh([self.ws.status_script(), "--tsv"], cwd=self.ws.po, timeout=120)
         rows = []
         for line in out.splitlines():
             parts = line.split("\t")
@@ -368,10 +416,12 @@ def clone_branch(path):
 # ---------------------------------------------------------------- state
 
 class Monitor:
-    def __init__(self, ws):
+    def __init__(self, ws, sessions):
         self.ws = Workspace(ws)
-        self.sessions = Sessions()
+        self.sessions = sessions
         self.board = Board(self.ws)
+        self.lock = threading.Lock()
+        self._summary = (0, None)
         self.state_file = os.path.join(self.ws.ws, ".monitor-state.json")
         try:
             with open(self.state_file) as f:
@@ -404,7 +454,29 @@ class Monitor:
             except OSError:
                 pass
 
+    def summary(self, max_age=10):
+        """Small per-team status for the team picker, recomputed at most every max_age seconds."""
+        at, val = self._summary
+        if val is None or time.time() - at > max_age:
+            d = self.state()
+            val = {
+                "id": self.ws.id, "label": self.ws.label,
+                "working": sum(a["state"] == "arbetar" for a in d["agents"]),
+                "agents": len(d["agents"]),
+                "yours": sum(r["status"] == "approved" for r in d["board"]),
+                "attention": sum(r["status"] in ("escalated", "unknown") for r in d["board"]) + len(d["warnings"])
+                             + (1 if d["board_error"] else 0),
+                "open": sum(r["status"] not in ("done", "closed", "split") for r in d["board"]),
+                "last": max([a["last"] or 0 for a in d["agents"]] or [0]) or None,
+            }
+            self._summary = (time.time(), val)
+        return val
+
     def state(self):
+        with self.lock:
+            return self._state()
+
+    def _state(self):
         now = time.time()
         horizon = now - 24 * 3600
         clones = self.ws.clones()
@@ -412,7 +484,10 @@ class Monitor:
         if board_at:
             self._remember(rows, board_at)
         sess = self.sessions.for_clones(clones, horizon)
-        panes = tmux_panes()
+        all_panes = tmux_panes()
+        root = self.ws.ws + os.sep
+        # only this workspace's panes: a team that is not run under tmux must not read as "not running"
+        panes = {p: v for p, v in all_panes.items() if p.startswith(root)}
         agents, feed = [], []
         for c in clones:
             ts_list = sess.get(c["name"], [])
@@ -432,6 +507,10 @@ class Monitor:
                 state = "inaktiv"
             pane = panes.get(os.path.realpath(c["path"]))
             alive = None if not panes else bool(pane and any(not p["dead"] for p in pane))
+            shell_wait = bool(alive and not any(p["cmd"] in AGENT_CMDS for p in pane if not p["dead"]))
+            if shell_wait and state in ("tyst", "inaktiv", "ingen session"):
+                # one-task-per-session loop (team-loop.sh): no model runs while the shell waits on the board
+                state, waiting = "väntar", False
             segs = []
             for t in ts_list:
                 segs += t.segments(horizon)
@@ -449,6 +528,7 @@ class Monitor:
                 "tools": cur.tools if cur else 0,
                 "doing": cur.last_tool if cur else None,
                 "waiting_since": cur.waiting_since if waiting else None,
+                "shell_wait": state == "väntar" and not waiting,
                 "segments": segs,
             })
             for t in ts_list:
@@ -466,7 +546,7 @@ class Monitor:
             r["moved"] = next((cm["ts"] for cm in commits if r["id"] in cm["stories"]), None)
             r["working"] = [a["name"] for a in agents if a["story"] == r["id"] and a["state"] == "arbetar"]
         return {
-            "now": now, "workspace": os.path.basename(self.ws.ws),
+            "now": now, "workspace": self.ws.id, "label": self.ws.label,
             "board": rows, "board_at": board_at, "board_every": BOARD_EVERY,
             "warnings": warnings, "board_error": board_err,
             "agents": agents, "commits": commits, "feed": feed,
@@ -476,7 +556,26 @@ class Monitor:
 
 # ---------------------------------------------------------------- http
 
-def make_handler(mon, page):
+class App:
+    def __init__(self, paths):
+        self.sessions = Sessions()
+        self.teams = {}
+        for p in paths:
+            m = Monitor(p, self.sessions)
+            self.teams[m.ws.id] = m
+        self.default = next(iter(self.teams))
+
+    def start(self):
+        for m in self.teams.values():
+            m.board.start()
+
+    def get(self, query):
+        from urllib.parse import parse_qs
+        tid = (parse_qs(query).get("team") or [self.default])[0]
+        return self.teams.get(tid)
+
+
+def make_handler(app, page):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -490,19 +589,32 @@ def make_handler(mon, page):
             self.end_headers()
             self.wfile.write(b)
 
+        def _json(self, fn):
+            try:
+                self._send(200, json.dumps(fn()), "application/json")
+            except Exception as e:
+                self._send(500, json.dumps({"error": str(e)}), "application/json")
+
         def do_GET(self):
-            if self.path.startswith("/api/state"):
-                try:
-                    self._send(200, json.dumps(mon.state()), "application/json")
-                except Exception as e:
-                    self._send(500, json.dumps({"error": str(e)}), "application/json")
-            elif self.path in ("/", "/index.html"):
+            path, _, query = self.path.partition("?")
+            if path == "/api/state":
+                mon = app.get(query)
+                if mon is None:
+                    self._send(404, json.dumps({"error": "no such team"}), "application/json")
+                else:
+                    self._json(mon.state)
+            elif path == "/api/teams":
+                self._json(lambda: {"default": app.default,
+                                    "teams": [m.summary() for m in app.teams.values()]})
+            elif path in ("/", "/index.html"):
                 self._send(200, page, "text/html; charset=utf-8")
             else:
                 self._send(404, "not found", "text/plain")
 
         def do_POST(self):
-            if self.path == "/api/refresh":
+            path, _, query = self.path.partition("?")
+            mon = app.get(query)
+            if path == "/api/refresh" and mon:
                 mon.board.wake.set()
                 self._send(200, "{}", "application/json")
             else:
@@ -511,29 +623,34 @@ def make_handler(mon, page):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Live monitor for an agent-team workspace")
+    ap = argparse.ArgumentParser(description="Live monitor for agent-team workspaces")
     ap.add_argument("workspace", nargs="?", default=os.environ.get("AGENT_TEAM_WS"),
-                    help="the <project>-team folder (default: $AGENT_TEAM_WS)")
+                    help="a <project>-team folder, or a folder holding several (default: $AGENT_TEAM_WS)")
     ap.add_argument("--port", type=int, default=int(os.environ.get("AGENT_TEAM_MONITOR_PORT", "8765")))
     ap.add_argument("--no-open", action="store_true", help="do not open the browser")
+    ap.add_argument("--only", action="store_true", help="just this workspace, not its siblings")
     a = ap.parse_args()
-    if not a.workspace or not os.path.isdir(os.path.join(a.workspace, "po")):
-        ap.error("point it at the workspace folder that holds po/ (or run it as ./team monitor)")
-    mon = Monitor(a.workspace)
-    mon.board.start()
+    if not a.workspace:
+        ap.error("point it at a workspace folder that holds po/, or a folder of them (or run ./team monitor)")
+    paths = find_workspaces(a.workspace, a.only)
+    if not paths:
+        ap.error(f"no agent-team workspace (a folder with po/ in it) at or in {a.workspace}")
+    app = App(paths)
+    app.start()
     with open(os.path.join(BIN, "monitor.html"), encoding="utf-8") as f:
         page = f.read()
     srv = None
     for port in range(a.port, a.port + 20):
         try:
-            srv = ThreadingHTTPServer(("127.0.0.1", port), make_handler(mon, page))
+            srv = ThreadingHTTPServer(("127.0.0.1", port), make_handler(app, page))
             break
         except OSError:
             continue
     if srv is None:
         raise SystemExit(f"no free port in {a.port}–{a.port + 19}")
     url = f"http://127.0.0.1:{srv.server_address[1]}/"
-    print(f"agent-team monitor for {mon.ws.ws}\n  {url}\n  Ctrl-C to stop")
+    names = ", ".join(m.ws.label for m in app.teams.values())
+    print(f"agent-team monitor: {names}\n  {url}\n  Ctrl-C to stop")
     if not a.no_open:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
