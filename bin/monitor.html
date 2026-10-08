@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-team monitor</title>
+<style>
+:root {
+  --bg: #0b0d10; --panel: #13161b; --panel2: #191d23; --line: #262b33; --line2: #323944;
+  --text: #e7eaee; --muted: #8b939f; --faint: #5a626e;
+  --work: #3ddc84; --wait: #5aa9ff; --quiet: #e6b450; --idle: #5a626e; --bad: #ff6b6b; --you: #c792ea;
+  --po: #c792ea; --architect: #5aa9ff; --coder: #3ddc84; --reviewer: #ffb454; --human: #e7eaee;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f4f5f7; --panel: #ffffff; --panel2: #f7f8fa; --line: #e3e6ea; --line2: #d3d8de;
+    --text: #15181c; --muted: #5f6873; --faint: #9aa2ac;
+    --work: #12a150; --wait: #2b78e4; --quiet: #b7851a; --idle: #9aa2ac; --bad: #d63b3b; --you: #8a3fd1;
+    --po: #8a3fd1; --architect: #2b78e4; --coder: #12a150; --reviewer: #c97a10; --human: #15181c;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f4f5f7; --panel: #ffffff; --panel2: #f7f8fa; --line: #e3e6ea; --line2: #d3d8de;
+    --text: #15181c; --muted: #5f6873; --faint: #9aa2ac;
+    --work: #12a150; --wait: #2b78e4; --quiet: #b7851a; --idle: #9aa2ac; --bad: #d63b3b; --you: #8a3fd1;
+    --po: #8a3fd1; --architect: #2b78e4; --coder: #12a150; --reviewer: #c97a10; --human: #15181c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 var(--sans); }
+.wrap { max-width: 1480px; margin: 0 auto; padding: 18px 20px 40px; }
+header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .01em; }
+h1 span { color: var(--muted); font-weight: 450; }
+.summary { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.spacer { flex: 1; }
+.btn { background: var(--panel2); color: var(--text); border: 1px solid var(--line2); border-radius: 6px;
+       padding: 4px 10px; font: 12px var(--sans); cursor: pointer; }
+.btn:hover { border-color: var(--muted); }
+.btn.on { background: var(--line2); }
+h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); margin: 22px 0 8px; font-weight: 600; }
+.banner { border: 1px solid var(--bad); color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent);
+          border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; font-family: var(--mono); font-size: 12px; }
+.banner.you { border-color: var(--you); color: var(--you); background: color-mix(in srgb, var(--you) 10%, transparent); font-family: var(--sans); font-size: 13px; }
+
+/* agents */
+.agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.agent { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--idle); border-radius: 8px; padding: 11px 13px; min-width: 0; }
+.agent.arbetar { border-left-color: var(--work); }
+.agent.väntar { border-left-color: var(--wait); }
+.agent.tyst { border-left-color: var(--quiet); }
+.agent .top { display: flex; align-items: center; gap: 8px; }
+.agent .name { font-weight: 650; font-size: 14px; }
+.agent .clone { color: var(--faint); font-family: var(--mono); font-size: 11px; }
+.pill { margin-left: auto; font-size: 11px; padding: 1px 8px; border-radius: 99px; border: 1px solid currentColor; white-space: nowrap; }
+.pill.arbetar { color: var(--work); } .pill.väntar { color: var(--wait); } .pill.tyst { color: var(--quiet); }
+.pill.inaktiv, .pill.ingen { color: var(--idle); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; display: inline-block; margin-right: 5px; vertical-align: 1px; }
+.arbetar .dot { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
+.doing { font-family: var(--mono); font-size: 12px; margin: 8px 0 6px; padding: 6px 8px; background: var(--panel2);
+         border-radius: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); min-height: 30px; }
+.doing b { color: var(--muted); font-weight: 500; }
+.meta { color: var(--muted); font-size: 11.5px; font-family: var(--mono); display: flex; gap: 10px; flex-wrap: wrap; }
+.meta .st { color: var(--text); }
+.tag { font-family: var(--mono); font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--line); color: var(--text); }
+
+/* pipeline */
+.pipe { display: grid; grid-template-columns: repeat(6, minmax(170px, 1fr)); gap: 10px; overflow-x: auto; }
+.col { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px; min-height: 90px; }
+.col .head { display: flex; justify-content: space-between; align-items: baseline; padding: 0 2px 7px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.col .head b { font-size: 12px; }
+.col .head span { color: var(--faint); font-size: 11px; font-family: var(--mono); }
+.col .who { font-size: 10.5px; color: var(--muted); }
+.col.you { border-color: color-mix(in srgb, var(--you) 55%, var(--line)); }
+.story { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; margin-bottom: 7px; }
+.story.live { border-color: var(--work); box-shadow: 0 0 0 1px color-mix(in srgb, var(--work) 35%, transparent); }
+.story.warn { border-color: var(--bad); }
+.story .t { font-size: 12.5px; font-weight: 550; line-height: 1.3; }
+.story .t i { font-style: normal; color: var(--faint); font-family: var(--mono); font-weight: 400; margin-right: 4px; }
+.story .s { display: flex; gap: 6px; align-items: center; margin-top: 5px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
+.story .w { font-family: var(--mono); font-size: 10.5px; color: var(--faint); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-changes-requested { color: var(--quiet); } .st-escalated, .st-unknown { color: var(--bad); }
+.st-approved { color: var(--you); } .st-done { color: var(--work); }
+.empty { color: var(--faint); font-size: 11.5px; padding: 4px 2px; }
+
+/* timeline */
+.tl { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px 8px; }
+.tlrow { display: grid; grid-template-columns: 110px 1fr; align-items: center; height: 24px; }
+.tlrow .lbl { font-family: var(--mono); font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.track { position: relative; height: 12px; background: var(--panel2); border-radius: 3px; }
+.seg { position: absolute; top: 0; height: 12px; border-radius: 3px; background: var(--work); min-width: 2px; opacity: .85; }
+.tick { position: absolute; top: -3px; width: 2px; height: 18px; border-radius: 1px; }
+.nowline { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--muted); opacity: .5; }
+.axis { display: grid; grid-template-columns: 110px 1fr; margin-top: 4px; }
+.axis .ticks { position: relative; height: 14px; font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+.axis .ticks span { position: absolute; transform: translateX(-50%); }
+.legend { display: flex; gap: 14px; font-size: 11px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+
+/* feed */
+.feed { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; font-family: var(--mono); font-size: 11.5px; max-height: 340px; overflow-y: auto; }
+.ev { display: grid; grid-template-columns: 62px 120px 1fr; gap: 10px; padding: 4px 12px; border-bottom: 1px solid var(--line); }
+.ev:last-child { border-bottom: 0; }
+.ev .when { color: var(--faint); }
+.ev .who { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ev .txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.ev.commit .txt { color: var(--text); }
+.ev.commit .txt::before { content: "● "; color: var(--faint); }
+.r-po { color: var(--po); } .r-architect { color: var(--architect); } .r-coder { color: var(--coder); }
+.r-reviewer { color: var(--reviewer); } .r-human { color: var(--human); }
+.foot { color: var(--faint); font-size: 11px; margin-top: 18px; font-family: var(--mono); }
+@media (max-width: 720px) {
+  .wrap { padding: 12px 12px 30px; }
+  .tlrow, .axis { grid-template-columns: 74px 1fr; }
+  .ev { grid-template-columns: 48px 1fr; } .ev .who { display: none; }
+  .pipe { grid-template-columns: 1fr 1fr; overflow: visible; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>agent-team <span id="ws">monitor</span></h1>
+    <div class="summary" id="summary">ansluter…</div>
+    <div class="spacer"></div>
+    <span id="theme"></span>
+    <button class="btn" id="refresh" title="Läs om tavlan nu (annars var 30:e s)">Uppdatera tavlan</button>
+  </header>
+  <div id="banners"></div>
+
+  <h2>Rollerna</h2>
+  <div class="agents" id="agents"></div>
+
+  <h2>Storyerna — vems tur det är</h2>
+  <div class="pipe" id="pipe"></div>
+
+  <h2 style="display:flex;align-items:center;gap:10px">Tidslinje
+    <span style="flex:1"></span>
+    <span id="windows"></span>
+  </h2>
+  <div class="tl" id="tl"></div>
+
+  <h2>Senaste händelser</h2>
+  <div class="feed" id="feed"></div>
+  <div class="foot" id="foot"></div>
+</div>
+<script>
+const ROLE = { po: "Produktägare", architect: "Arkitekt", coder: "Kodare", reviewer: "Granskare", human: "Du" };
+const STATUS = {
+  ready: "redo för plan", "needs-split": "ska delas upp", split: "uppdelad", planned: "planerad",
+  "needs-replan": "ny plan behövs", "in-progress": "byggs", unknown: "okänt läge", "in-review": "granskas",
+  "changes-requested": "ändringar begärda", approved: "godkänd", escalated: "eskalerad", done: "klar", closed: "stängd"
+};
+const COLS = [
+  { key: "spec",   name: "Spec",    who: "Produktägare", st: ["needs-split", "escalated"] },
+  { key: "plan",   name: "Plan",    who: "Arkitekt",     st: ["ready", "needs-replan"] },
+  { key: "build",  name: "Bygg",    who: "Kodare",       st: ["planned", "in-progress", "changes-requested", "unknown"] },
+  { key: "review", name: "Granska", who: "Granskare",    st: ["in-review"] },
+  { key: "you",    name: "Din tur", who: "merga",        st: ["approved"] },
+  { key: "done",   name: "Klar",    who: "",             st: ["done", "closed"] },
+];
+const WINDOWS = [[1, "1 h"], [3, "3 h"], [8, "8 h"], [24, "24 h"]];
+let win = 3;
+try { win = +localStorage.getItem("at-win") || 3; } catch (e) {}
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function ago(sec) {
+  if (sec == null) return "–";
+  sec = Math.max(0, sec);
+  if (sec < 60) return `${Math.round(sec)} s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)} min`;
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  return sec < 86400 ? `${h} h ${m} min` : `${Math.floor(sec / 86400)} d`;
+}
+const clock = ts => new Date(ts * 1000).toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" });
+const roleName = a => ROLE[a.role] + (a.name.includes("-") ? " " + a.name.split("-")[1] : "");
+
+function renderAgents(d) {
+  $("agents").innerHTML = d.agents.map(a => {
+    const st = a.state.split(" ")[0];
+    let doing = "";
+    if (a.state === "väntar") doing = `<b>väntar på tavlan</b> sedan ${ago(d.now - a.waiting_since)}`;
+    else if (a.doing) doing = `<b>${esc(a.doing.name)}</b> ${esc(a.doing.detail)}`;
+    else if (a.state === "ingen session") doing = `<b>ingen session hittad för ${esc(a.name)}/</b>`;
+    const engine = a.kind ? `${a.kind === "codex" ? "Codex" : "Claude"}${a.model ? " · " + esc(a.model) : ""}` : "";
+    const alive = a.alive === false ? `<span style="color:var(--bad)">processen kör inte</span>` : "";
+    return `<div class="agent ${st}">
+      <div class="top"><span class="name r-${a.role}">${roleName(a)}</span><span class="clone">${esc(a.name)}/</span>
+        ${a.story ? `<span class="tag">#${esc(a.story)}</span>` : ""}
+        <span class="pill ${st}"><span class="dot"></span>${esc(a.state)}</span></div>
+      <div class="doing">${doing || "&nbsp;"}</div>
+      <div class="meta">
+        <span>senast aktiv <span class="st">${a.last ? ago(d.now - a.last) + " sedan" : "–"}</span></span>
+        <span>${a.tools} verktygsanrop</span>
+        ${a.started ? `<span>session ${ago(d.now - a.started)}</span>` : ""}
+      </div>
+      <div class="meta" style="margin-top:3px"><span>${engine}</span>${a.branch && a.branch !== "HEAD" ? `<span>⎇ ${esc(a.branch)}</span>` : ""}${alive}</div>
+    </div>`;
+  }).join("") || `<div class="empty">Inga kloner hittade i arbetsytan.</div>`;
+}
+
+function renderPipe(d) {
+  const rows = d.board.filter(r => r.status !== "split");
+  $("pipe").innerHTML = COLS.map(c => {
+    let items = rows.filter(r => c.st.includes(r.status));
+    if (c.key === "done") items = items.sort((a, b) => b.id.localeCompare(a.id)).slice(0, 8);
+    const more = c.key === "done" ? rows.filter(r => c.st.includes(r.status)).length - items.length : 0;
+    return `<div class="col ${c.key === "you" && items.length ? "you" : ""}">
+      <div class="head"><div><b>${c.name}</b> <span class="who">${c.who}</span></div><span>${rows.filter(r => c.st.includes(r.status)).length}</span></div>
+      ${items.map(r => {
+        const live = r.working && r.working.length;
+        return `<div class="story ${live ? "live" : ""} ${r.status === "unknown" || r.status === "escalated" ? "warn" : ""}">
+          <div class="t"><i>${esc(r.id)}</i>${esc(r.title)}</div>
+          <div class="s"><span class="st-${r.status}">${STATUS[r.status] || esc(r.status)}</span>
+            ${r.since ? `<span title="i det här läget sedan ${clock(r.since)}">· i läget ${ago(d.now - r.since)}</span>` : r.moved ? `<span title="senaste commit som rör storyn, ${clock(r.moved)}">· rörd ${ago(d.now - r.moved)} sedan</span>` : ""}
+            ${live ? `<span style="color:var(--work)">· <span class="dot" style="color:var(--work)"></span>${esc(r.working.join(", "))}</span>` : ""}</div>
+          ${r.where ? `<div class="w" title="${esc(r.where)}">${esc(r.where)}</div>` : ""}
+        </div>`;
+      }).join("") || `<div class="empty">–</div>`}
+      ${more > 0 ? `<div class="empty">+ ${more} till</div>` : ""}
+    </div>`;
+  }).join("");
+}
+
+function renderTimeline(d) {
+  $("windows").innerHTML = WINDOWS.map(([h, l]) => `<button class="btn ${h === win ? "on" : ""}" data-h="${h}">${l}</button>`).join(" ");
+  const end = d.now, start = end - win * 3600, span = end - start;
+  const x = t => `${Math.max(0, Math.min(100, (t - start) / span * 100))}%`;
+  const lanes = d.agents.map(a => {
+    const segs = a.segments.filter(s => s[1] >= start).map(s => {
+      const l = Math.max(s[0], start), w = Math.max(s[1], l + span * 0.002) - l;
+      return `<div class="seg" style="left:${x(l)};width:${w / span * 100}%;background:var(--${a.role})" title="${clock(s[0])}–${clock(s[1])}"></div>`;
+    }).join("");
+    const firstOfRole = d.agents.find(b => b.role === a.role) === a;
+    const ticks = d.commits.filter(c => c.ts >= start && (c.clone ? c.clone === a.name : c.role === a.role && firstOfRole)).map(c =>
+      `<div class="tick" style="left:${x(c.ts)};background:var(--text)" title="${esc(clock(c.ts) + "  " + c.author + "\n" + c.subject)}"></div>`).join("");
+    return `<div class="tlrow"><div class="lbl r-${a.role}">${esc(a.name)}</div><div class="track">${segs}${ticks}<div class="nowline" style="left:100%"></div></div></div>`;
+  });
+  const human = d.commits.filter(c => c.ts >= start && c.role === "human");
+  if (human.length) lanes.push(`<div class="tlrow"><div class="lbl r-human">du</div><div class="track">${human.map(c =>
+    `<div class="tick" style="left:${x(c.ts)};background:var(--you)" title="${esc(clock(c.ts) + "  " + c.subject)}"></div>`).join("")}</div></div>`);
+  const step = win <= 1 ? 600 : win <= 3 ? 1800 : win <= 8 ? 3600 : 4 * 3600;
+  let t = Math.ceil(start / step) * step, labels = "";
+  for (; t <= end; t += step) labels += `<span style="left:${x(t)}">${clock(t)}</span>`;
+  $("tl").innerHTML = lanes.join("") +
+    `<div class="axis"><div></div><div class="ticks">${labels}</div></div>
+     <div class="legend"><span><i style="background:var(--coder)"></i>aktiv (färg per roll)</span><span><i style="background:var(--text);width:2px"></i>commit</span><span>luckor = väntar på tavlan eller tyst</span></div>`;
+}
+
+function renderFeed(d) {
+  $("feed").innerHTML = d.feed.map(e =>
+    `<div class="ev ${e.kind}"><span class="when">${clock(e.ts)}</span><span class="who r-${e.role}">${esc(e.who)}</span><span class="txt" title="${esc(e.text)}">${esc(e.text)}</span></div>`
+  ).join("") || `<div class="ev"><span></span><span></span><span class="txt">inget ännu</span></div>`;
+}
+
+function render(d) {
+  $("ws").textContent = d.workspace;
+  document.title = `${d.workspace} · agent-team`;
+  const n = s => d.agents.filter(a => a.state === s).length;
+  const yours = d.board.filter(r => r.status === "approved");
+  $("summary").textContent = `${d.agents.length} roller · ${n("arbetar")} arbetar · ${n("väntar")} väntar · ${d.board.filter(r => !["done", "closed", "split"].includes(r.status)).length} öppna storyer`;
+  let b = "";
+  if (d.board_error) b += `<div class="banner">tavlan kunde inte läsas: ${esc(d.board_error)}</div>`;
+  for (const w of d.warnings) b += `<div class="banner">${esc(w)}</div>`;
+  if (yours.length) b += `<div class="banner you">Din tur: ${yours.map(r => `<b>${esc(r.id)}</b> ${esc(r.title)} (${esc(r.where)})`).join(", ")} är godkänd och väntar på merge.</div>`;
+  $("banners").innerHTML = b;
+  renderAgents(d); renderPipe(d); renderTimeline(d); renderFeed(d);
+  $("foot").textContent = `tavlan läst ${d.board_at ? ago(d.now - d.board_at) + " sedan" : "–"} (var ${d.board_every}:e s) · roller och händelser varannan sekund · ${d.tmux ? "tmux hittad" : "ingen tmux — processkoll av"} · körs lokalt, inget skickas ut`;
+}
+
+let last = null;
+async function tick() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    last = await r.json();
+    if (last.error) throw new Error(last.error);
+    render(last);
+  } catch (e) {
+    $("summary").textContent = "tappade kontakten med monitorn — kör ./team monitor igen";
+  }
+}
+$("windows").addEventListener("click", e => {
+  const h = +e.target.dataset.h; if (!h) return;
+  win = h; try { localStorage.setItem("at-win", h); } catch (err) {}
+  if (last) renderTimeline(last);
+});
+$("refresh").addEventListener("click", async () => { await fetch("/api/refresh", { method: "POST" }); setTimeout(tick, 4000); });
+const THEMES = [["auto", "Auto"], ["light", "Ljust"], ["dark", "Mörkt"]];
+let theme = "auto";
+try { theme = localStorage.getItem("at-theme") || "auto"; } catch (e) {}
+function applyTheme() {
+  if (theme === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", theme);
+  $("theme").innerHTML = THEMES.map(([k, l]) => `<button class="btn ${k === theme ? "on" : ""}" data-t="${k}">${l}</button>`).join(" ");
+}
+$("theme").addEventListener("click", e => {
+  const t = e.target.dataset.t; if (!t) return;
+  theme = t; try { localStorage.setItem("at-theme", t); } catch (err) {}
+  applyTheme();
+});
+applyTheme();
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>
