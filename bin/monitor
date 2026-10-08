@@ -1,0 +1,546 @@
+#!/usr/bin/env python3
+"""agent-team monitor — a live page showing what the team is doing.
+
+    ./team monitor [--port 8765] [--no-open]
+
+Reads, never writes (except its own .monitor-state.json in the workspace):
+  * the board        — bin/status --tsv in the po clone, every 30 s (same derivation as ./team status)
+  * git history      — commits on every branch, attributed to roles by author name
+  * session logs     — what Claude Code (~/.claude/projects) and Codex (~/.codex/sessions)
+                       write anyway; gives each role's current tool call and when it was last active
+  * tmux panes       — whether a role's process is alive (when the team runs under open-team.sh)
+
+Serves one page on 127.0.0.1 only. Nothing leaves the machine.
+"""
+import argparse, glob, json, os, re, subprocess, threading, time, webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+BIN = os.path.dirname(os.path.realpath(__file__))
+ROLES = ("po", "architect", "coder", "reviewer")
+ROLE_PREFIX = {"product owner": "po", "architect": "architect", "coder": "coder", "reviewer": "reviewer"}
+BOARD_EVERY = int(os.environ.get("AGENT_TEAM_MONITOR_BOARD_EVERY", "30"))
+ACTIVE_GAP = 120          # seconds between events that still count as one stretch of work
+WAIT_TOOLS = re.compile(r"\b(wait-for|po-wait)\b")
+
+
+def sh(args, cwd=None, timeout=60):
+    try:
+        p = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout, p.stderr
+    except Exception as e:  # missing binary, timeout
+        return 1, "", str(e)
+
+
+def parse_ts(s):
+    if not s:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def short(s, n=90):
+    s = " ".join(str(s).split())
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+# ---------------------------------------------------------------- workspace
+
+class Workspace:
+    def __init__(self, ws):
+        self.ws = os.path.realpath(ws)
+        self.po = os.path.join(self.ws, "po")
+
+    def clones(self):
+        out = []
+        for name in sorted(os.listdir(self.ws)):
+            d = os.path.join(self.ws, name)
+            m = re.fullmatch(r"(po|architect|coder|reviewer)(?:-(\d+))?", name)
+            if m and os.path.isdir(os.path.join(d, ".git")):
+                out.append({"name": name, "role": m.group(1), "path": d})
+        out.sort(key=lambda c: (ROLES.index(c["role"]), c["name"]))
+        return out
+
+
+# ---------------------------------------------------------------- session logs
+
+class Transcript:
+    """Incrementally parsed session log (Claude Code or Codex)."""
+
+    def __init__(self, path, kind):
+        self.path, self.kind = path, kind
+        self.offset = 0
+        self.buf = ""
+        self.first = None
+        self.last = None
+        self.events = []          # timestamps of every agent-side event
+        self.tools = 0
+        self.last_tool = None     # {"name", "detail", "ts"}
+        self.waiting_since = None # set while a wait-for/po-wait call has no result yet
+        self.pending = {}         # call id -> is_wait
+        self.recent = []          # last tool calls for the feed
+        self.cwd = None
+        self.model = None
+
+    def update(self):
+        try:
+            size = os.path.getsize(self.path)
+        except OSError:
+            return
+        if size < self.offset:   # rotated / rewritten
+            self.__init__(self.path, self.kind)
+        if size == self.offset:
+            return
+        with open(self.path, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(self.offset)
+            chunk = f.read()
+            self.offset = f.tell()
+        data = self.buf + chunk
+        lines = data.split("\n")
+        self.buf = lines.pop()  # incomplete tail
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            (self._claude if self.kind == "claude" else self._codex)(d)
+
+    def _seen(self, ts):
+        if ts is None:
+            return
+        self.first = ts if self.first is None else min(self.first, ts)
+        self.last = ts if self.last is None else max(self.last, ts)
+        self.events.append(ts)
+        if len(self.events) > 20000:
+            self.events = self.events[-20000:]
+
+    def _tool(self, ts, name, detail, cid):
+        self.tools += 1
+        is_wait = bool(WAIT_TOOLS.search(detail or ""))
+        self.last_tool = {"name": name, "detail": short(detail), "ts": ts, "wait": is_wait}
+        if cid:
+            self.pending[cid] = is_wait
+        if is_wait:
+            self.waiting_since = ts
+        if not is_wait:
+            self.recent.append(self.last_tool)
+            self.recent = self.recent[-30:]
+
+    def _result(self, ts, cid):
+        if self.pending.pop(cid, False):
+            self.waiting_since = None
+
+    def _claude(self, d):
+        ts = parse_ts(d.get("timestamp"))
+        if d.get("cwd"):
+            self.cwd = d["cwd"]
+        t = d.get("type")
+        msg = d.get("message") or {}
+        content = msg.get("content")
+        if t == "assistant":
+            self._seen(ts)
+            if msg.get("model"):
+                self.model = msg["model"]
+            for c in content if isinstance(content, list) else []:
+                if c.get("type") == "tool_use":
+                    inp = c.get("input") or {}
+                    detail = (inp.get("command") or inp.get("description") or inp.get("file_path")
+                              or inp.get("pattern") or inp.get("prompt") or inp.get("url") or "")
+                    self._tool(ts, c.get("name", "tool"), detail, c.get("id"))
+        elif t == "user" and isinstance(content, list):
+            for c in content:
+                if c.get("type") == "tool_result":
+                    self._seen(ts)
+                    self._result(ts, c.get("tool_use_id"))
+
+    def _codex(self, d):
+        ts = parse_ts(d.get("timestamp"))
+        p = d.get("payload") or {}
+        t, pt = d.get("type"), p.get("type")
+        if t == "session_meta":
+            self.cwd = p.get("cwd") or self.cwd
+            return
+        if t == "turn_context":
+            self.model = p.get("model") or self.model
+            return
+        if t != "response_item":
+            return
+        if pt in ("function_call", "custom_tool_call", "local_shell_call"):
+            self._seen(ts)
+            args = p.get("arguments") or p.get("input") or ""
+            detail = args
+            try:
+                a = json.loads(args) if isinstance(args, str) else args
+                cmd = (a or {}).get("command") or (a or {}).get("cmd")
+                if cmd is None and pt == "local_shell_call":
+                    cmd = (p.get("action") or {}).get("command")
+                if cmd is not None:
+                    detail = " ".join(cmd) if isinstance(cmd, list) else cmd
+                    if isinstance(cmd, list) and len(cmd) >= 3 and cmd[1] in ("-lc", "-c"):
+                        detail = cmd[2]
+            except (ValueError, AttributeError, TypeError):
+                pass
+            self._tool(ts, p.get("name") or "shell", detail, p.get("call_id"))
+        elif pt in ("function_call_output", "custom_tool_call_output", "local_shell_call_output"):
+            self._seen(ts)
+            self._result(ts, p.get("call_id"))
+        elif pt in ("message", "reasoning") and p.get("role", "assistant") == "assistant":
+            self._seen(ts)
+
+    def segments(self, since):
+        segs, start, prev = [], None, None
+        for ts in sorted(self.events):
+            if ts < since:
+                continue
+            if start is None:
+                start = prev = ts
+            elif ts - prev > ACTIVE_GAP:
+                segs.append([start, prev])
+                start = prev = ts
+            else:
+                prev = ts
+        if start is not None:
+            segs.append([start, prev])
+        return segs
+
+
+class Sessions:
+    """Finds the newest Claude Code / Codex session for each clone."""
+
+    def __init__(self):
+        home = os.path.expanduser("~")
+        self.claude_root = os.environ.get("CLAUDE_CONFIG_DIR", os.path.join(home, ".claude"))
+        self.codex_root = os.environ.get("CODEX_HOME", os.path.join(home, ".codex"))
+        self.cache = {}
+        self.codex_cwd = {}       # path -> cwd (read once from session_meta)
+        self.lock = threading.Lock()
+
+    def _get(self, path, kind):
+        t = self.cache.get(path)
+        if t is None:
+            t = self.cache[path] = Transcript(path, kind)
+        t.update()
+        return t
+
+    def _codex_files(self, horizon):
+        out = []
+        for f in glob.glob(os.path.join(self.codex_root, "sessions", "*", "*", "*", "*.jsonl")):
+            try:
+                if os.path.getmtime(f) < horizon:
+                    continue
+            except OSError:
+                continue
+            if f not in self.codex_cwd:
+                cwd = None
+                try:
+                    with open(f, encoding="utf-8", errors="replace") as h:
+                        for _ in range(5):
+                            line = h.readline()
+                            if not line:
+                                break
+                            d = json.loads(line)
+                            if d.get("type") == "session_meta":
+                                cwd = (d.get("payload") or {}).get("cwd")
+                                break
+                except (OSError, ValueError):
+                    pass
+                self.codex_cwd[f] = os.path.realpath(cwd) if cwd else None
+            out.append(f)
+        return out
+
+    def for_clones(self, clones, horizon):
+        """-> {clone name: [Transcript, ...] newest last} for sessions touched since horizon."""
+        with self.lock:
+            res = {c["name"]: [] for c in clones}
+            by_path = {os.path.realpath(c["path"]): c["name"] for c in clones}
+            for real, name in by_path.items():
+                enc = re.sub(r"[^A-Za-z0-9]", "-", real)
+                for f in glob.glob(os.path.join(self.claude_root, "projects", enc, "*.jsonl")):
+                    try:
+                        if os.path.getmtime(f) >= horizon:
+                            res[name].append(self._get(f, "claude"))
+                    except OSError:
+                        pass
+            for f in self._codex_files(horizon):
+                name = by_path.get(self.codex_cwd.get(f))
+                if name:
+                    res[name].append(self._get(f, "codex"))
+            for name in res:
+                res[name].sort(key=lambda t: t.last or 0)
+            return res
+
+
+# ---------------------------------------------------------------- board + git
+
+class Board(threading.Thread):
+    daemon = True
+
+    def __init__(self, ws):
+        super().__init__()
+        self.ws = ws
+        self.rows, self.warnings, self.at, self.err = [], [], 0, None
+        self.commits = []
+        self.lock = threading.Lock()
+        self.wake = threading.Event()
+
+    def run(self):
+        while True:
+            self.refresh()
+            self.wake.wait(BOARD_EVERY)
+            self.wake.clear()
+
+    def refresh(self):
+        status = os.path.join(BIN, "status")
+        rc, out, err = sh([status, "--tsv"], cwd=self.ws.po, timeout=120)
+        rows = []
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 5:
+                rows.append(dict(zip(("id", "status", "title", "next", "where"), parts[:5])))
+        warnings = [l for l in err.splitlines() if l.startswith("warning")]
+        commits = self._commits()
+        with self.lock:
+            self.rows, self.warnings, self.commits, self.at = rows, warnings, commits, time.time()
+            self.err = None if rc == 0 else (short(err, 200) or f"status exited {rc}")
+
+    def _made_in(self):
+        """commit hash -> clone that created it, from each clone's reflog (two coders share an author name)."""
+        made = {}
+        for c in self.ws.clones():
+            rc, out, _ = sh(["git", "-C", c["path"], "reflog", "--all", "--since=24.hours", "--format=%H%x09%gs"], timeout=10)
+            for line in out.splitlines():
+                h, _, gs = line.partition("\t")
+                if gs.startswith(("commit", "commit (amend)", "commit (initial)", "commit (merge)")):
+                    made.setdefault(h, c["name"])
+        return made
+
+    def _commits(self):
+        made = self._made_in()
+        rc, out, _ = sh(["git", "log", "--all", "--since=24.hours", "--date-order",
+                         "--format=%H%x09%ct%x09%an%x09%D%x09%s", "-n", "400"], cwd=self.ws.po)
+        res = []
+        for line in out.splitlines():
+            p = line.split("\t", 4)
+            if len(p) < 5:
+                continue
+            h, ct, author, refs, subj = p
+            low = author.lower()
+            role = next((r for k, r in ROLE_PREFIX.items() if low.startswith(k)), "human")
+            res.append({"hash": h[:7], "ts": int(ct), "author": author, "role": role, "clone": made.get(h),
+                        "subject": short(subj, 110), "stories": story_ids(subj, refs)})
+        return res
+
+    def snapshot(self):
+        with self.lock:
+            return list(self.rows), list(self.warnings), list(self.commits), self.at, self.err
+
+
+def story_ids(subject, refs=""):
+    """Story numbers a commit is about: "041", "041-043" (a range), "feat/041-…" in its refs."""
+    ids = set(re.findall(r"feat/(\d{3})-", refs))
+    for a, b in re.findall(r"\b(\d{3})(?:\s*[-–]\s*(\d{3}))?\b", subject):
+        lo, hi = int(a), int(b) if b else int(a)
+        if 0 <= hi - lo <= 20:
+            ids.update(f"{i:03d}" for i in range(lo, hi + 1))
+    return sorted(ids)
+
+
+def tmux_panes():
+    rc, out, _ = sh(["tmux", "list-panes", "-a", "-F", "#{pane_current_path}\t#{pane_current_command}\t#{pane_dead}"], timeout=5)
+    panes = {}
+    if rc == 0:
+        for line in out.splitlines():
+            p = line.split("\t")
+            if len(p) == 3:
+                panes.setdefault(os.path.realpath(p[0]), []).append({"cmd": p[1], "dead": p[2] == "1"})
+    return panes
+
+
+def clone_branch(path):
+    rc, out, _ = sh(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"], timeout=5)
+    return out.strip() if rc == 0 else None
+
+
+# ---------------------------------------------------------------- state
+
+class Monitor:
+    def __init__(self, ws):
+        self.ws = Workspace(ws)
+        self.sessions = Sessions()
+        self.board = Board(self.ws)
+        self.state_file = os.path.join(self.ws.ws, ".monitor-state.json")
+        try:
+            with open(self.state_file) as f:
+                self.since = json.load(f).get("since", {})
+        except (OSError, ValueError):
+            self.since = {}
+        self.board_seen = None
+
+    def _remember(self, rows, board_at):
+        """Record when each story entered its current status, as far as the monitor has seen.
+        A status already in place when the monitor first reads the board gets no time (None):
+        we do not know when it changed, and the page falls back to the story's last commit."""
+        if board_at == self.board_seen:
+            return
+        first = self.board_seen is None
+        self.board_seen = board_at
+        changed = False
+        for r in rows:
+            prev = self.since.get(r["id"])
+            if prev and prev[0] == r["status"]:
+                continue
+            self.since[r["id"]] = [r["status"], None if first else board_at]
+            changed = True
+        if changed:
+            try:
+                tmp = self.state_file + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump({"since": self.since}, f)
+                os.replace(tmp, self.state_file)
+            except OSError:
+                pass
+
+    def state(self):
+        now = time.time()
+        horizon = now - 24 * 3600
+        clones = self.ws.clones()
+        rows, warnings, commits, board_at, board_err = self.board.snapshot()
+        if board_at:
+            self._remember(rows, board_at)
+        sess = self.sessions.for_clones(clones, horizon)
+        panes = tmux_panes()
+        agents, feed = [], []
+        for c in clones:
+            ts_list = sess.get(c["name"], [])
+            cur = ts_list[-1] if ts_list else None
+            last = cur.last if cur else None
+            waiting = bool(cur and cur.waiting_since and (not last or cur.waiting_since >= last - 1))
+            age = now - last if last else None
+            if cur is None:
+                state = "ingen session"
+            elif waiting:
+                state = "väntar"
+            elif age is not None and age < 90:
+                state = "arbetar"
+            elif age is not None and age < 900:
+                state = "tyst"
+            else:
+                state = "inaktiv"
+            pane = panes.get(os.path.realpath(c["path"]))
+            alive = None if not panes else bool(pane and any(not p["dead"] for p in pane))
+            segs = []
+            for t in ts_list:
+                segs += t.segments(horizon)
+            branch = clone_branch(c["path"])
+            m = re.match(r"feat/(\d{3})-", branch or "")
+            story = m.group(1) if m else None
+            if cur and not story and cur.last_tool:
+                m2 = re.search(r"\b(\d{3})-[a-z]", cur.last_tool["detail"] or "")
+                story = m2.group(1) if m2 else None
+            agents.append({
+                "name": c["name"], "role": c["role"], "branch": branch, "story": story,
+                "state": state, "alive": alive,
+                "kind": cur.kind if cur else None, "model": cur.model if cur else None,
+                "started": cur.first if cur else None, "last": last,
+                "tools": cur.tools if cur else 0,
+                "doing": cur.last_tool if cur else None,
+                "waiting_since": cur.waiting_since if waiting else None,
+                "segments": segs,
+            })
+            for t in ts_list:
+                for e in t.recent[-12:]:
+                    feed.append({"ts": e["ts"], "who": c["name"], "role": c["role"], "kind": "tool",
+                                 "text": f'{e["name"]}: {e["detail"]}'})
+        for cm in commits[:40]:
+            feed.append({"ts": cm["ts"], "who": cm["role"] if cm["role"] != "human" else cm["author"],
+                         "role": cm["role"], "kind": "commit",
+                         "text": f'{cm["hash"]} {cm["subject"]}'})
+        feed = sorted((f for f in feed if f["ts"]), key=lambda f: f["ts"], reverse=True)[:40]
+        for r in rows:
+            s = self.since.get(r["id"])
+            r["since"] = s[1] if s and s[0] == r["status"] else None
+            r["moved"] = next((cm["ts"] for cm in commits if r["id"] in cm["stories"]), None)
+            r["working"] = [a["name"] for a in agents if a["story"] == r["id"] and a["state"] == "arbetar"]
+        return {
+            "now": now, "workspace": os.path.basename(self.ws.ws),
+            "board": rows, "board_at": board_at, "board_every": BOARD_EVERY,
+            "warnings": warnings, "board_error": board_err,
+            "agents": agents, "commits": commits, "feed": feed,
+            "tmux": bool(panes),
+        }
+
+
+# ---------------------------------------------------------------- http
+
+def make_handler(mon, page):
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, code, body, ctype):
+            b = body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_GET(self):
+            if self.path.startswith("/api/state"):
+                try:
+                    self._send(200, json.dumps(mon.state()), "application/json")
+                except Exception as e:
+                    self._send(500, json.dumps({"error": str(e)}), "application/json")
+            elif self.path in ("/", "/index.html"):
+                self._send(200, page, "text/html; charset=utf-8")
+            else:
+                self._send(404, "not found", "text/plain")
+
+        def do_POST(self):
+            if self.path == "/api/refresh":
+                mon.board.wake.set()
+                self._send(200, "{}", "application/json")
+            else:
+                self._send(404, "not found", "text/plain")
+    return H
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Live monitor for an agent-team workspace")
+    ap.add_argument("workspace", nargs="?", default=os.environ.get("AGENT_TEAM_WS"),
+                    help="the <project>-team folder (default: $AGENT_TEAM_WS)")
+    ap.add_argument("--port", type=int, default=int(os.environ.get("AGENT_TEAM_MONITOR_PORT", "8765")))
+    ap.add_argument("--no-open", action="store_true", help="do not open the browser")
+    a = ap.parse_args()
+    if not a.workspace or not os.path.isdir(os.path.join(a.workspace, "po")):
+        ap.error("point it at the workspace folder that holds po/ (or run it as ./team monitor)")
+    mon = Monitor(a.workspace)
+    mon.board.start()
+    with open(os.path.join(BIN, "monitor.html"), encoding="utf-8") as f:
+        page = f.read()
+    srv = None
+    for port in range(a.port, a.port + 20):
+        try:
+            srv = ThreadingHTTPServer(("127.0.0.1", port), make_handler(mon, page))
+            break
+        except OSError:
+            continue
+    if srv is None:
+        raise SystemExit(f"no free port in {a.port}–{a.port + 19}")
+    url = f"http://127.0.0.1:{srv.server_address[1]}/"
+    print(f"agent-team monitor for {mon.ws.ws}\n  {url}\n  Ctrl-C to stop")
+    if not a.no_open:
+        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print()
+
+
+if __name__ == "__main__":
+    main()

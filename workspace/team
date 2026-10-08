@@ -11,6 +11,7 @@
 #   ./team pull              git pull (+ submodules) in every clone
 #   ./team open [--tmux]     open every role in its own window (macOS Terminal, 2×2 grid) or a tmux session
 #   ./team board             the board, refreshed every 30 s — keep it in a corner
+#   ./team monitor [--port N] [--no-open]   live page in the browser: roles, stories, timeline (local only)
 #
 # Any extra arguments after a role are passed to claude / codex.
 # The team itself lives in each clone at .claude/skills/agent-team (a pinned submodule).
@@ -70,6 +71,10 @@ case "$cmd" in
       git -C "$d" pull -q --rebase --autostash && git -C "$d" submodule update -q --init --recursive && echo ok || echo FAILED
     done
     ;;
+  monitor)
+    command -v python3 >/dev/null || { echo "./team monitor needs python3" >&2; exit 1; }
+    exec python3 "$WS/po/$BIN/monitor" "$WS" "$@"
+    ;;
   board)
     while true; do clear; "$0" status; echo; echo "$(date +%H:%M)  ./team board — Ctrl-C to stop"; sleep 30; done
     ;;
@@ -114,5 +119,5 @@ APPLESCRIPT
     done
     echo "opened 4 Terminal windows for $name. Board: ./team board"
     ;;
-  *) sed -n '2,16p' "$0" ;;
+  *) sed -n '2,17p' "$0" ;;
 esac
