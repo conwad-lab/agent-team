@@ -44,6 +44,20 @@ h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: v
           border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; font-family: var(--mono); font-size: 12px; }
 .banner.you { border-color: var(--you); color: var(--you); background: color-mix(in srgb, var(--you) 10%, transparent); font-family: var(--sans); font-size: 13px; }
 
+/* team picker */
+.teams { display: flex; gap: 8px; flex-wrap: wrap; margin: -4px 0 14px; }
+.teams:empty { display: none; }
+.team { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line);
+        border-radius: 8px; padding: 6px 11px; cursor: pointer; color: var(--text); font: 13px var(--sans); text-align: left; }
+.team:hover { border-color: var(--line2); }
+.team.on { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
+.team b { font-weight: 600; }
+.team .tdot { width: 8px; height: 8px; border-radius: 50%; background: var(--idle); flex: none; }
+.team .tdot.work { background: var(--work); animation: pulse 1.4s ease-in-out infinite; }
+.team .tmeta { color: var(--muted); font-size: 11.5px; font-family: var(--mono); white-space: nowrap; }
+.team .tyou { color: var(--you); font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+.team .tbad { color: var(--bad); font-size: 11.5px; white-space: nowrap; }
+
 /* agents */
 .agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
 .agent { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--idle); border-radius: 8px; padding: 11px 13px; min-width: 0; }
@@ -128,6 +142,7 @@ h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: v
     <span id="theme"></span>
     <button class="btn" id="refresh" title="Läs om tavlan nu (annars var 30:e s)">Uppdatera tavlan</button>
   </header>
+  <div class="teams" id="teams" role="tablist" aria-label="Team"></div>
   <div id="banners"></div>
 
   <h2>Rollerna</h2>
@@ -182,7 +197,8 @@ function renderAgents(d) {
   $("agents").innerHTML = d.agents.map(a => {
     const st = a.state.split(" ")[0];
     let doing = "";
-    if (a.state === "väntar") doing = `<b>väntar på tavlan</b> sedan ${ago(d.now - a.waiting_since)}`;
+    if (a.state === "väntar" && a.shell_wait) doing = `<b>väntar på tavlan</b> ingen modell körs`;
+    else if (a.state === "väntar") doing = `<b>väntar på tavlan</b> sedan ${ago(d.now - a.waiting_since)}`;
     else if (a.doing) doing = `<b>${esc(a.doing.name)}</b> ${esc(a.doing.detail)}`;
     else if (a.state === "ingen session") doing = `<b>ingen session hittad för ${esc(a.name)}/</b>`;
     const engine = a.kind ? `${a.kind === "codex" ? "Codex" : "Claude"}${a.model ? " · " + esc(a.model) : ""}` : "";
@@ -257,8 +273,8 @@ function renderFeed(d) {
 }
 
 function render(d) {
-  $("ws").textContent = d.workspace;
-  document.title = `${d.workspace} · agent-team`;
+  $("ws").textContent = d.label || d.workspace;
+  document.title = `${d.label || d.workspace} · agent-team`;
   const n = s => d.agents.filter(a => a.state === s).length;
   const yours = d.board.filter(r => r.status === "approved");
   $("summary").textContent = `${d.agents.length} roller · ${n("arbetar")} arbetar · ${n("väntar")} väntar · ${d.board.filter(r => !["done", "closed", "split"].includes(r.status)).length} öppna storyer`;
@@ -271,11 +287,43 @@ function render(d) {
   $("foot").textContent = `tavlan läst ${d.board_at ? ago(d.now - d.board_at) + " sedan" : "–"} (var ${d.board_every}:e s) · roller och händelser varannan sekund · ${d.tmux ? "tmux hittad" : "ingen tmux — processkoll av"} · körs lokalt, inget skickas ut`;
 }
 
-let last = null;
+let last = null, team = null, teams = [];
+try { team = decodeURIComponent((location.hash.match(/team=([^&]+)/) || [])[1] || "") || localStorage.getItem("at-team"); } catch (e) {}
+
+function renderTeams() {
+  if (teams.length < 2) { $("teams").innerHTML = ""; return; }
+  $("teams").innerHTML = teams.map(t => {
+    const bits = [];
+    if (t.yours) bits.push(`<span class="tyou">${t.yours} din tur</span>`);
+    if (t.attention) bits.push(`<span class="tbad">⚠ ${t.attention}</span>`);
+    return `<button class="team ${t.id === team ? "on" : ""}" role="tab" aria-selected="${t.id === team}" data-team="${esc(t.id)}">
+      <span class="tdot ${t.working ? "work" : ""}"></span><b>${esc(t.label)}</b>
+      <span class="tmeta">${t.working}/${t.agents} arbetar · ${t.open} öppna</span>${bits.join("")}</button>`;
+  }).join("");
+}
+async function loadTeams() {
+  try {
+    const r = await (await fetch("/api/teams", { cache: "no-store" })).json();
+    teams = r.teams || [];
+    if (!team || !teams.some(t => t.id === team)) team = r.default;
+    renderTeams();
+  } catch (e) {}
+}
+function pick(id) {
+  if (id === team) return;
+  team = id; last = null;
+  try { localStorage.setItem("at-team", id); history.replaceState(null, "", "#team=" + encodeURIComponent(id)); } catch (e) {}
+  renderTeams(); tick();
+}
+$("teams").addEventListener("click", e => { const b = e.target.closest("[data-team]"); if (b) pick(b.dataset.team); });
+
 async function tick() {
   try {
-    const r = await fetch("/api/state", { cache: "no-store" });
-    last = await r.json();
+    const want = team;
+    const r = await fetch("/api/state" + (team ? "?team=" + encodeURIComponent(team) : ""), { cache: "no-store" });
+    const d = await r.json();
+    if (want !== team) return;   // the picker changed while this was in flight
+    last = d;
     if (last.error) throw new Error(last.error);
     render(last);
   } catch (e) {
@@ -287,7 +335,7 @@ $("windows").addEventListener("click", e => {
   win = h; try { localStorage.setItem("at-win", h); } catch (err) {}
   if (last) renderTimeline(last);
 });
-$("refresh").addEventListener("click", async () => { await fetch("/api/refresh", { method: "POST" }); setTimeout(tick, 4000); });
+$("refresh").addEventListener("click", async () => { await fetch("/api/refresh" + (team ? "?team=" + encodeURIComponent(team) : ""), { method: "POST" }); setTimeout(tick, 4000); });
 const THEMES = [["auto", "Auto"], ["light", "Ljust"], ["dark", "Mörkt"]];
 let theme = "auto";
 try { theme = localStorage.getItem("at-theme") || "auto"; } catch (e) {}
@@ -302,7 +350,7 @@ $("theme").addEventListener("click", e => {
   applyTheme();
 });
 applyTheme();
-tick(); setInterval(tick, 2000);
+loadTeams().then(tick); setInterval(tick, 2000); setInterval(loadTeams, 5000);
 </script>
 </body>
 </html>

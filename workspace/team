@@ -11,7 +11,7 @@
 #   ./team pull              git pull (+ submodules) in every clone
 #   ./team open [--tmux]     open every role in its own window (macOS Terminal, 2×2 grid) or a tmux session
 #   ./team board             the board, refreshed every 30 s — keep it in a corner
-#   ./team monitor [--port N] [--no-open]   live page in the browser: roles, stories, timeline (local only)
+#   ./team monitor [--port N] [--no-open] [--only]   live page: roles, stories, timeline; switch between every *-team workspace next to this one
 #
 # Any extra arguments after a role are passed to claude / codex.
 # The team itself lives in each clone at .claude/skills/agent-team (a pinned submodule).
