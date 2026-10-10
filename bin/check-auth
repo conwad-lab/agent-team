@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# check-auth — refuse to start a Claude role on anything but the seat's subscription login.
+# Claude Code prefers ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY and apiKeyHelper over the
+# claude.ai (Max) login, and in `claude -p` it uses an API key without asking. A key that
+# leaks into a role's environment bills API credits instead of the seat, silently.
+#
+# usage: check-auth [clone-root]     (default: the current git clone)
+# exit 0 = clean, exit 1 = a credential that would bypass the seat is present (reasons on stderr)
+set -u
+ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+bad=()
+
+for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do
+  [ -n "${!v:-}" ] && bad+=("$v is set in the environment")
+done
+for v in CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY; do
+  [ -n "${!v:-}" ] && bad+=("$v is set (a cloud provider bills per token, not the seat)")
+done
+for f in "$HOME/.claude/settings.json" "$ROOT/.claude/settings.json" "$ROOT/.claude/settings.local.json"; do
+  [ -f "$f" ] && grep -q '"apiKeyHelper"[[:space:]]*:' "$f" && bad+=("apiKeyHelper is set in $f")
+done
+
+[ ${#bad[@]} -eq 0 ] && exit 0
+{
+  echo "check-auth: refusing to start — this role must run on the seat's Max login, not an API key."
+  printf '  - %s\n' "${bad[@]}"
+  echo "  Remove it from the role's environment/settings, then restart the role. Check with: claude /status"
+} >&2
+exit 1

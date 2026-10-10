@@ -17,6 +17,15 @@ case "$here" in
   *) echo "warning: starting the $role in clone '$here' — each role should have its own clone" >&2 ;;
 esac
 
+# Max only: a role never runs on an API key (bin/check-auth). Strip the two variables Claude Code
+# would prefer over the seat's login, then refuse to start a Claude role if anything else would.
+for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do
+  if [ -n "${!v:-}" ]; then echo "note: removed $v from the $role's environment (max-only)" >&2; unset "$v"; fi
+done
+if [ "$(basename "${1:-}")" = claude ]; then
+  "$SKILL/bin/check-auth" "$ROOT" || exit 1
+fi
+
 git pull -q --rebase --autostash 2>/dev/null || echo "warning: git pull failed — check the remote before working" >&2
 git submodule update -q --init --recursive 2>/dev/null || true
 
