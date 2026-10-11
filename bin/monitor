@@ -91,6 +91,12 @@ def is_workspace(path):
     return os.path.isdir(os.path.join(path, "po", ".git"))
 
 
+def is_team(path):
+    """A workspace an agent team runs in: po/ has the team's .team/ folder or the team submodule."""
+    po = os.path.join(path, "po")
+    return is_workspace(path) and (os.path.isdir(os.path.join(po, ".team")) or os.path.isdir(os.path.join(po, TEAM_BIN)))
+
+
 def find_workspaces(path, only=False):
     """The workspace at path plus its siblings, or every workspace inside path."""
     path = os.path.realpath(os.path.expanduser(path))
@@ -104,7 +110,7 @@ def find_workspaces(path, only=False):
     try:
         for name in sorted(os.listdir(parent)):
             d = os.path.join(parent, name)
-            if is_workspace(d) and os.path.isdir(os.path.join(d, "po", TEAM_BIN)):
+            if is_team(d):
                 found.append(d)
     except OSError:
         pass
@@ -557,17 +563,47 @@ class Monitor:
 # ---------------------------------------------------------------- http
 
 class App:
-    def __init__(self, paths):
+    """All teams the monitor follows. Looks for new ones every REDISCOVER_EVERY seconds, so a team
+    started after the monitor (./open-team.sh in a new *-team folder) shows up without a restart."""
+
+    REDISCOVER_EVERY = 30
+
+    def __init__(self, root, only=False):
+        self.root, self.only = root, only
         self.sessions = Sessions()
         self.teams = {}
-        for p in paths:
-            m = Monitor(p, self.sessions)
-            self.teams[m.ws.id] = m
-        self.default = next(iter(self.teams))
+        self.lock = threading.Lock()
+        self.rediscover()
+        self.default = next(iter(self.teams)) if self.teams else None
+
+    def rediscover(self):
+        added = []
+        for p in find_workspaces(self.root, self.only):
+            tid = os.path.basename(os.path.realpath(p))
+            with self.lock:
+                if tid in self.teams:
+                    continue
+                m = Monitor(p, self.sessions)
+                self.teams[m.ws.id] = m
+            if getattr(self, "_started", False):
+                m.board.start()
+            added.append(m.ws.label)
+        return added
 
     def start(self):
-        for m in self.teams.values():
+        self._started = True
+        for m in list(self.teams.values()):
             m.board.start()
+
+        def loop():
+            while True:
+                time.sleep(self.REDISCOVER_EVERY)
+                try:
+                    for label in self.rediscover():
+                        print(f"  + {label}", flush=True)
+                except Exception:
+                    pass
+        threading.Thread(target=loop, daemon=True).start()
 
     def get(self, query):
         from urllib.parse import parse_qs
@@ -605,7 +641,7 @@ def make_handler(app, page):
                     self._json(mon.state)
             elif path == "/api/teams":
                 self._json(lambda: {"default": app.default,
-                                    "teams": [m.summary() for m in app.teams.values()]})
+                                    "teams": [m.summary() for m in list(app.teams.values())]})
             elif path in ("/", "/index.html"):
                 self._send(200, page, "text/html; charset=utf-8")
             else:
@@ -632,10 +668,9 @@ def main():
     a = ap.parse_args()
     if not a.workspace:
         ap.error("point it at a workspace folder that holds po/, or a folder of them (or run ./team monitor)")
-    paths = find_workspaces(a.workspace, a.only)
-    if not paths:
+    app = App(a.workspace, a.only)
+    if not app.teams:
         ap.error(f"no agent-team workspace (a folder with po/ in it) at or in {a.workspace}")
-    app = App(paths)
     app.start()
     with open(os.path.join(BIN, "monitor.html"), encoding="utf-8") as f:
         page = f.read()
@@ -650,7 +685,7 @@ def main():
         raise SystemExit(f"no free port in {a.port}–{a.port + 19}")
     url = f"http://127.0.0.1:{srv.server_address[1]}/"
     names = ", ".join(m.ws.label for m in app.teams.values())
-    print(f"agent-team monitor: {names}\n  {url}\n  Ctrl-C to stop")
+    print(f"agent-team monitor: {names}\n  {url}\n  new teams next to these show up on their own\n  Ctrl-C to stop")
     if not a.no_open:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
