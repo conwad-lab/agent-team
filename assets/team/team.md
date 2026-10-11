@@ -12,6 +12,7 @@ models:
 # One seat = one human's subscriptions; every commit carries `Seat: <name>`.
 seats:
   {{HUMAN_SEAT}}: { claude: max, codex: plus }
+auth: max-only — ingen API-nyckel i rollernas miljö (bin/check-auth stoppar starten)
 
 merge: human
 

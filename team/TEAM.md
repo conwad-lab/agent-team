@@ -72,7 +72,7 @@ Everything project-specific — test commands, CI-only checks, review checks, wh
 
 ## Seats
 
-A seat is one human's subscriptions (`seats:` in `.team/team.md`). Every role run is billed to a seat, and every commit carries a `Seat: <name>` trailer, added by the launcher. A second builder brings a second seat, never an API key. Open-weight models (the second reviewer) give parallel checks only — never a verdict, never client data.
+A seat is one human's subscriptions (`seats:` in `.team/team.md`). Every role run is billed to a seat, and every commit carries a `Seat: <name>` trailer, added by the launcher. A second builder brings a second seat, never an API key. The launcher enforces it: it removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from every role's environment and refuses to start a Claude role while an `apiKeyHelper` or a cloud-provider switch (`CLAUDE_CODE_USE_BEDROCK/VERTEX/FOUNDRY`) is set (`bin/check-auth`). Open-weight models (the second reviewer) give parallel checks only — never a verdict, never client data.
 
 ## Review is a dialogue
 

@@ -44,11 +44,13 @@ Inside any clone: `/agent-team upgrade` — or by hand, `git submodule update --
 SKILL.md          what Claude reads when you run /agent-team
 bin/              po architect coder reviewer  — launchers (pull, pick role file, start)
                   status                       — the board, derived from git + GitHub
+                  check-auth                   — max-only: no role starts on an API key (run by _start)
 team/TEAM.md      the rulebook every agent reads
 team/roles/       product-owner architect coder reviewer
 team/templates/   story plan note review
 assets/           per-project files init writes: AGENTS.md, CLAUDE.md, .team/
 scripts/          init.sh, scaffold.sh
+tests/            check-auth.test.sh  (bash tests/check-auth.test.sh)
 workspace/team    the ./team launcher
 ```
 
