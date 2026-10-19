@@ -34,6 +34,33 @@ cd myproj-team
 
 By hand, the same thing is: `gh repo create`, `git clone … po`, `git submodule add … .claude/skills/agent-team`, then `/agent-team init` inside `po/`.
 
+## Vercel
+
+Board commits can otherwise create full deployments of unchanged application code.
+`bin/vercel-ignore-build` skips a build only when a non-empty, verified diff from
+`VERCEL_GIT_PREVIOUS_SHA` to `VERCEL_GIT_COMMIT_SHA` changes paths under the root
+`.team/` directory alone. It checks the whole interval, including deletions and
+both sides of renames. Production and preview use the same rule. Code changes,
+missing revisions, empty diffs, unknown environments and failed checks build.
+Vercel's exit contract is 0 to skip, 1 to build.
+
+Set this in the Vercel project dashboard:
+
+```text
+Settings → Build and Deployment → Ignored Build Step: bash .claude/skills/agent-team/bin/vercel-ignore-build
+```
+
+Vercel must clone the public agent-team submodule. A missing submodule makes the
+command fail, so Vercel builds. Init prints the setting when it finds `vercel.json`
+or `.vercel/`; it never creates or edits `vercel.json` or changes live settings.
+
+E2E jobs that look for a preview at the PR head need a fallback when a board-only
+commit skips that preview. They may use the latest built preview only after
+verifying that the **entire diff from its revision to the PR head** changes only
+root `.team/` paths. If that proof fails, do not use the old preview. See
+mondmodel's `sovereign-deploy.yml`, step “Get Vercel preview URL”, for this pattern.
+This filter does not install an E2E fallback in existing projects.
+
 ## Upgrading a project's team
 
 Inside any clone: `/agent-team upgrade` — or by hand, `git submodule update --remote .claude/skills/agent-team`, commit, push. Every project records its pinned version in `.team/team.md` and in the scaffold commit.
@@ -44,13 +71,15 @@ Inside any clone: `/agent-team upgrade` — or by hand, `git submodule update --
 SKILL.md          what Claude reads when you run /agent-team
 bin/              po architect coder reviewer  — launchers (pull, pick role file, start)
                   status                       — the board, derived from git + GitHub
+                  vercel-ignore-build          — skip proven board-only Vercel builds
                   check-auth                   — max-only: no role starts on an API key (run by _start)
 team/TEAM.md      the rulebook every agent reads
 team/roles/       product-owner architect coder reviewer
 team/templates/   story plan note review
 assets/           per-project files init writes: AGENTS.md, CLAUDE.md, .team/
-scripts/          init.sh, scaffold.sh
-tests/            check-auth.test.sh  (bash tests/check-auth.test.sh)
+scripts/          init.sh, scaffold.sh, vercel-hint.sh
+tests/            check-auth.test.sh, vercel-ignore-build.test.sh, init-vercel.test.sh
+                  run each with bash tests/<name>.test.sh
 workspace/team    the ./team launcher
 ```
 

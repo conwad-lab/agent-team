@@ -79,6 +79,8 @@ for r in "architect|Architect (Fable 5.1)" "coder|Coder (Codex)" "reviewer|Revie
   echo "cloned $folder/  (author: $author)"
 done
 
+bash "$SKILL_DIR/scripts/vercel-hint.sh" "$ROOT"
+
 # launcher
 cp "$SKILL_DIR/workspace/team.shim" "$WS/team"
 for f in open-team.sh stop-team.sh; do cp "$SKILL_DIR/workspace/$f" "$WS/$f"; chmod +x "$WS/$f"; done
