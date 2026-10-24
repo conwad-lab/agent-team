@@ -34,6 +34,12 @@ cd myproj-team
 
 By hand, the same thing is: `gh repo create`, `git clone … po`, `git submodule add … .claude/skills/agent-team`, then `/agent-team init` inside `po/`.
 
+## Cloud mode (v0.7)
+
+`mode: cloud` in `.team/team.md` runs the same team without clones, terminals or hand-offs by the human: the Claude Code Projects coordinator is PO + Architect, a Claude thread per story builds, Codex attacks every round on GitHub (automatic review and `@codex review`, three focused angles on **Adversarial paths**), and a separate Claude thread without the planning context judges with evidence per acceptance criterion and merges when `merge: auto` allows. A weekly routine reads the project's **Signal sources** and proposes ORDER rows under **Förslag**. See [team/CLOUD.md](team/CLOUD.md); paste [assets/cloud/project-instructions.md](assets/cloud/project-instructions.md) as the project's instructions. `skills/distill-feedback/` writes the human's principles into `REVIEW.md` for the Judge.
+
+Local mode is unchanged.
+
 ## Vercel
 
 Board commits can otherwise create full deployments of unchanged application code.

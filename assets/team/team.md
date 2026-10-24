@@ -15,6 +15,10 @@ seats:
 auth: max-only — ingen API-nyckel i rollernas miljö (bin/check-auth stoppar starten)
 
 merge: human
+# mode: local (four clones, bin/wait-for) or cloud (Claude Code Projects + Codex on GitHub, see team/CLOUD.md)
+mode: local
+# cloud only: who builds. claude = a Claude thread; codex = an @codex task comment (only once that works)
+builder: claude
 
 team: .claude/skills/agent-team @ {{SKILL_VERSION}}
 <!-- upgrade with /agent-team upgrade, or: git submodule update --remote .claude/skills/agent-team -->

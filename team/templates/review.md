@@ -18,6 +18,15 @@ PR: #<n> · YYYY-MM-DD
 ## Nits
 -
 
+## Evidence
+| Acceptance criterion | Shown by (test, command + output, screenshot) | Result |
+|---|---|---|
+| | | |
+
+## Codex findings
+<!-- Cloud mode: every Codex finding and every Builder dispute, one line each: valid — fixed · valid — still open (→ Must fix) · not valid — <reason>. Local mode: the second reviewer's findings, if any. -->
+-
+
 ## What I checked
 - tests run:
 - tried to break:

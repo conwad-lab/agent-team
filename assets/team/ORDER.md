@@ -9,8 +9,13 @@ Regler:
 - Oklar rad: PO frågar människan i sin ruta och går vidare med nästa rad som är klar.
 - Beroenden: skriv `(efter NNN)` på raden; PO parkerar storyn som `_NNN-slug.md` med raden `parked-until: NNN` tills NNN är mergad.
 - En rad som ändrar regelboken (AGENTS.md, .team/team.md, REVIEW.md, .team/roles/) säger det uttryckligen.
+- En rad får vara ett utfall i stället för en uppgift ("fler bokade samtal från sajten"). PO föreslår då de stories som tjänar utfallet.
 
 ## Kö
+
+## Förslag
+
+Rutinen och PO skriver förslag hit, en rad var med underlaget. PO tar inte en rad härifrån förrän människan flyttat den till **Kö** eller sagt ja.
 
 ## Väntar på människan
 
