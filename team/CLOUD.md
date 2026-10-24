@@ -9,7 +9,7 @@ The design goal is that no step needs the human's hands. The human picks outcome
 | Role | Runs as | Writes | Never |
 |---|---|---|---|
 | PO + Architect | **Coordinator**: the Projects coordinator (Claude) | `.team/backlog/`, `.team/plans/`, `.team/ORDER.md` on main; starts Builder and Judge threads | code, reviews, merging |
-| Coder | **Builder**: one Claude thread per story | code + tests on `feat/NNN-slug`, the PR, `.team/reviews/NNN-slug.response.md`, `@codex review` requests | the rulebook, scope, review files, merging |
+| Coder | **Builder**: one Claude thread per story | code + tests on `feat/NNN-slug`, the PR, `.team/reviews/NNN-slug.response.md`, `@codex review` requests | the rulebook (unless the story's first line is `Rulebook story.`), scope, review files, merging |
 | Attacker | **Codex** on GitHub (automatic review + `@codex review` requests) | GitHub reviews on the PR | a verdict |
 | Reviewer | **Judge**: one Claude thread per PR, started without the planning context | `.team/reviews/NNN-slug.md` on the PR branch, PR comments, the merge | code |
 | Human | — | outcome rows in ORDER.md, answers on decision cards, the rulebook, merges on human-merge paths | — |
@@ -26,7 +26,7 @@ outcome row → story + plan (main) → Builder thread → PR → Codex attacks 
 
 1. **Coordinator as PO.** Takes the next row under **Kö**. A row may be an outcome ("more booked scoping calls from the site") rather than a task: then propose the stories that serve it, write the first one, and say which others you plan in the story's Log. Writes `.team/backlog/NNN-slug.md` with a filled-in `## Signal`, ticks the row, pushes.
 2. **Coordinator as Architect.** Reads the code, runs the **Baseline**, writes `.team/plans/NNN-slug.md`, pushes. Too big → `verdict: needs-split` and split it yourself as PO.
-3. **Coordinator starts the Builder thread** with: the repo, the story and plan paths, and "follow `.claude/skills/agent-team/team/CLOUD.md` § Builder". One Builder per story; one story in flight per repo unless the human's row says otherwise.
+3. **Coordinator starts the Builder thread** with: the repo, the story and plan paths, and "follow `.claude/skills/agent-team/team/CLOUD.md` § Builder". One Builder per story; one story in flight per repo unless the human's row says otherwise. A story is in flight until its PR is merged or closed.
 4. **Builder** (below) opens the PR and drives it through Codex rounds until no Must fix is open and CI is green, then asks the Coordinator for a Judge.
 5. **Coordinator starts the Judge thread** with only: the repo, the PR number, and "follow `.claude/skills/agent-team/team/CLOUD.md` § Judge". No summary of the plan or of the Builder's work: the Judge reads the files.
 6. **Judge** (below) rules. `request-changes` goes back to the Builder thread, which wakes on the PR comment. `approve` → merge or hand to the human. `escalate` → the Coordinator writes the Operatör line and puts the dispute to the human as a decision.
@@ -42,9 +42,9 @@ outcome row → story + plan (main) → Builder thread → PR → Codex attacks 
    - `@codex review — failure paths: errors, empty and malformed input, concurrency, retries, rollbacks. Number findings M/S/N with file:line.`
    - `@codex review — story fit: does the diff meet every acceptance criterion in .team/backlog/NNN-slug.md, and does it do anything the story did not ask for? Number findings M/S/N with file:line.`
 4. **Answer every Codex finding** that is a P0/P1 or numbered M/S, in `.team/reviews/NNN-slug.response.md` (`## Codex round N — YYYY-MM-DD`, one line per finding: `fixed in <sha>` or `disputed — <reason>`). Codex is an attacker, not an authority: dispute what is wrong, with a reason the Judge can check. Never change code only to make a finding go away.
-5. **Stop the rounds** when the latest Codex review raises no new P0/P1 or Must fix, every earlier one is answered, and the required checks are green. Three Codex rounds without getting there is also a stop: say so. Then message the Coordinator: `NNN ready for judge: PR #<n>, <rounds> Codex rounds, <open disputes or "no open disputes">`.
-6. **On `request-changes` from the Judge** (you wake on the comment): answer every Judge M and S in the same response file under `## Judge round N`, fix, push, request one Codex round on the change, then message the Coordinator again.
-7. End your watch when the PR is merged or the Judge escalates.
+5. **Stop the rounds** when every Codex review you requested for the current head commit has finished (a review posted on that commit, or Codex's 👍 on your request), none of them raises a new P0/P1 or Must fix, every earlier finding is answered, and the required checks are green. A review still running (👀) means wait for it: its result wakes you. Three Codex rounds without getting there is also a stop: say so. Then message the Coordinator: `NNN ready for judge: PR #<n>, <rounds> Codex rounds, <open disputes or "no open disputes">`.
+6. **On `request-changes` from the Judge** (you wake on the comment): answer every Judge M and S in the same response file under `## Judge round N`, fix, push, request one Codex round on the change, and message the Coordinator again only when step 5 holds for the new head.
+7. End your watch when the PR is merged, closed without merge, or the Judge escalates.
 
 ## Judge
 
@@ -52,9 +52,9 @@ outcome row → story + plan (main) → Builder thread → PR → Codex attacks 
 2. Run every **Test before commit** check yourself, and the screenshots, previews or queries Team settings names. **Every acceptance criterion gets evidence** in the review file: a test name and its result, a command and its output, or a screenshot. A criterion you could not show is a Must fix, or an Operatör line if only the human can show it.
 3. **Rule on Codex.** List every Codex finding the Builder answered, with your ruling: `valid — fixed`, `valid — still open` (becomes your Must fix), or `not valid — <one sentence>`. Do the same for the Builder's disputes. Then try to break what the attackers did not cover; you do not need to re-read lines they already read unless you doubt them.
 4. Write `.team/reviews/NNN-slug.md` from the template, `verdict:` as in `roles/reviewer.md`. Commit it to the PR branch, push, and post it as a PR comment (`gh pr review <n> --comment --body-file …`).
-5. **On approve:** if `.team/team.md` says `merge: auto` and the diff touches no **Human-merge paths**, merge with `gh pr merge <n> --squash --delete-branch` (never `--admin`). Otherwise leave it open and message the Coordinator `NNN approved, needs the human: <which path or rule>`. A refused merge (check pending, conflict) is handled as in `roles/reviewer.md` step 6.
+5. **On approve:** if `.team/team.md` says `merge: auto` and the diff touches no **Human-merge paths**, merge with `gh pr merge <n> --squash --delete-branch` (never `--admin`). Your own review commit may start new checks: if required checks are pending, use `gh pr merge <n> --auto --squash --delete-branch` so GitHub merges when they pass; where auto-merge is not enabled for the repo, keep watching and merge when the checks' result wakes you. Pending checks are never a reason to hand the PR to the human. A failing check or a conflict with main goes back to the Builder as `request-changes` with that one Must fix. Only a diff on **Human-merge paths**, or `merge: human`, is left open: message the Coordinator `NNN approved, needs the human: <which path or rule>`. This step replaces `roles/reviewer.md` step 6 in cloud mode.
 6. **Escalate** as in `roles/reviewer.md`: a Must fix still disputed after your third round. Message the Coordinator.
-7. You hold one PR. Stop when it is merged, handed to the human, or escalated.
+7. You hold one PR. Stop when it is merged, closed without merge, handed to the human, or escalated.
 
 ## Status
 
@@ -71,6 +71,7 @@ Read off GitHub, keyed on `NNN:` in issue and PR titles.
 | `escalate` | escalated | human, via a decision |
 | `approve`, human-merge path or `merge: human` | approved | human merges |
 | PR merged | done | Coordinator checks the Signal |
+| PR closed without merge | dropped | Coordinator: one Log line in the story with the reason; the repo's slot is free for the next story |
 
 ## Routines
 
