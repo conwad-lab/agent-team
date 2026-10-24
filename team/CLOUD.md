@@ -36,7 +36,8 @@ outcome row → story + plan (main) → Builder thread → PR → Codex attacks 
 
 1. Branch `feat/NNN-slug` from main, push it at once. Read the story, the plan, `AGENTS.md`, `TEAM.md` and `roles/coder.md` (that file holds, with this section winning where they differ).
 2. Build the plan with tests. Run **Test before commit** before every push. Open the PR: title `NNN: <story title>`, body as in `roles/coder.md`, plus one line per acceptance criterion saying how it was shown.
-3. **Request Codex.** Codex's automatic review fires when the PR opens. On every later push that changes code, post one comment: `@codex review` followed by the focus for that round (the findings you answered, the files you changed). If the diff touches **Adversarial paths** in Team settings, the first round also gets three separate comments, one per angle:
+3. **Request Codex.** Codex reviews on its own only when a PR is opened for review or a draft is marked ready, never on a later push (checked 2026-10-24). So post `@codex review` yourself: once when the PR opens (always, also on a draft), and once after every push that changes code, followed by the focus for that round (the findings you answered, the files you changed). Codex reacts 👀 while it runs and 👍 when it has no findings. If the diff touches **Adversarial paths** in Team settings, the first round also gets three separate comments, one per angle:
+   - `@codex security review` (Codex's own security review).
    - `@codex review — security: authorization, input validation, secrets, data exposure. Number findings M/S/N with file:line.`
    - `@codex review — failure paths: errors, empty and malformed input, concurrency, retries, rollbacks. Number findings M/S/N with file:line.`
    - `@codex review — story fit: does the diff meet every acceptance criterion in .team/backlog/NNN-slug.md, and does it do anything the story did not ask for? Number findings M/S/N with file:line.`
