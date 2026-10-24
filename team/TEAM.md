@@ -17,6 +17,10 @@ The team itself is a git submodule pinned to a version; the project's own files 
 
 Each role works in its own clone of this repo, in its own terminal, unattended: the PO sits in a loop on `bin/po-wait`, Architect, Coder and Reviewer on `bin/wait-for <role>`,, which returns the moment the board has something in their lane. Nobody looks at anyone else's working directory. **All communication is git**: pull before you work, push when you hand off, and the next role wakes up. The human talks to the PO and merges. Always.
 
+## Modes
+
+`.team/team.md` says `mode: local` or `mode: cloud`. Local is what this file describes: four clones, four terminals, `bin/wait-for`. Cloud runs the same roles as Claude Code Projects threads plus Codex on GitHub, with no launcher and no human hand-offs: **read `$TEAM/CLOUD.md` right after this file; where they disagree, CLOUD.md wins.**
+
 ## How work flows
 
 ```
