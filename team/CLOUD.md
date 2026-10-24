@@ -73,7 +73,15 @@ Read off GitHub, keyed on `NNN:` in issue and PR titles.
 
 ## Routines
 
-The Coordinator keeps one scheduled routine per project (weekly unless Team settings says otherwise). It reads the sources listed under **Signal sources** in Team settings (runtime errors, failed Actions runs, Actions minutes, Dependabot alerts, analytics) and writes what deserves work as rows under **Förslag** in `.team/ORDER.md`, one line each with the evidence. It never writes under **Kö**: the human moves a row from Förslag to Kö, or answers "yes" in the project chat and the Coordinator moves it. The same run checks the `## Signal` of stories merged since the last run.
+The Coordinator keeps one scheduled routine per project (weekly unless Team settings says otherwise). It reads the sources listed under **Signal sources** in Team settings (runtime errors, failed Actions runs, Actions minutes, Dependabot alerts, analytics) and writes what deserves work as rows under **Förslag** in `.team/ORDER.md`, one line each with the evidence. It never writes under **Kö**, with one exception: a proposal of a kind listed under **Auto-queue** in Team settings (for example a Dependabot patch update, a broken link, a failing scheduled job) goes straight to Kö with its evidence, because checking it costs the human more than a wrong one would. Everything else waits in Förslag until the human moves it or answers "yes" in the project chat. The same run checks the `## Signal` of stories merged since the last run.
+
+## What reaches the human
+
+Reading agent output is where the human's time goes, and an agent waiting for a human is an agent doing nothing. So:
+
+- No step waits for the human except a decision (a decision card with a recommendation), a human-merge path, and a Förslag row outside Auto-queue. Everything else proceeds and is reported after.
+- One digest, not a stream: the Coordinator sends one short message per day with activity (merged, waiting on the human, escalated), and nothing on quiet days. Builder and Judge do not message the human.
+- Every item that needs the human says, in its first line, what to decide or do and what happens if nothing is done.
 
 ## The human's taste
 

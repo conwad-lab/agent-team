@@ -34,6 +34,7 @@ This repo is worked on by an agent team. The team's rulebook, roles and template
 - **Docs to verify:** <!-- extra files verify-docs should check -->
 - **Adversarial paths:** none <!-- cloud mode: paths whose PRs get three focused Codex reviews (security, failure paths, story fit) -->
 - **Human-merge paths:** <!-- cloud mode: paths the Judge never merges even with merge: auto — money, legal text, migrations, auth, the rulebook -->
+- **Auto-queue:** none <!-- cloud mode: kinds of routine proposal that go straight to Kö, e.g. Dependabot patch updates, broken links -->
 - **Signal sources:** <!-- cloud mode: what the weekly routine reads — e.g. Vercel runtime errors, failed Actions runs, Actions minutes, Dependabot, analytics -->
 
 ## Code Review Rules
