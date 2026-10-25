@@ -50,7 +50,7 @@ def default_ref(repo):
 def parse_review(text):
     """Findings in order of first appearance, with the Reviewer's later verdict on each."""
     found, later, nits, second = {}, {}, 0, {"sections": 0, "with_findings": 0}
-    in_round = in_second = False
+    rnd, in_second = 0, False  # rnd: re-review rounds seen so far; 0 is the first review
     second_lines = []
 
     def close_second():
@@ -64,13 +64,13 @@ def parse_review(text):
     def mark(key, rest):
         if key not in found:
             found[key] = rest.strip()[:160]
-        elif in_round:
+        elif rnd:
             if DROPPED.search(rest):
-                later[key] = "dropped"
-            elif CLOSED.search(rest):
-                later[key] = "closed"
+                later[key] = ("dropped", rnd)
+            elif (c := CLOSED.search(rest)):
+                later[key] = ("accepted" if c.group(1).lower() == "accepted" else "closed", rnd)
             elif STILL.search(rest):
-                later[key] = "open"
+                later[key] = ("open", rnd)
 
     for line in text.splitlines():
         if HEADING.match(line):
@@ -78,12 +78,12 @@ def parse_review(text):
             in_second = bool(SECOND.match(line))
             second_lines = []
             if ROUND.match(line):
-                in_round = True
+                rnd += 1
             continue
         if in_second:
             second_lines.append(line)
             continue
-        if NIT.match(line) and not in_round:
+        if NIT.match(line) and not rnd:
             nits += 1
             continue
         m = FINDING.match(line)
@@ -100,17 +100,29 @@ def parse_review(text):
 
 
 def parse_response(text):
-    answers = {}
+    """The Coder's last answer per finding, with the response round it was given in (1, 2 ...)."""
+    answers, rnd = {}, 1
     for line in text.splitlines():
+        if HEADING.match(line):
+            if (n := re.search(r"\bRound\s+(\d+)", line, re.I)):
+                rnd = int(n.group(1))
+            continue
         m = ANSWER.match(line)
         if m:
-            answers[m.group(1) + m.group(2)] = m.group(3).lower()
+            answers[m.group(1) + m.group(2)] = (m.group(3).lower(), rnd)
     return answers
 
 
-def outcome(reviewer, coder):
-    if reviewer == "closed" and coder == "disputed":
-        return "dropped"  # "accepted" on a disputed point accepts the reason, not a fix
+def outcome(reviewed, answered):
+    """reviewed: (verdict, re-review round) or None; answered: (answer, response round) or None.
+    Response round k answers the review of round k-1 and is judged in re-review round k, so an
+    answer newer than the Reviewer's last word (k > re-review round) is not judged yet."""
+    reviewer, seen = reviewed or (None, 0)
+    coder, given = answered or (None, 0)
+    if reviewer and given > seen:
+        reviewer = None
+    if reviewer == "accepted":  # "accepted" on a disputed point accepts the reason, not a fix
+        reviewer = "dropped" if coder == "disputed" else "closed"
     if reviewer == "closed":
         return "verified"
     if reviewer == "dropped":

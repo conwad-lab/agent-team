@@ -58,6 +58,26 @@ verdict: approve
 ## Codex findings
 - valid — fixed: missing nil check.
 R4
+# 004: M1 disputed but then fixed and verified; S1 still open in round 2, fixed in response round 2
+cat > "$R/004-order.md" <<'R5'
+---
+verdict: approve
+---
+## Must fix
+- M1 `e.py:2` — wrong default.
+## Should fix
+- S1 `e.py:8` — log the retry.
+## Round 2
+- M1 — fixed, verified by test.
+- S1 — still open, the retry is not logged.
+R5
+cat > "$R/004-order.response.md" <<'R6'
+## Round 1
+- M1: disputed — the default is documented.
+- S1: fixed in 111aaa — logged.
+## Round 2
+- S1: fixed in 222bbb — logged on the retry path too.
+R6
 echo x > "$R/.gitkeep"
 git -C "$T/po" add -A && git -C "$T/po" -c user.name=t -c user.email=t@t commit -qm reviews && git -C "$T/po" push -q origin HEAD:main 2>/dev/null
 git -C "$T/po" remote set-head origin main >/dev/null 2>&1 || git -C "$T/po" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
@@ -66,7 +86,7 @@ J="$(python3 "$SKILL/bin/hits" "$T/po" --json)" || nok "hits runs"
 get() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)" <<<"$J"; }
 outcome() { get "[f['outcome'] for s in d['stories'] if s['story']=='$1' for f in s['findings'] if f['id']=='$2'][0]"; }
 
-[ "$(get 'len(d["stories"])')" = 3 ] && ok "three stories, .gitkeep skipped" || nok "three stories (got $(get 'len(d["stories"])'))"
+[ "$(get 'len(d["stories"])')" = 4 ] && ok "four stories, .gitkeep skipped" || nok "four stories (got $(get 'len(d["stories"])'))"
 [ "$(outcome 001-two-rounds M1)" = verified ] && ok "fixed + closed = verified" || nok "M1 verified (got $(outcome 001-two-rounds M1))"
 [ "$(outcome 001-two-rounds S1)" = dropped ] && ok "dispute accepted = dropped" || nok "S1 dropped (got $(outcome 001-two-rounds S1))"
 [ "$(outcome 001-two-rounds S2)" = claimed ] && ok "**S2:** parsed; Coder's word only = claimed" || nok "S2 claimed (got $(outcome 001-two-rounds S2))"
@@ -75,6 +95,8 @@ outcome() { get "[f['outcome'] for s in d['stories'] if s['story']=='$1' for f i
 [ "$(outcome 003-list M2)" = verified ] && ok "\"M1, M2 — closed\" closes both" || nok "003 M2 verified (got $(outcome 003-list M2))"
 [ "$(get 'd["stories"][0]["unnumbered_nits"]')" = 1 ] && ok "Nit: lines counted apart" || nok "unnumbered nits"
 [ "$(get 'd["second_reviewer"]')" = "{'sections': 2, 'with_findings': 1}" ] && ok "empty second reviewer told apart from one with findings" || nok "second reviewer (got $(get 'd["second_reviewer"]'))"
+[ "$(outcome 004-order M1)" = verified ] && ok "disputed, then \"fixed, verified\" = verified" || nok "004 M1 verified (got $(outcome 004-order M1))"
+[ "$(outcome 004-order S1)" = claimed ] && ok "a fix answered after \"still open\" = claimed" || nok "004 S1 claimed (got $(outcome 004-order S1))"
 out="$(python3 "$SKILL/bin/hits" "$T/po")"
 grep -q "002-one-round S1 \[open\]" <<<"$out" && ok "report lists the finding that was not applied" || nok "report lists 002 S1"
 grep -q "001-two-rounds S1" <<<"$out" && nok "dropped finding not listed" || ok "dropped finding not listed"
