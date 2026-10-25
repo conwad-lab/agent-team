@@ -15,7 +15,7 @@ The team itself is a git submodule pinned to a version; the project's own files 
 | Reviewer | Fable 5.1 | `.team/reviews/` on the PR branch, reviews on GitHub | rewriting the code |
 | Human | — | `.team/ORDER.md` rows, the rulebook, merging (unless `merge: auto`) | — |
 
-Each role works in its own clone of this repo, in its own terminal, unattended: the PO sits in a loop on `bin/po-wait`, Architect, Coder and Reviewer on `bin/wait-for <role>`, which returns the moment the board has something in their lane. Nobody looks at anyone else's working directory. **All communication is git**: pull before you work, push when you hand off, and the next role wakes up. The human talks to the PO and merges, unless `.team/team.md` says `merge: auto` (cloud mode: see `CLOUD.md` § Human approval).
+Each role works in its own clone of this repo, in its own terminal, unattended: the PO sits in a loop on `bin/po-wait`, Architect, Coder and Reviewer on `bin/wait-for <role>`, which returns the moment the board has something in their lane. Nobody looks at anyone else's working directory. **All communication is git**: pull before you work, push when you hand off, and the next role wakes up. The human talks to the PO and merges, unless `.team/team.md` says `merge: auto`, in which case the Reviewer merges what it approves. Cloud mode: see `CLOUD.md` § Judge step 5.
 
 ## Modes
 
@@ -24,7 +24,7 @@ Each role works in its own clone of this repo, in its own terminal, unattended: 
 ## How work flows
 
 ```
-story → plan → branch + PR → review → fixes → human merges
+story → plan → branch + PR → review → fixes → merge (human, or Reviewer with merge: auto)
 ```
 
 1. **PO** writes `.team/backlog/NNN-slug.md` on main. Pushes.
@@ -32,7 +32,7 @@ story → plan → branch + PR → review → fixes → human merges
 3. **Coder** pulls, branches `feat/NNN-slug`, implements, tests, pushes, opens a PR with `gh pr create`.
 4. **Reviewer** pulls, `gh pr checkout`, reviews, writes `.team/reviews/NNN-slug.md` (with `verdict:`) on the PR branch, pushes. That push is the decision; a `gh pr review --comment` mirrors it on GitHub.
 5. **Coder** pulls the branch, fixes, pushes.
-6. **Human** merges.
+6. **Human** merges, or the **Reviewer** when `.team/team.md` says `merge: auto`.
 
 ## Status is derived, never written
 

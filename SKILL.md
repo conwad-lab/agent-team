@@ -72,4 +72,4 @@ Show the user what changed (`git -C .claude/skills/agent-team log --oneline <old
 - **Derived status, lanes.** Story → ready, plan → planned, branch → in-progress, PR → in-review, review decision → approved / changes-requested, merged → done. PO → `backlog/`, Architect → `plans/`, Coder → code + `notes/`, Reviewer → `reviews/`. Nothing to sync, nothing to conflict on.
 - **A different model reviews.** Different mistakes. Never the same family as the Coder.
 - **Short role files.** Frontier models get worse with over-prescriptive instructions. Per-project tweaks go in `AGENTS.md` § Team settings, never in `.team/roles/` overrides, which replace the whole role and hide upgrades.
-- **Agents sign their work** and never pose as the human. **The human merges**, or in cloud mode says yes on a decision card and the Judge merges.
+- **Agents sign their work** and never pose as the human. **The human merges**, unless `merge: auto` lets the Reviewer (cloud: the Judge) merge what it approves. In cloud mode Human-merge paths and rulebook PRs still wait for the human's yes on a decision card, and the Judge merges.
