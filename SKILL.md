@@ -15,8 +15,8 @@ One repo, one clone per role, one terminal per clone. All communication is git. 
 ├── team          launcher: ./team po | architect | coder [N] | reviewer | status | log | add coder
 ├── po/           clone · Product Owner · Fable 5.1 · writes .team/backlog/  on main
 ├── architect/    clone · Architect     · Fable 5.1 · writes .team/plans/    on main
-├── coder/        clone · Coder         · Opus 5    · code on feat/NNN-*, PRs, .team/notes/
-└── reviewer/     clone · Reviewer      · Codex     · .team/reviews/ on the PR branch + gh pr review
+├── coder/        clone · Coder         · Codex     · code on feat/NNN-*, PRs, .team/notes/
+└── reviewer/     clone · Reviewer      · Fable 5.1 · .team/reviews/ on the PR branch + gh pr review
 ```
 
 Inside every clone:
@@ -28,7 +28,7 @@ CLAUDE.md                    "read AGENTS.md"
 .team/                       team.md (human, models, pinned version) + the lanes: backlog/ plans/ notes/ reviews/
 ```
 
-Status is never written — it is derived from git and GitHub (`bin/status`). Each role writes only in its own lane, so nothing conflicts. Architect, Coder and Reviewer run unattended: `bin/wait-for <role>` blocks until the board has something in their lane, so a pushed story flows through plan → PR → review with no nudging. The human talks to the PO and merges.
+Status is never written — it is derived from git and GitHub (`bin/status`). Each role writes only in its own lane, so nothing conflicts. Architect, Coder and Reviewer run unattended: `bin/wait-for <role>` blocks until the board has something in their lane, so a pushed story flows through plan → PR → review with no nudging. The human talks to the PO and merges, unless `merge: auto`.
 
 Arguments given: `$ARGUMENTS`
 
@@ -71,5 +71,5 @@ Show the user what changed (`git -C .claude/skills/agent-team log --oneline <old
 - **Separate clones.** Four sessions in one working directory step on each other the moment the Coder checks out a branch. Clones are dumb and robust; GitHub is the hub.
 - **Derived status, lanes.** Story → ready, plan → planned, branch → in-progress, PR → in-review, review decision → approved / changes-requested, merged → done. PO → `backlog/`, Architect → `plans/`, Coder → code + `notes/`, Reviewer → `reviews/`. Nothing to sync, nothing to conflict on.
 - **A different model reviews.** Different mistakes. Never the same family as the Coder.
-- **Short role files.** Frontier models get worse with over-prescriptive instructions. Per-project tweaks go in `.team/roles/<role>.md`, which overrides the submodule's file.
+- **Short role files.** Frontier models get worse with over-prescriptive instructions. Per-project tweaks go in `AGENTS.md` § Team settings, never in `.team/roles/` overrides, which replace the whole role and hide upgrades.
 - **Agents sign their work** and never pose as the human. **The human merges**, or in cloud mode says yes on a decision card and the Judge merges.

@@ -15,7 +15,7 @@ The team itself is a git submodule pinned to a version; the project's own files 
 | Reviewer | Fable 5.1 | `.team/reviews/` on the PR branch, reviews on GitHub | rewriting the code |
 | Human | — | `.team/ORDER.md` rows, the rulebook, merging (unless `merge: auto`) | — |
 
-Each role works in its own clone of this repo, in its own terminal, unattended: the PO sits in a loop on `bin/po-wait`, Architect, Coder and Reviewer on `bin/wait-for <role>`,, which returns the moment the board has something in their lane. Nobody looks at anyone else's working directory. **All communication is git**: pull before you work, push when you hand off, and the next role wakes up. The human talks to the PO and merges. Always.
+Each role works in its own clone of this repo, in its own terminal, unattended: the PO sits in a loop on `bin/po-wait`, Architect, Coder and Reviewer on `bin/wait-for <role>`, which returns the moment the board has something in their lane. Nobody looks at anyone else's working directory. **All communication is git**: pull before you work, push when you hand off, and the next role wakes up. The human talks to the PO and merges, unless `.team/team.md` says `merge: auto` (cloud mode: see `CLOUD.md` § Human approval).
 
 ## Modes
 
@@ -84,4 +84,4 @@ The Reviewer numbers findings (M1, S1, N1). The Coder answers every Must and Sho
 
 ## If you are Codex
 
-You are the **Coder**. Read `$TEAM/roles/coder.md` and do that job. You do not review, and you do not merge.
+Started as the Coder (the local launcher, or a task that asks you to build): read `$TEAM/roles/coder.md` and do that job. Reviewing a PR on GitHub: follow `AGENTS.md` § Code Review Rules; you attack, you do not give the verdict. Either way you do not merge.
