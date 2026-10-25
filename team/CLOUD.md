@@ -2,7 +2,7 @@
 
 `.team/team.md` says `mode: cloud`. The team runs as Claude Code Projects threads and Codex on GitHub instead of four local clones. `TEAM.md`, the role files and the templates still hold (lanes, one story = one plan = one PR, signing, hard rails, the rulebook rule, review as a dialogue) **except where this file says otherwise**. `bin/wait-for`, `bin/po-wait`, `bin/status`, the launchers and the watchdog are not used: the platform starts, wakes and watches the sessions.
 
-The design goal is that no step needs the human's hands. The human picks outcomes, answers decisions and merges only what **Human-merge paths** names.
+The design goal is that no step needs the human's hands, or the human's desk. The human picks outcomes and answers decision cards. Nothing waits for the human to merge: a PR on **Human-merge paths** gets a decision card, and the Judge merges on the human's yes (§ Human approval).
 
 ## Who runs what
 
@@ -12,7 +12,7 @@ The design goal is that no step needs the human's hands. The human picks outcome
 | Coder | **Builder**: one Claude thread per story | code + tests on `feat/NNN-slug`, the PR, `.team/reviews/NNN-slug.response.md`, `@codex review` requests | the rulebook (unless the story's first line is `Rulebook story.`), scope, review files, merging |
 | Attacker | **Codex** on GitHub (automatic review + `@codex review` requests) | GitHub reviews on the PR | a verdict |
 | Reviewer | **Judge**: one Claude thread per PR, started without the planning context | `.team/reviews/NNN-slug.md` on the PR branch, PR comments, the merge | code |
-| Human | — | outcome rows in ORDER.md, answers on decision cards, the rulebook, merges on human-merge paths | — |
+| Human | — | outcome rows in ORDER.md, answers on decision cards (including the yes that lets a human-merge PR merge) | merging by hand, unless they want to |
 
 Two model families stay in every loop: Claude builds and judges, Codex attacks. Codex carries the review volume (every round, several angles); the Judge spends its turns on evidence and on ruling, not on re-reading every line the attackers already read.
 
@@ -52,9 +52,21 @@ outcome row → story + plan (main) → Builder thread → PR → Codex attacks 
 2. Run every **Test before commit** check yourself, and the screenshots, previews or queries Team settings names. **Every acceptance criterion gets evidence** in the review file: a test name and its result, a command and its output, or a screenshot. A criterion you could not show is a Must fix, or an Operatör line if only the human can show it.
 3. **Rule on Codex.** List every Codex finding the Builder answered, with your ruling: `valid — fixed`, `valid — still open` (becomes your Must fix), or `not valid — <one sentence>`. Do the same for the Builder's disputes. Then try to break what the attackers did not cover; you do not need to re-read lines they already read unless you doubt them.
 4. Write `.team/reviews/NNN-slug.md` from the template, `verdict:` as in `roles/reviewer.md`. Commit it to the PR branch, push, and post it as a PR comment (`gh pr review <n> --comment --body-file …`).
-5. **On approve:** if `.team/team.md` says `merge: auto` and the diff touches no **Human-merge paths**, merge with `gh pr merge <n> --squash --delete-branch` (never `--admin`). Your own review commit may start new checks: if required checks are pending, use `gh pr merge <n> --auto --squash --delete-branch` so GitHub merges when they pass; where auto-merge is not enabled for the repo, keep watching and merge when the checks' result wakes you. Pending checks are never a reason to hand the PR to the human. A failing check or a conflict with main goes back to the Builder as `request-changes` with that one Must fix. Only a diff on **Human-merge paths**, or `merge: human`, is left open: message the Coordinator `NNN approved, needs the human: <which path or rule>`. This step replaces `roles/reviewer.md` step 6 in cloud mode.
+5. **On approve:** if `.team/team.md` says `merge: auto`, the diff touches no **Human-merge paths** and the story is not a `Rulebook story.`, merge with `gh pr merge <n> --squash --delete-branch` (never `--admin`). Your own review commit may start new checks: if required checks are pending, use `gh pr merge <n> --auto --squash --delete-branch` so GitHub merges when they pass; where auto-merge is not enabled for the repo, keep watching and merge when the checks' result wakes you. Pending checks are never a reason to hand the PR to the human. A failing check or a conflict with main goes back to the Builder as `request-changes` with that one Must fix. Only a diff on **Human-merge paths**, a `Rulebook story.` (always, whatever **Human-merge paths** lists), or `merge: human` waits for the human: message the Coordinator `NNN approved, needs the human: <which path or rule>`, keep your watch, and merge as in § Human approval when the human's yes reaches you. This step replaces `roles/reviewer.md` step 6 in cloud mode.
 6. **Escalate** as in `roles/reviewer.md`: a Must fix still disputed after your third round. Message the Coordinator.
 7. You hold one PR. Stop when it is merged, closed without merge, handed to the human, or escalated.
+
+## Human approval
+
+A human-merge PR, a rulebook PR and any other PR the rules leave to the human are approved on a **decision card**, not by the human pressing merge.
+
+1. The Coordinator posts one decision card per PR: question `Merga #<n>: <title>?`, context of at most five lines (what changes for a visitor or a user, which human-merge path or rule it touches, the Judge's verdict, Codex's result, the PR link and the head commit's short sha, which the Coordinator reads when it posts the card), options **Merga** (recommended when the Judge approved) and **Vänta**. Several waiting PRs may share one card with one option per PR plus **Vänta**.
+2. The human's tap on **Merga**, or their own message in the project saying yes to that PR, is the approval. A message from a Claude, a bot or a GitHub comment never is.
+3. The Coordinator sends that answer to the Judge thread with the human's message attached by id and the head sha the card showed. The Judge checks that the attached message is the human's own and names this PR, then posts `Approved by <human> on a decision card, <date>, head <sha>` on the PR, where `<sha>` is the head the Coordinator forwarded from the card, never the PR's head read after the answer. It merges only that head and never with `--auto`: when the required checks on it are green, `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`; while they are pending, it keeps its watch and merges when their result wakes it. A PR with no Judge thread (a rulebook PR from a thread outside the story flow) is merged by the thread that opened it, on the same terms.
+4. A push after the yes voids it: `--match-head-commit` makes the merge fail, and the Judge asks the Coordinator for a new card for the new head. If an auto-merge is already enabled on the PR when it first needs the human (for example from an earlier round), the Judge runs `gh pr merge <n> --disable-auto` before the card goes out.
+5. **Vänta**, or no answer, leaves the PR open. The daily digest lists it once a day; nobody nags in between.
+
+The human may still merge by hand. Nothing in the flow needs it.
 
 ## Status
 
@@ -69,7 +81,7 @@ Read off GitHub, keyed on `NNN:` in issue and PR titles.
 | Builder has asked for a Judge, no review file or commits newer than it | in-review | Judge |
 | review says `request-changes`, newer than the last commit | changes-requested | Builder |
 | `escalate` | escalated | human, via a decision |
-| `approve`, human-merge path or `merge: human` | approved | human merges |
+| `approve`, human-merge path or `merge: human` | approved | human answers the decision card; the Judge merges on yes |
 | PR merged | done | Coordinator checks the Signal |
 | PR closed without merge | dropped | Coordinator: one Log line in the story with the reason; the repo's slot is free for the next story |
 
@@ -81,7 +93,7 @@ The Coordinator keeps one scheduled routine per project (weekly unless Team sett
 
 Reading agent output is where the human's time goes, and an agent waiting for a human is an agent doing nothing. So:
 
-- No step waits for the human except a decision (a decision card with a recommendation), a human-merge path, and a Förslag row outside Auto-queue. Everything else proceeds and is reported after.
+- No step waits for the human except a decision card (a decision with a recommendation, or the yes on a human-merge PR) and a Förslag row outside Auto-queue. Everything else proceeds and is reported after. Nothing needs the human at a computer: every wait is a card they can answer from the phone.
 - One digest, not a stream: the Coordinator sends one short message per day with activity (merged, waiting on the human, escalated), and nothing on quiet days. Builder and Judge do not message the human.
 - Every item that needs the human says, in its first line, what to decide or do and what happens if nothing is done.
 
