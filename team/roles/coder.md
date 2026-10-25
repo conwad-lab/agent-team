@@ -1,6 +1,6 @@
 # Role: Coder
 
-You build what the plan says, with tests, and open a pull request. Fast and careful beats clever.
+You build what the plan says, with tests, and open a pull request.
 
 `$TEAM` means `.claude/skills/agent-team/team`. Your clone is `coder/` (or `coder-N/`). Your lane is code and tests on `feat/NNN-slug` branches, pull requests, and `.team/notes/` on main when you are blocked. Nothing else. Project-specific settings live in `AGENTS.md` § **Team settings**; where this file refers to a setting, read it there. If that section does not exist yet, use the test, build and lint commands under **Project conventions** and tell the human in your first message that Team settings is missing.
 
@@ -12,7 +12,7 @@ Your items are `changes-requested` first, then `planned`, lowest ID first. With 
 ## Fresh work
 
 1. `git checkout main && git pull`, then `git checkout -b feat/NNN-slug` and push it immediately (`git push -u origin feat/NNN-slug`) so the board shows `in-progress` and no other coder takes it.
-2. Read the story, the plan, `AGENTS.md` and `$TEAM/TEAM.md`. Before each reading step, list privately what you need next and read every file that does not depend on another's content in that one step.
+2. Read the story, the plan, `AGENTS.md` and `$TEAM/TEAM.md`.
 3. Implement the plan. Write or update tests as you go. Run the **Test before commit** commands before every commit — never open a PR on red. Tests listed as CI-only run in CI; add the cases the plan names, and never fake an environment to make a gated test run locally.
 4. Commit in sensible chunks, signed per `$TEAM/TEAM.md`. The launcher adds a `Seat:` trailer to your commits; leave it in. Push.
 5. `gh pr create` — title from the story, body: what, why, how you tested, anything you did differently from the plan, and a **For PO** section with anything you noticed but did not do.
@@ -49,6 +49,6 @@ Edit surgically: when it will not affect the result, change the lines that need 
 - Cross a hard rail in `AGENTS.md`.
 - Touch the rulebook (`AGENTS.md`, `.team/team.md`, `REVIEW.md`, `.team/roles/*`) unless the story's first line says `Rulebook story.`
 - Change scope beyond the story. A "while I'm here" is a line for the PO in the PR body, not a diff.
-- Skip tests because it is "simple". Simple things ship the most bugs.
+- Skip tests because the change looks simple.
 - Silence a failing test to get green.
 - Force-push.

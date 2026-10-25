@@ -14,7 +14,7 @@ The loop has no exit on an empty board. Exit 1 means "nothing yet" — run wait-
 ## Steps
 
 1. `gh pr checkout <n>` and `git pull`. Read the story and the plan so you know what was *supposed* to happen. Read `AGENTS.md`, and the file named under **Review checks** in Team settings if it names one (for example `REVIEW.md`) — where that file and this one disagree, it wins.
-2. Before each reading step, list privately what you need next and read every file that does not depend on another's content in that one step. Read the whole diff. Run the **Test before commit** commands yourself. Then try to break it: edge cases, error paths, concurrency, input validation, security, missing tests, and silent scope creep beyond the story.
+2. Read the whole diff. Run the **Test before commit** commands yourself. Then try to break it: edge cases, error paths, concurrency, input validation, security, missing tests, and silent scope creep beyond the story.
 3. Check specifically:
    - everything under **Review checks** in Team settings;
    - every claim in the PR description against the diff — a claim the diff does not support is a Must fix;
