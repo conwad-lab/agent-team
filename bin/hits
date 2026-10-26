@@ -31,7 +31,7 @@ CLOSED = re.compile(r"^\W*(fixed|closed|resolved|done|addressed|verified|accepte
 # "accepted" alone means the fix was accepted; only these mean the finding itself was given up.
 DROPPED = re.compile(r"^\W*(dropped|withdrawn|moot)\b|\b(dispute|reason|disputed point) (is )?accepted\b|\baccept(ed)? the (reason|dispute)\b", re.I)
 STILL = re.compile(r"^\W*(still open|open|not fixed|unanswered|kept|reopened)\b", re.I)
-ANSWER = re.compile(r"^\s*[-*]?\s*" + ID + r"\s*:\s*(fixed|disputed)\b", re.I)
+ANSWER = re.compile(r"^\s*[-*]?\s*" + ID + r"\s*(?::\*\*|:)\s*(fixed|disputed)\b", re.I)
 NO_FINDINGS = re.compile(r"\s*[-*|]\s*(none|no findings|no output|nothing|n/a)\b", re.I)
 # A bullet about the run itself ("ran for 50 minutes and produced no review", "is running").
 RUN_REPORT = re.compile(r"\b(produced no|no review|no output|is running|pending|0 bytes|did not finish|stopped it)\b"
@@ -78,10 +78,16 @@ def parse_review(text):
             elif STILL.search(rest):
                 later[key] = ("open", rnd)
 
+    second_level = 0
     for line in text.splitlines():
         if HEADING.match(line):
+            level = len(line) - len(line.lstrip("#"))
+            if in_second and level > second_level:  # "### Findings" under "## Second reviewer"
+                second_lines.append(line)
+                continue
             close_second()
             in_second = bool(SECOND.match(line))
+            second_level = level
             second_lines = []
             if ROUND.match(line):  # "Round N" is the N-th review; an unnumbered re-review is the next one
                 n = re.search(r"\bRound\s+(\d+)", line, re.I)

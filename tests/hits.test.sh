@@ -31,7 +31,7 @@ R1
 cat > "$R/001-two-rounds.response.md" <<'R2'
 - M1: fixed in abc123 — quoted.
 - S1: disputed — upstream name.
-- S2: fixed in abc123 — test added.
+- **S2:** fixed in abc123 — test added.
 R2
 # 002: approved in one round with a Should fix nobody answered; second reviewer gave nothing
 cat > "$R/002-one-round.md" <<'R3'
@@ -46,6 +46,8 @@ None.
 `nvidia-review.sh 7` ran out of time; the output file stayed empty.
 - `nvidia-review.sh 7` ran for 50 minutes and produced no review: the file is 0 bytes.
 **Verdict: approve.**
+### Kimi findings
+- M1 `c.ts:9` — crash on empty input.
 R3
 # 003: a list line closes two at once; plain "accepted" means the fix was accepted
 cat > "$R/003-list.md" <<'R4'
@@ -116,10 +118,11 @@ outcome() { get "[f['outcome'] for s in d['stories'] if s['story']=='$1' for f i
 [ "$(outcome 002-one-round S1)" = open ] && ok "approved with an unanswered Should fix = open" || nok "002 S1 open"
 [ "$(outcome 003-list M2)" = verified ] && ok "\"M1, M2 — closed\" closes both" || nok "003 M2 verified (got $(outcome 003-list M2))"
 [ "$(get 'd["stories"][0]["unnumbered_nits"]')" = 1 ] && ok "Nit: lines counted apart" || nok "unnumbered nits"
-[ "$(get 'd["second_reviewer"]')" = "{'sections': 3, 'with_findings': 1}" ] && ok "empty second reviewer told apart from one with findings" || nok "second reviewer (got $(get 'd["second_reviewer"]'))"
+[ "$(get 'd["second_reviewer"]')" = "{'sections': 3, 'with_findings': 2}" ] && ok "empty second reviewer told apart from one with findings" || nok "second reviewer (got $(get 'd["second_reviewer"]'))"
 [ "$(outcome 004-order M1)" = verified ] && ok "disputed, then \"fixed, verified\" = verified" || nok "004 M1 verified (got $(outcome 004-order M1))"
 [ "$(outcome 004-order S1)" = claimed ] && ok "a fix answered after \"still open\" = claimed" || nok "004 S1 claimed (got $(outcome 004-order S1))"
 [ "$(outcome 005-numbered M1)" = claimed ] && ok "\"## Round 1\" first review: later fix answer = claimed" || nok "005 M1 claimed (got $(outcome 005-numbered M1))"
+[ "$(get "[f['id'] for s in d['stories'] if s['story']=='002-one-round' for f in s['findings']]")" = "['S1']" ] && ok "an M1 under a second-reviewer subheading is not a Reviewer finding" || nok "002 findings (got $(get "[f['id'] for s in d['stories'] if s['story']=='002-one-round' for f in s['findings']]"))"
 out="$(python3 "$SKILL/bin/hits" "$T/po")"
 grep -q "002-one-round S1 \[open\]" <<<"$out" && ok "report lists the finding that was not applied" || nok "report lists 002 S1"
 grep -q "001-two-rounds S1" <<<"$out" && nok "dropped finding not listed" || ok "dropped finding not listed"
