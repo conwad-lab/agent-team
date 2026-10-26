@@ -57,7 +57,9 @@ def parse_review(text):
         if in_second:
             second["sections"] += 1
             body = " ".join(second_lines)
-            items = [l for l in second_lines if l.lstrip().startswith(("-", "*", "|"))]
+            body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+            items = [l for l in re.sub(r"<!--.*?-->", "", "\n".join(second_lines), flags=re.S).splitlines()
+                     if re.match(r"\s*[-*|]\s*[^\s|-]", l)]
             if items and not EMPTY_SECOND.search(body):
                 second["with_findings"] += 1
 
@@ -77,8 +79,9 @@ def parse_review(text):
             close_second()
             in_second = bool(SECOND.match(line))
             second_lines = []
-            if ROUND.match(line):
-                rnd += 1
+            if ROUND.match(line):  # "Round N" is the N-th review; an unnumbered re-review is the next one
+                n = re.search(r"\bRound\s+(\d+)", line, re.I)
+                rnd = max(rnd, int(n.group(1)) - 1) if n else rnd + 1  # "### Round 1 answers" inside round 2 does not go back
             continue
         if in_second:
             second_lines.append(line)
