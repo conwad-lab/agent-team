@@ -68,7 +68,7 @@ The human steers with `.team/ORDER.md`: rows under **Kö** are the goal, in orde
 
 ## Project settings
 
-Everything project-specific — test commands, CI-only checks, review checks, which paths go to the second reviewer, what triggers an **Operatör** line — lives in the project's `AGENTS.md` § **Team settings**. The roles refer to it by name. Keep `.team/roles/` empty: an override replaces the whole role file, and then upgrades of the team never reach the project.
+Everything project-specific — test commands, CI-only checks, review checks, what triggers an **Operatör** line — lives in the project's `AGENTS.md` § **Team settings**. The roles refer to it by name. Keep `.team/roles/` empty: an override replaces the whole role file, and then upgrades of the team never reach the project.
 
 ## The rulebook
 
@@ -76,11 +76,11 @@ Everything project-specific — test commands, CI-only checks, review checks, wh
 
 ## Seats
 
-A seat is one human's subscriptions (`seats:` in `.team/team.md`). Every role run is billed to a seat, and every commit carries a `Seat: <name>` trailer, added by the launcher. A second builder brings a second seat, never an API key. The launcher enforces it: it removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from every role's environment and refuses to start a Claude role while an `apiKeyHelper` or a cloud-provider switch (`CLAUDE_CODE_USE_BEDROCK/VERTEX/FOUNDRY`) is set (`bin/check-auth`). Open-weight models (the second reviewer) give parallel checks only — never a verdict, never client data.
+A seat is one human's subscriptions (`seats:` in `.team/team.md`). Every role run is billed to a seat, and every commit carries a `Seat: <name>` trailer, added by the launcher. A second builder brings a second seat, never an API key. The launcher enforces it: it removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from every role's environment and refuses to start a Claude role while an `apiKeyHelper` or a cloud-provider switch (`CLAUDE_CODE_USE_BEDROCK/VERTEX/FOUNDRY`) is set (`bin/check-auth`).
 
 ## Review is a dialogue
 
-The Reviewer numbers findings (M1, S1, N1). The Coder answers every Must and Should fix in `.team/reviews/NNN-slug.response.md` on the branch (never in the Reviewer's file): `fixed in <sha>` or `disputed — <reason>`, never silence. The Reviewer approves only when no Must fix is open; a Must fix still disputed after three review rounds becomes `verdict: escalate` and goes to the human through the PO.
+The Reviewer numbers findings (M1, S1, N1). The Coder answers every Must and Should fix in `.team/reviews/NNN-slug.response.md` on the branch (never in the Reviewer's file): `fixed in <sha>` or `disputed — <reason>`, never silence. The Reviewer approves only when no Must or Should fix is open — a Should fix is fixed or its dispute accepted, never shipped silently; a point still disputed after three review rounds becomes `verdict: escalate` and goes to the human through the PO.
 
 ## If you are Codex
 

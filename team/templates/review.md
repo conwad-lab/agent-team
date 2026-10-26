@@ -3,7 +3,7 @@ id: NNN
 verdict: request-changes
 ---
 <!-- verdict: approve | request-changes | escalate — the board reads this line from the PR branch. Keep it current on re-review.
-     approve only with no Must fix open. escalate: a Must fix still disputed after the third round (add ## Escalation). -->
+     approve only with no Must or Should fix open. escalate: a Must or Should fix still disputed after the third round (add ## Escalation). -->
 
 # Review NNN — <title>
 
@@ -24,7 +24,7 @@ PR: #<n> · YYYY-MM-DD
 | | | |
 
 ## Codex findings
-<!-- Cloud mode: every Codex finding and every Builder dispute, one line each: valid — fixed · valid — still open (→ Must fix) · not valid — <reason>. Local mode: the second reviewer's findings, if any. -->
+<!-- Cloud mode: every Codex finding and every Builder dispute, one line each: valid — fixed · valid — still open (→ Must fix) · not valid — <reason>. -->
 -
 
 ## What I checked

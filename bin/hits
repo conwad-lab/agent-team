@@ -13,8 +13,9 @@ merged stories. Every Must fix (M#), Should fix (S#) and numbered nit (N#) ends 
   disputed   the Coder disputed it and no later round settles it
   open       no answer from the Coder and no closing line: found, merged without the fix
 
-`open` and `disputed` are the findings that were found but never applied. A Should fix may
-legitimately ship open; the count is there so the human can see how often that happens.
+`open` and `disputed` are the findings that were found but never applied. From v0.7.3 a Should
+fix blocks approval like a Must fix, so new open ones point at a review that broke the rule;
+older stories were merged under the earlier rule and still show here.
 Also counted: how often a second reviewer (## Second reviewer, ## Codex findings) produced
 findings at all. Reads, never writes.
 """
