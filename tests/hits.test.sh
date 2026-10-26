@@ -44,6 +44,8 @@ None.
 - S1 `c.ts:4` — the error path is untested.
 ## Second reviewer
 `nvidia-review.sh 7` ran out of time; the output file stayed empty.
+- `nvidia-review.sh 7` ran for 50 minutes and produced no review: the file is 0 bytes.
+**Verdict: approve.**
 R3
 # 003: a list line closes two at once; plain "accepted" means the fix was accepted
 cat > "$R/003-list.md" <<'R4'
@@ -56,7 +58,7 @@ verdict: approve
 ## Re-review
 - M1, M2 — closed in round 2.
 ## Codex findings
-- valid — fixed: missing nil check.
+- valid — fixed: crashes on empty input.
 R4
 # 004: M1 disputed but then fixed and verified; S1 still open in round 2, fixed in response round 2
 cat > "$R/004-order.md" <<'R5'
@@ -121,6 +123,8 @@ outcome() { get "[f['outcome'] for s in d['stories'] if s['story']=='$1' for f i
 out="$(python3 "$SKILL/bin/hits" "$T/po")"
 grep -q "002-one-round S1 \[open\]" <<<"$out" && ok "report lists the finding that was not applied" || nok "report lists 002 S1"
 grep -q "001-two-rounds S1" <<<"$out" && nok "dropped finding not listed" || ok "dropped finding not listed"
+git init -q "$T/noremote"
+python3 "$SKILL/bin/hits" "$T/noremote" 2>/dev/null && nok "missing origin ref is an error, not zero reviews" || ok "missing origin ref is an error, not zero reviews"
 python3 "$SKILL/bin/hits" "$T/nope" 2>/dev/null && nok "non-clone refused" || ok "non-clone refused"
 
 exit $fail

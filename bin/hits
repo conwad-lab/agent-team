@@ -32,7 +32,10 @@ CLOSED = re.compile(r"^\W*(fixed|closed|resolved|done|addressed|verified|accepte
 DROPPED = re.compile(r"^\W*(dropped|withdrawn|moot)\b|\b(dispute|reason|disputed point) (is )?accepted\b|\baccept(ed)? the (reason|dispute)\b", re.I)
 STILL = re.compile(r"^\W*(still open|open|not fixed|unanswered|kept|reopened)\b", re.I)
 ANSWER = re.compile(r"^\s*[-*]?\s*" + ID + r"\s*:\s*(fixed|disputed)\b", re.I)
-EMPTY_SECOND = re.compile(r"\b(empty|no output|no findings|did not finish|not run|nothing to adopt|timed? ?out)\b", re.I)
+NO_FINDINGS = re.compile(r"\s*[-*|]\s*(none|no findings|no output|nothing|n/a)\b", re.I)
+# A bullet about the run itself ("ran for 50 minutes and produced no review", "is running").
+RUN_REPORT = re.compile(r"\b(produced no|no review|no output|is running|pending|0 bytes|did not finish|stopped it)\b"
+                        r"|^\s*\*\*", re.I)
 KIND = {"M": "must", "S": "should", "N": "nit"}
 OUTCOMES = ("verified", "claimed", "dropped", "disputed", "open")
 
@@ -56,11 +59,12 @@ def parse_review(text):
     def close_second():
         if in_second:
             second["sections"] += 1
-            body = " ".join(second_lines)
-            body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
-            items = [l for l in re.sub(r"<!--.*?-->", "", "\n".join(second_lines), flags=re.S).splitlines()
-                     if re.match(r"\s*[-*|]\s*[^\s|-]", l)]
-            if items and not EMPTY_SECOND.search(body):
+            text = re.sub(r"<!--.*?-->", "", "\n".join(second_lines), flags=re.S)
+            # A finding is a list or table item with content; prose ("the output stayed empty") is
+            # a run report, and an item that only says there was nothing does not count either.
+            items = [l for l in text.splitlines()
+                     if re.match(r"\s*[-*|]\s*[^\s|-]", l) and not NO_FINDINGS.match(l) and not RUN_REPORT.search(l)]
+            if items:
                 second["with_findings"] += 1
 
     def mark(key, rest):
@@ -141,6 +145,8 @@ def outcome(reviewed, answered):
 
 def collect(repo):
     ref = default_ref(repo)
+    if not git(repo, "rev-parse", "--verify", "-q", ref):
+        sys.exit(f"hits: cannot read {ref} in {repo}; run git fetch origin first")
     names = git(repo, "ls-tree", "--name-only", ref, ".team/reviews/").split()
     stories, second = [], {"sections": 0, "with_findings": 0}
     for name in sorted(names):
