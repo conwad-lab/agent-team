@@ -27,6 +27,7 @@ cd myproj-team
 ./team po          # or start any single role by hand — PO is the one you talk to; ask it to fill in Project conventions first
 ./team status      # the board, once
 ./team log         # who did what
+./team hits        # what became of the Reviewer's findings: fixed, disputed, or merged without the fix
 ./team add coder   # more throughput: coder-2/, started with ./team coder 2
 ```
 
@@ -77,6 +78,7 @@ Inside any clone: `/agent-team upgrade` — or by hand, `git submodule update --
 SKILL.md          what Claude reads when you run /agent-team
 bin/              po architect coder reviewer  — launchers (pull, pick role file, start)
                   status                       — the board, derived from git + GitHub
+                  hits                         — review findings on merged stories and what became of them
                   vercel-ignore-build          — skip proven board-only Vercel builds
                   check-auth                   — max-only: no role starts on an API key (run by _start)
 team/TEAM.md      the rulebook every agent reads
@@ -84,7 +86,7 @@ team/roles/       product-owner architect coder reviewer
 team/templates/   story plan note review
 assets/           per-project files init writes: AGENTS.md, CLAUDE.md, .team/
 scripts/          init.sh, scaffold.sh, vercel-hint.sh
-tests/            check-auth.test.sh, vercel-ignore-build.test.sh, init-vercel.test.sh
+tests/            check-auth.test.sh, vercel-ignore-build.test.sh, init-vercel.test.sh, hits.test.sh
                   run each with bash tests/<name>.test.sh
 workspace/team    the ./team launcher
 ```

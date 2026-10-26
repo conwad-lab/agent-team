@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""agent-team hits — what happened to the Reviewer's findings once a story was merged.
+
+    ./team hits [--json] [--list]
+    bin/hits [repo]                 # a po/ clone, default the current directory
+
+Reads `.team/reviews/*.md` and `*.response.md` on origin/<default branch>, which holds only
+merged stories. Every Must fix (M#), Should fix (S#) and numbered nit (N#) ends in one of:
+
+  verified   the Reviewer closed it in a later round (fixed, closed, resolved)
+  claimed    the Coder answered "fixed", but no later round confirms it
+  dropped    the Coder disputed it and the Reviewer accepted the reason
+  disputed   the Coder disputed it and no later round settles it
+  open       no answer from the Coder and no closing line: found, merged without the fix
+
+`open` and `disputed` are the findings that were found but never applied. A Should fix may
+legitimately ship open; the count is there so the human can see how often that happens.
+Also counted: how often a second reviewer (## Second reviewer, ## Codex findings) produced
+findings at all. Reads, never writes.
+"""
+import argparse, json, os, re, subprocess, sys
+
+ID = r"(?:\*\*)?([MSN])(\d+)(?:\*\*)?"
+FINDING = re.compile(r"^\s*[-*]\s+" + ID + r"\b[:.]?(?:\*\*)?[:.]?\s*(.*)")
+MORE = re.compile(r"^\s*,\s*(?:and\s+)?" + ID + r"\b[:.]?(?:\*\*)?[:.]?\s*(.*)")
+NIT = re.compile(r"^\s*[-*]\s+Nit\b", re.I)
+ROUND = re.compile(r"^#{2,3}\s+(Round|Re-review)\b", re.I)
+SECOND = re.compile(r"^#{2,3}\s+(Second reviewer|Codex findings)\b", re.I)
+HEADING = re.compile(r"^#{1,3}\s")
+CLOSED = re.compile(r"^\W*(fixed|closed|resolved|done|addressed|verified|accepted)\b", re.I)
+# "accepted" alone means the fix was accepted; only these mean the finding itself was given up.
+DROPPED = re.compile(r"^\W*(dropped|withdrawn|moot)\b|\b(dispute|reason|disputed point) (is )?accepted\b|\baccept(ed)? the (reason|dispute)\b", re.I)
+STILL = re.compile(r"^\W*(still open|open|not fixed|unanswered|kept|reopened)\b", re.I)
+ANSWER = re.compile(r"^\s*[-*]?\s*" + ID + r"\s*(?::\*\*|:)\s*(fixed|disputed)\b", re.I)
+NO_FINDINGS = re.compile(r"\s*[-*|]\s*(none|no findings|no output|nothing|n/a)\b", re.I)
+# A bullet about the run itself ("ran for 50 minutes and produced no review", "is running").
+RUN_REPORT = re.compile(r"\b(produced no|no review|no output|is running|pending|0 bytes|did not finish|stopped it)\b"
+                        r"|^\s*\*\*", re.I)
+KIND = {"M": "must", "S": "should", "N": "nit"}
+OUTCOMES = ("verified", "claimed", "dropped", "disputed", "open")
+
+
+def git(repo, *args):
+    p = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+    return p.stdout if p.returncode == 0 else ""
+
+
+def default_ref(repo):
+    head = git(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").strip()
+    return head or "origin/main"
+
+
+def parse_review(text):
+    """Findings in order of first appearance, with the Reviewer's later verdict on each."""
+    found, later, nits, second = {}, {}, 0, {"sections": 0, "with_findings": 0}
+    rnd, in_second = 0, False  # rnd: re-review rounds seen so far; 0 is the first review
+    second_lines = []
+
+    def close_second():
+        if in_second:
+            second["sections"] += 1
+            text = re.sub(r"<!--.*?-->", "", "\n".join(second_lines), flags=re.S)
+            # A finding is a list or table item with content; prose ("the output stayed empty") is
+            # a run report, and an item that only says there was nothing does not count either.
+            items = [l for l in text.splitlines()
+                     if re.match(r"\s*[-*|]\s*[^\s|-]", l) and not NO_FINDINGS.match(l) and not RUN_REPORT.search(l)]
+            if items:
+                second["with_findings"] += 1
+
+    def mark(key, rest):
+        if key not in found:
+            found[key] = rest.strip()[:160]
+        elif rnd:
+            if DROPPED.search(rest):
+                later[key] = ("dropped", rnd)
+            elif (c := CLOSED.search(rest)):
+                later[key] = ("accepted" if c.group(1).lower() == "accepted" else "closed", rnd)
+            elif STILL.search(rest):
+                later[key] = ("open", rnd)
+
+    second_level = 0
+    for line in text.splitlines():
+        if HEADING.match(line):
+            level = len(line) - len(line.lstrip("#"))
+            if in_second and level > second_level:  # "### Findings" under "## Second reviewer"
+                second_lines.append(line)
+                continue
+            close_second()
+            in_second = bool(SECOND.match(line))
+            second_level = level
+            second_lines = []
+            if ROUND.match(line):  # "Round N" is the N-th review; an unnumbered re-review is the next one
+                n = re.search(r"\bRound\s+(\d+)", line, re.I)
+                rnd = max(rnd, int(n.group(1)) - 1) if n else rnd + 1  # "### Round 1 answers" inside round 2 does not go back
+            continue
+        if in_second:
+            second_lines.append(line)
+            continue
+        if NIT.match(line) and not rnd:
+            nits += 1
+            continue
+        m = FINDING.match(line)
+        if not m:
+            continue
+        keys, rest = [m.group(1) + m.group(2)], m.group(3)
+        while (n := MORE.match(rest)):  # "- M1, M2, S1 — closed in round 2"
+            keys.append(n.group(1) + n.group(2))
+            rest = n.group(3)
+        for key in keys:
+            mark(key, rest)
+    close_second()
+    return found, later, nits, second
+
+
+def parse_response(text):
+    """The Coder's last answer per finding, with the response round it was given in (1, 2 ...)."""
+    answers, rnd = {}, 1
+    for line in text.splitlines():
+        if HEADING.match(line):
+            if (n := re.search(r"\bRound\s+(\d+)", line, re.I)):
+                rnd = int(n.group(1))
+            continue
+        m = ANSWER.match(line)
+        if m:
+            answers[m.group(1) + m.group(2)] = (m.group(3).lower(), rnd)
+    return answers
+
+
+def outcome(reviewed, answered):
+    """reviewed: (verdict, re-review round) or None; answered: (answer, response round) or None.
+    Response round k answers the review of round k-1 and is judged in re-review round k, so an
+    answer newer than the Reviewer's last word (k > re-review round) is not judged yet."""
+    reviewer, seen = reviewed or (None, 0)
+    coder, given = answered or (None, 0)
+    if reviewer and given > seen:
+        reviewer = None
+    if reviewer == "accepted":  # "accepted" on a disputed point accepts the reason, not a fix
+        reviewer = "dropped" if coder == "disputed" else "closed"
+    if reviewer == "closed":
+        return "verified"
+    if reviewer == "dropped":
+        return "dropped"
+    if reviewer == "open":
+        return "disputed" if coder == "disputed" else "open"
+    if coder == "fixed":
+        return "claimed"
+    if coder == "disputed":
+        return "disputed"
+    return "open"
+
+
+def collect(repo):
+    ref = default_ref(repo)
+    if not git(repo, "rev-parse", "--verify", "-q", ref):
+        sys.exit(f"hits: cannot read {ref} in {repo}; run git fetch origin first")
+    names = git(repo, "ls-tree", "--name-only", ref, ".team/reviews/").split()
+    stories, second = [], {"sections": 0, "with_findings": 0}
+    for name in sorted(names):
+        base = os.path.basename(name)
+        if not re.match(r"\d+-.+\.md$", base) or base.endswith(".response.md"):
+            continue
+        text = git(repo, "show", f"{ref}:{name}")
+        found, later, nits, sec = parse_review(text)
+        if not found and not nits and "verdict:" not in text:
+            continue
+        answers = parse_response(git(repo, "show", f"{ref}:{name[:-3]}.response.md"))
+        for k in second:
+            second[k] += sec[k]
+        stories.append({
+            "story": base[:-3],
+            "unnumbered_nits": nits,
+            "findings": [{"id": k, "kind": KIND[k[0]], "outcome": outcome(later.get(k), answers.get(k)),
+                          "text": t} for k, t in found.items()],
+        })
+    return {"ref": ref, "stories": stories, "second_reviewer": second}
+
+
+def totals(stories):
+    t = {kind: dict.fromkeys(OUTCOMES, 0) for kind in KIND.values()}
+    for s in stories:
+        for f in s["findings"]:
+            t[f["kind"]][f["outcome"]] += 1
+    return t
+
+
+def report(data, listing):
+    stories = data["stories"]
+    t = totals(stories)
+    print(f"Review hits on {data['ref']}: {len(stories)} merged stories with a review file\n")
+    print(f"{'':8}{'found':>7}" + "".join(f"{o:>10}" for o in OUTCOMES) + f"{'applied':>10}")
+    for kind, row in t.items():
+        n = sum(row.values())
+        applied = row["verified"] + row["claimed"]
+        rate = f"{100 * applied // (n - row['dropped'])}%" if n - row["dropped"] else "-"
+        print(f"{kind:8}{n:>7}" + "".join(f"{row[o]:>10}" for o in OUTCOMES) + f"{rate:>10}")
+    nits = sum(s["unnumbered_nits"] for s in stories)
+    if nits:
+        print(f"\n{nits} unnumbered nits (Nit: lines) are not tracked; nobody has to answer them.")
+    sec = data["second_reviewer"]
+    if sec["sections"]:
+        print(f"Second reviewer: {sec['with_findings']} of {sec['sections']} sections had findings.")
+    print("\napplied = (verified + claimed) / (found - dropped). claimed rests on the Coder's word alone.")
+    missed = [(s["story"], f) for s in stories for f in s["findings"]
+              if f["kind"] != "nit" and f["outcome"] in ("open", "disputed")]
+    if missed:
+        print(f"\nFound but not applied ({len(missed)} Must/Should fix):")
+        for story, f in missed if listing else missed[:10]:
+            print(f"  {story} {f['id']} [{f['outcome']}] {f['text'][:90]}")
+        if not listing and len(missed) > 10:
+            print(f"  … {len(missed) - 10} more, see --list")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("repo", nargs="?", default=".")
+    ap.add_argument("--json", action="store_true", help="the full data as JSON")
+    ap.add_argument("--list", action="store_true", help="every finding that was not applied")
+    a = ap.parse_args()
+    if not git(a.repo, "rev-parse", "--git-dir"):
+        sys.exit(f"hits: {a.repo} is not a git clone")
+    data = collect(a.repo)
+    if a.json:
+        data["totals"] = totals(data["stories"])
+        json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
+        print()
+    else:
+        report(data, a.list)
+
+
+if __name__ == "__main__":
+    main()

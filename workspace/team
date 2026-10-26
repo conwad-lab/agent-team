@@ -8,6 +8,7 @@
 #   ./team add coder|reviewer   clone another coder-N/ or reviewer-N/
 #   ./team status            the board (derived from git + GitHub)
 #   ./team log               recent team activity across all roles
+#   ./team hits [--list|--json]  what happened to the Reviewer's findings on merged stories
 #   ./team pull              git pull (+ submodules) in every clone
 #   ./team open [--tmux]     open every role in its own window (macOS Terminal, 2×2 grid) or a tmux session
 #   ./team board             the board, refreshed every 30 s — keep it in a corner
@@ -71,6 +72,10 @@ case "$cmd" in
       git -C "$d" pull -q --rebase --autostash && git -C "$d" submodule update -q --init --recursive && echo ok || echo FAILED
     done
     ;;
+  hits)
+    command -v python3 >/dev/null || { echo "./team hits needs python3" >&2; exit 1; }
+    cd "$WS/po" && git fetch -q origin && exec python3 "$BIN/hits" . "$@"
+    ;;
   monitor)
     command -v python3 >/dev/null || { echo "./team monitor needs python3" >&2; exit 1; }
     exec python3 "$WS/po/$BIN/monitor" "$WS" "$@"
@@ -119,5 +124,5 @@ APPLESCRIPT
     done
     echo "opened 4 Terminal windows for $name. Board: ./team board"
     ;;
-  *) sed -n '2,17p' "$0" ;;
+  *) sed -n '2,18p' "$0" ;;
 esac
