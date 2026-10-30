@@ -41,6 +41,8 @@ outcome row → story + plan (main) → Builder thread → PR → Codex attacks 
    - `@codex review — security: authorization, input validation, secrets, data exposure. Number findings M/S/N with file:line.`
    - `@codex review — failure paths: errors, empty and malformed input, concurrency, retries, rollbacks. Number findings M/S/N with file:line.`
    - `@codex review — story fit: does the diff meet every acceptance criterion in .team/backlog/NNN-slug.md, and does it do anything the story did not ask for? Number findings M/S/N with file:line.`
+   If the PR carries a data change (§ Data changes), the first round also gets the fact angle from that section.
+   If a Codex review fails (quota, an error reply), request the same review once more before anything else. A review that fails twice, or has not finished long after the request, is said in the response file; whether the rounds may then go on without Codex is the project's call in Team settings, and never for a data change.
 4. **Answer every Codex finding** that is a P0/P1 or numbered M/S, in `.team/reviews/NNN-slug.response.md` (`## Codex round N — YYYY-MM-DD`, one line per finding: `fixed in <sha>` or `disputed — <reason>`). Codex is an attacker, not an authority: dispute what is wrong, with a reason the Judge can check. Never change code only to make a finding go away.
 5. **Stop the rounds** when every Codex review you requested for the current head commit has finished (a review posted on that commit, or Codex's 👍 on your request), none of them raises a new P0/P1 or Must fix, every earlier finding is answered, and the required checks are green. A review still running (👀) means wait for it: its result wakes you. Three Codex rounds without getting there is also a stop: say so. Then message the Coordinator: `NNN ready for judge: PR #<n>, <rounds> Codex rounds, <open disputes or "no open disputes">`.
 6. **On `request-changes` from the Judge** (you wake on the comment): answer every Judge M and S in the same response file under `## Judge round N`, fix, push, request one Codex round on the change, and message the Coordinator again only when step 5 holds for the new head.
@@ -49,12 +51,23 @@ outcome row → story + plan (main) → Builder thread → PR → Codex attacks 
 ## Judge
 
 1. `gh pr checkout <n>`. Read the story, the plan, `AGENTS.md`, `roles/reviewer.md` and the review checks it names. You were started without the planning conversation on purpose: do not ask for it.
-2. Run every **Test before commit** check yourself, and the screenshots, previews or queries Team settings names. **Every acceptance criterion gets evidence** in the review file: a test name and its result, a command and its output, or a screenshot. A criterion you could not show is a Must fix, or an Operatör line if only the human can show it.
+2. Run every **Test before commit** check yourself, and the screenshots, previews or queries Team settings names. On a data change, also check § Data changes: the Codex review (with the fact angle) finished on the last commit outside `.team/**`, and every open row in the package's own review file is fixed or ruled `not valid` by you. **Every acceptance criterion gets evidence** in the review file: a test name and its result, a command and its output, or a screenshot. A criterion you could not show is a Must fix, or an Operatör line if only the human can show it.
 3. **Rule on Codex.** List every Codex finding the Builder answered, with your ruling: `valid — fixed`, `valid — still open` (becomes your Must fix), or `not valid — <one sentence>`. Do the same for the Builder's disputes. Then try to break what the attackers did not cover; you do not need to re-read lines they already read unless you doubt them.
 4. Write `.team/reviews/NNN-slug.md` from the template, `verdict:` as in `roles/reviewer.md`. Commit it to the PR branch, push, and post it as a PR comment (`gh pr review <n> --comment --body-file …`).
 5. **On approve:** if `.team/team.md` says `merge: auto`, the diff touches no **Human-merge paths** and the story is not a `Rulebook story.`, merge with `gh pr merge <n> --squash --delete-branch` (never `--admin`). Your own review commit may start new checks: if required checks are pending, use `gh pr merge <n> --auto --squash --delete-branch` so GitHub merges when they pass; where auto-merge is not enabled for the repo, keep watching and merge when the checks' result wakes you. Pending checks are never a reason to hand the PR to the human. A failing check or a conflict with main goes back to the Builder as `request-changes` with that one Must fix. Only a diff on **Human-merge paths**, a `Rulebook story.` (always, whatever **Human-merge paths** lists), or `merge: human` waits for the human: message the Coordinator `NNN approved, needs the human: <which path or rule>`, keep your watch, and merge as in § Human approval when the human's yes reaches you. This step replaces `roles/reviewer.md` step 6 in cloud mode.
 6. **Escalate** as in `roles/reviewer.md`: a Must or Should fix still disputed after your third round. Message the Coordinator.
 7. You hold one PR. Stop when it is merged, closed without merge, handed to the human, or escalated.
+
+## Data changes
+
+Codex finds fact errors that tests and the other reviews miss, so data and content get the same attack as code before they reach production. **Data changes** in Team settings says what counts in the project; if the line is missing, this section still holds for the general case: any package (SQL, JSON, CSV or a script's input) that writes to production data, and any PR that exports production content into the repo.
+
+1. **No write before review.** A data package is never run against production until the exact files the operator will run (the apply file, its rollback, and the source data it was built from) have been on a PR, the Codex review of the last commit that changed any file outside `.team/**` has finished, and every Codex P0/P1 or M/S finding and every open row in the package's own review file is fixed or ruled `not valid` by the Judge. Later commits that touch only `.team/**` (the response file, the Judge's review) keep that review valid.
+2. **Packages made outside the team** (a Projects thread, a Remote Control session, the human's own script) go through a PR the same way before anyone runs them. Whoever made the package opens the PR and drives the Codex rounds as in § Builder; a Judge rules as for any PR.
+3. **Fact angle.** The first Codex round on a data PR also gets `@codex review — facts: check every changed value against its cited source, against the record's other fields and against open findings in the project's audit files. Number findings M/S/N with file:line.`
+4. **Exports.** An export PR waits for Codex like any other PR. A Codex fact finding on it is fixed at the source (a correction package, reviewed as above) and the content exported again, never by editing the exported file.
+5. **No fallback.** A Team settings rule that lets a review go on without Codex (after a failed retry, a timeout, an offline runner) never applies to a data change. It waits; the PR's author tells the Coordinator, who puts it to the human on a decision card.
+6. **The Operatör line** for an approved package names the PR and the reviewed sha, and the operator runs the files exactly as they are at that sha. The Coordinator writes it after the Judge approves; running the package stays the operator's step.
 
 ## Human approval
 
@@ -83,6 +96,7 @@ Read off GitHub, keyed on `NNN:` in issue and PR titles.
 | `escalate` | escalated | human, via a decision |
 | `approve`, human-merge path or `merge: human` | approved | human answers the decision card; the Judge merges on yes |
 | PR merged | done | Coordinator checks the Signal |
+| data change approved | operator | human runs the package at the reviewed sha (§ Data changes) |
 | PR closed without merge | dropped | Coordinator: one Log line in the story with the reason; the repo's slot is free for the next story |
 
 ## Routines
@@ -105,11 +119,11 @@ Reading agent output is where the human's time goes, and an agent waiting for a 
 
 - Codex carries the review volume. Claude turns go to building and to the Judge's evidence and rulings.
 - The Coordinator plans at normal effort and does not watch PRs. Builder and Judge watch only their own PR and stop as above.
-- One `@codex review` comment per Builder push round, plus the three angles once on adversarial paths. No re-pinging the same commit.
+- One `@codex review` comment per Builder push round, plus the three angles once on adversarial paths and the fact angle once on data changes. No re-pinging the same commit, except the one retry after a failed review.
 - No polling loops. Threads wake on PR events and on messages.
 
 ## One-time setup per repo (human)
 
 1. Codex: connect the repo, and turn on automatic code review for it (Codex settings → Code review).
 2. Paste `assets/cloud/project-instructions.md` (filled in) as the project's instructions.
-3. In the repo: `.team/team.md` gets `mode: cloud`, `builder: claude` and a `merge:` line; `AGENTS.md` gets the cloud settings and `## Code Review Rules` from `assets/root/AGENTS.md`.
+3. In the repo: `.team/team.md` gets `mode: cloud`, `builder: claude` and a `merge:` line; `AGENTS.md` gets the cloud settings (including **Data changes**) and `## Code Review Rules` from `assets/root/AGENTS.md`.
