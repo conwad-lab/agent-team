@@ -32,6 +32,7 @@ This repo is worked on by an agent team. The team's rulebook, roles and template
 - **Coder extras:** <!-- files to update in the same PR, files to edit with particular care -->
 - **Docs to verify:** <!-- extra files verify-docs should check -->
 - **Adversarial paths:** none <!-- cloud mode: paths whose PRs get three focused Codex reviews (security, failure paths, story fit) -->
+- **Data changes:** <!-- cloud mode (CLOUD.md § Data changes): what writes to production data here (tables, stores, packages) and where packages and their review files live; exported content paths (e.g. src/data/**); the audit files the fact angle checks against -->
 - **Human-merge paths:** <!-- cloud mode: paths the Judge never merges even with merge: auto — money, legal text, migrations, auth, the rulebook -->
 - **Auto-queue:** none <!-- cloud mode: kinds of routine proposal that go straight to Kö, e.g. Dependabot patch updates, broken links -->
 - **Signal sources:** <!-- cloud mode: what the weekly routine reads — e.g. Vercel runtime errors, failed Actions runs, Actions minutes, Dependabot, analytics -->
@@ -48,3 +49,4 @@ When you review a pull request on GitHub (automatic review or an `@codex review`
 - Run the **Test before commit** commands if your environment can; say which ran and which did not. Never report a check as passed that you did not run.
 - A request comment may name a focus ("security", "failure paths", "story fit"): stay on it.
 - Flag any change to `AGENTS.md`, `.team/team.md`, `REVIEW.md` or `.team/roles/*` when the story's first line is not `Rulebook story.`
+- Data packages and content exports (**Data changes** in Team settings): check each changed value against its cited source, against the record's other fields and against open findings in the project's audit files. A claim that contradicts a source or an open finding is a Must fix, also when the value already sits in production.
