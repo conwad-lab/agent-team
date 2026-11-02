@@ -17,7 +17,8 @@ auth: max-only — ingen API-nyckel i rollernas miljö (bin/check-auth stoppar s
 merge: human
 # mode: local (four clones, bin/wait-for) or cloud (Claude Code Projects + Codex on GitHub, see team/CLOUD.md)
 mode: local
-# cloud only: who builds. claude = a Claude thread; codex = an @codex task comment (only once that works)
+# cloud only: who builds. codex = Codex from an @codex task on the story's issue (needs a Codex environment for the repo; the default where one exists);
+# claude = the Builder thread. A fresh repo has no Codex environment yet, so this starts as claude (CLOUD.md § One-time setup).
 builder: claude
 
 team: .claude/skills/agent-team @ {{SKILL_VERSION}}

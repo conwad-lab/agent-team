@@ -9,33 +9,43 @@ The design goal is that no step needs the human's hands, or the human's desk. Th
 | Role | Runs as | Writes | Never |
 |---|---|---|---|
 | PO + Architect | **Coordinator**: the Projects coordinator (Claude) | `.team/backlog/`, `.team/plans/`, `.team/ORDER.md` on main; starts Builder and Judge threads | code, reviews, merging |
-| Coder | **Builder**: one Claude thread per story | code + tests on `feat/NNN-slug`, the PR, `.team/reviews/NNN-slug.response.md`, `@codex review` requests | the rulebook (unless the story's first line is `Rulebook story.`), scope, review files, merging |
-| Attacker | **Codex** on GitHub (automatic review + `@codex review` requests) | GitHub reviews on the PR | a verdict |
+| Coder | **Builder**: one Claude thread per story; with `builder: codex` Codex writes the code from a `@codex` task and the thread drives everything else | code + tests on `feat/NNN-slug` (with `builder: codex`: the `@codex` build and fix tasks), the PR, `.team/reviews/NNN-slug.response.md`, `@codex review` requests, the plan attack request | the rulebook (unless the story's first line is `Rulebook story.`), scope, review files, merging |
+| Attacker | **Codex** on GitHub (automatic review + `@codex review` requests, and the plan attack on risky stories) | GitHub reviews on the PR, plan attack findings on the story's issue | a verdict |
 | Reviewer | **Judge**: one Claude thread per PR, started without the planning context | `.team/reviews/NNN-slug.md` on the PR branch, PR comments, the merge | code |
 | Human | — | outcome rows in ORDER.md, answers on decision cards (including the yes that lets a human-merge PR merge) | merging by hand, unless they want to |
 
-Two model families stay in every loop: Claude builds and judges, Codex attacks. Codex carries the review volume (every round, several angles); the Judge spends its turns on evidence and on ruling, not on re-reading every line the attackers already read.
+Two model families stay in every loop: Claude builds and judges, Codex attacks. Codex carries the review volume (every round, several angles); the Judge spends its turns on evidence and on ruling, not on re-reading every line the attackers already read. With `builder: codex`, Codex both builds and attacks, so the Judge (Claude) is the second family on that PR: on a Codex-built PR the Judge reads the diff itself and does not skip lines because the attackers already read them.
 
-If `@codex` task comments work again (as of 2026-10-17 a non-review `@codex` comment fails with a missing-environment bug), `builder: codex` in `.team/team.md` may hand the Builder's job to Codex via a comment on the issue. Until then `builder: claude`. A direct Codex task in the browser is a manual step and is not part of this flow.
+**Who builds** (`builder:` in `.team/team.md`). `builder: codex` is the default in a cloud repo that has a Codex environment (made by hand in Codex settings → Environments, one per repo): Codex writes the code from a `@codex` task on the story's issue (§ Builder, With `builder: codex`). Codex delivers a buildable diff from an issue task in about ten minutes (checked in mondmodel, 2026-10/11). `builder: claude` (the Builder thread writes the code) where the repo has no Codex environment, where Team settings chooses it, and for one story when its ORDER row says so. A direct Codex task in the browser is a manual step and is not part of this flow.
 
 ## Flow
 
 ```
-outcome row → story + plan (main) → Builder thread → PR → Codex attacks → Builder answers → … → Judge → merge
+outcome row → story + plan (main) → Builder thread → (plan attack on risky stories) → PR → Codex attacks → Builder answers → … → Judge → merge
 ```
 
 1. **Coordinator as PO.** Takes the next row under **Kö**. A row may be an outcome ("more booked scoping calls from the site") rather than a task: then propose the stories that serve it, write the first one, and say which others you plan in the story's Log. Writes `.team/backlog/NNN-slug.md` with a filled-in `## Signal`, ticks the row, pushes.
 2. **Coordinator as Architect.** Reads the code, runs the **Baseline**, writes `.team/plans/NNN-slug.md`, pushes. Too big → `verdict: needs-split` and split it yourself as PO.
 3. **Coordinator starts the Builder thread** with: the repo, the story and plan paths, and "follow `.claude/skills/agent-team/team/CLOUD.md` § Builder". One Builder per story; one story in flight per repo unless the human's row says otherwise. A story is in flight until its PR is merged or closed.
-4. **Builder** (below) opens the PR and drives it through Codex rounds until no Must fix is open and CI is green, then asks the Coordinator for a Judge.
+3a. **Plan attack** (risky stories only). When the plan's Files name a path on **Adversarial paths** or **Human-merge paths**, or the story is a `Rulebook story.`, the Builder's first act is to ask Codex to attack the plan (§ Builder step 0), before any code is written. The Coordinator answers it as Architect: it adds `## Plan attack` to the plan with one line per Codex M and S finding, `changed in plan` or `disputed — <reason>`, changes the plan where a finding holds, pushes to main, and tells the Builder to go. Other stories get no plan attack.
+4. **Builder** (below) opens the PR, or has Codex open it with `builder: codex`, and drives it through Codex rounds until no Must fix is open and CI is green, then asks the Coordinator for a Judge.
 5. **Coordinator starts the Judge thread** with only: the repo, the PR number, and "follow `.claude/skills/agent-team/team/CLOUD.md` § Judge". No summary of the plan or of the Builder's work: the Judge reads the files.
 6. **Judge** (below) rules. `request-changes` goes back to the Builder thread, which wakes on the PR comment. `approve` → merge or hand to the human. `escalate` → the Coordinator writes the Operatör line and puts the dispute to the human as a decision.
 7. **After merge** the Coordinator checks the story's `## Signal` when it can be read (the next routine run at the latest) and writes one line in the story's Log: seen, not seen, or not yet measurable.
 
 ## Builder
 
+0. **Plan attack** (only when § Flow 3a applies). Open the story's issue `NNN: <story title>` if it does not exist (with `builder: codex` it is the same issue that later carries the build task; post the build task only after this step) and comment: `@codex attack the plan: read .team/plans/NNN-slug.md against .team/backlog/NNN-slug.md, AGENTS.md and the code it names. Do not write code and do not open a PR. Find wrong facts, missing cases and failure paths, acceptance criteria the plan does not meet, and scope the story did not ask for. Number findings M/S/N with file:line or plan section.` Issue replies do not wake you (a PR watch covers PRs only), so after posting, schedule one reminder about 15 minutes after the request and one at the hour (§ Quota, issue tasks); at each, read the issue. When Codex has answered, message the Coordinator `NNN plan attack: <n> findings, <issue link>`. Start building when the plan's `## Plan attack` answers every M and S finding and the Coordinator says go. If Codex replies with an error, request the attack once more. If it fails twice, or has not answered an hour after the request, tell the Coordinator, who notes that under `## Plan attack` in the plan, and build the plan as it stands. You never edit the plan.
 1. Branch `feat/NNN-slug` from main, push it at once. Read the story, the plan, `AGENTS.md`, `TEAM.md` and `roles/coder.md` (that file holds, with this section winning where they differ).
 2. Build the plan with tests. Run **Test before commit** before every push. Open the PR: title `NNN: <story title>`, body as in `roles/coder.md`, plus one line per acceptance criterion saying how it was shown.
+
+   **With `builder: codex`** Codex does step 2 and every code fix; you do the rest of this section.
+   - Open the story's issue `NNN: <story title>` with a body that is the `@codex` task; if the issue already exists from step 0, post the task as a new comment on it instead (editing the body does not start Codex): `@codex build .team/plans/NNN-slug.md for .team/backlog/NNN-slug.md. Follow AGENTS.md. Run Test before commit. Open a draft PR titled NNN: <story title> from feat/NNN-slug, body as in roles/coder.md with one line per acceptance criterion. Sign — Coder (Codex) on behalf of <human>.`
+   - Issue replies do not wake you: schedule one reminder about 15 minutes after the request and one at the hour. At each, read the issue and look for a PR titled `NNN:`; once there is one, watch it like your own. No reply and no PR an hour after the request counts as a failed task.
+   - If Codex returns a diff and no PR, apply it unchanged on `feat/NNN-slug`, push, and open the PR yourself as in step 2.
+   - Ask Codex for each fix with a `@codex` comment on the PR naming the finding (`@codex fix M2: <one line>`). Do not write the fix yourself while Codex can.
+   - Run **Test before commit** yourself on Codex's head before every review request and before you ask for a Judge.
+   - If Codex fails the same task twice (an error reply, no PR or diff, or a head that fails **Test before commit**), build that task yourself and write `Codex failed twice on <task>; built by the Builder thread` in the response file.
 3. **Request Codex.** Codex reviews on its own only when a PR is opened for review or a draft is marked ready, never on a later push (checked 2026-10-24). So post `@codex review` yourself: once when the PR opens (always, also on a draft), and once after every push that changes code, followed by the focus for that round (the findings you answered, the files you changed). Codex reacts 👀 while it runs and 👍 when it has no findings. If the diff touches **Adversarial paths** in Team settings, the first round also gets three separate comments, one per angle:
    - `@codex security review` (Codex's own security review).
    - `@codex review — security: authorization, input validation, secrets, data exposure. Number findings M/S/N with file:line.`
@@ -44,7 +54,7 @@ outcome row → story + plan (main) → Builder thread → PR → Codex attacks 
    If the PR carries a data change (§ Data changes), every Codex round on it also gets the fact angle from that section.
    If a Codex review fails (quota, an error reply), request the same review once more before anything else. A review that fails twice, or has not finished long after the request, is said in the response file; whether the rounds may then go on without Codex is the project's call in Team settings, and never for a data change.
 4. **Answer every Codex finding** that is a P0/P1 or numbered M/S, in `.team/reviews/NNN-slug.response.md` (`## Codex round N — YYYY-MM-DD`, one line per finding: `fixed in <sha>` or `disputed — <reason>`). Codex is an attacker, not an authority: dispute what is wrong, with a reason the Judge can check. Never change code only to make a finding go away.
-5. **Stop the rounds** when every Codex review you requested for the current head commit has finished (a review posted on that commit, or Codex's 👍 on your request), none of them raises a new P0/P1 or Must fix, every earlier finding is answered, and the required checks are green. A review still running (👀) means wait for it: its result wakes you. Three Codex rounds without getting there is also a stop: say so. Then message the Coordinator: `NNN ready for judge: PR #<n>, <rounds> Codex rounds, <open disputes or "no open disputes">`.
+5. **Stop the rounds** when every Codex review you requested for the current head commit has finished (a review posted on that commit, or Codex's 👍 on your request), none of them raises a new P0/P1 or Must fix, every earlier finding is answered, and the required checks are green. A review still running (👀) means wait for it: its result wakes you. Three Codex rounds without getting there is also a stop: say so. Then, if the PR is a draft (a Codex-built PR always starts as one), mark it ready, because a draft cannot be merged (`gh pr ready <n>`; where GraphQL is blocked, as in cloud sessions, the REST route the 403 names), and message the Coordinator: `NNN ready for judge: PR #<n>, <rounds> Codex rounds, <open disputes or "no open disputes">`.
 6. **On `request-changes` from the Judge** (you wake on the comment): answer every Judge M and S in the same response file under `## Judge round N`, fix, push, request one Codex round on the change, and message the Coordinator again only when step 5 holds for the new head.
 7. End your watch when the PR is merged, closed without merge, or the Judge escalates.
 
@@ -52,7 +62,7 @@ outcome row → story + plan (main) → Builder thread → PR → Codex attacks 
 
 1. `gh pr checkout <n>`. Read the story, the plan, `AGENTS.md`, `roles/reviewer.md` and the review checks it names. You were started without the planning conversation on purpose: do not ask for it.
 2. Run every **Test before commit** check yourself, and the screenshots, previews or queries Team settings names. On a data change, also check § Data changes: the Codex review (with the fact angle) finished on the last commit that changed anything outside `.team/reviews/**`, and every open row in the package's own review file is fixed or ruled `not valid` by you. **Every acceptance criterion gets evidence** in the review file: a test name and its result, a command and its output, or a screenshot. A criterion you could not show is a Must fix, or an Operatör line if only the human can show it.
-3. **Rule on Codex.** List every Codex finding the Builder answered, with your ruling: `valid — fixed`, `valid — still open` (becomes your Must fix), or `not valid — <one sentence>`. Do the same for the Builder's disputes. Then try to break what the attackers did not cover; you do not need to re-read lines they already read unless you doubt them.
+3. **Rule on Codex.** List every Codex finding the Builder answered, with your ruling: `valid — fixed`, `valid — still open` (becomes your Must fix), or `not valid — <one sentence>`. Do the same for the Builder's disputes. Then try to break what the attackers did not cover; you do not need to re-read lines they already read unless you doubt them, except on a Codex-built PR (`builder: codex`), where you read the whole diff yourself.
 4. Write `.team/reviews/NNN-slug.md` from the template, `verdict:` as in `roles/reviewer.md`. Commit it to the PR branch, push, and post it as a PR comment (`gh pr review <n> --comment --body-file …`).
 5. **On approve:** if `.team/team.md` says `merge: auto`, the diff touches no **Human-merge paths** and the story is not a `Rulebook story.`, merge with `gh pr merge <n> --squash --delete-branch` (never `--admin`). Your own review commit may start new checks: if required checks are pending, use `gh pr merge <n> --auto --squash --delete-branch` so GitHub merges when they pass; where auto-merge is not enabled for the repo, keep watching and merge when the checks' result wakes you. Pending checks are never a reason to hand the PR to the human. A failing check or a conflict with main goes back to the Builder as `request-changes` with that one Must fix. Only a diff on **Human-merge paths**, a `Rulebook story.` (always, whatever **Human-merge paths** lists), or `merge: human` waits for the human: message the Coordinator `NNN approved, needs the human: <which path or rule>`, keep your watch, and merge as in § Human approval when the human's yes reaches you. This step replaces `roles/reviewer.md` step 6 in cloud mode.
 6. **Escalate** as in `roles/reviewer.md`: a Must or Should fix still disputed after your third round. Message the Coordinator.
@@ -88,6 +98,7 @@ Read off GitHub, keyed on `NNN:` in issue and PR titles.
 | If | then | whose turn |
 |---|---|---|
 | story, no plan | ready | Coordinator |
+| plan attack posted on the story's issue, plan has no `## Plan attack` answer | plan-attack | Coordinator |
 | plan, no `feat/NNN-*` branch | planned | Coordinator (start Builder) |
 | branch, no PR | in-progress | Builder |
 | PR, latest Codex review has an unanswered P0/P1 or M/S | attack | Builder |
@@ -120,10 +131,12 @@ Reading agent output is where the human's time goes, and an agent waiting for a 
 - Codex carries the review volume. Claude turns go to building and to the Judge's evidence and rulings.
 - The Coordinator plans at normal effort and does not watch PRs. Builder and Judge watch only their own PR and stop as above.
 - One `@codex review` comment per Builder push round, plus the three angles once on adversarial paths and the fact angle on every round of a data PR. No re-pinging the same commit, except the one retry after a failed review.
-- No polling loops. Threads wake on PR events and on messages.
+- Codex builds where `builder: codex`, so Claude turns on such a story go to driving the PR, the evidence and the ruling. The plan attack is one `@codex` task per risky story (§ Flow 3a), with no re-ping except one retry.
+- No polling loops. Threads wake on PR events and on messages. The one exception is an `@codex` task on an issue (plan attack, build task), which wakes nobody: the Builder schedules two reminders per task (about 15 minutes, and the hour), no more.
 
 ## One-time setup per repo (human)
 
 1. Codex: connect the repo, and turn on automatic code review for it (Codex settings → Code review).
-2. Paste `assets/cloud/project-instructions.md` (filled in) as the project's instructions.
-3. In the repo: `.team/team.md` gets `mode: cloud`, `builder: claude` and a `merge:` line; `AGENTS.md` gets the cloud settings (including **Data changes**) and `## Code Review Rules` from `assets/root/AGENTS.md`.
+2. Codex: create an environment for the repo (Codex settings → Environments) so `@codex` tasks can run; then the repo can use `builder: codex`.
+3. Paste `assets/cloud/project-instructions.md` (filled in) as the project's instructions.
+4. In the repo: `.team/team.md` gets `mode: cloud`, `builder: codex` once the Codex environment exists (else `builder: claude`), and a `merge:` line; `AGENTS.md` gets the cloud settings (including **Data changes**) and `## Code Review Rules` from `assets/root/AGENTS.md`.
