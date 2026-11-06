@@ -34,9 +34,10 @@ This repo is worked on by an agent team. The team's rulebook, roles and template
 - **Adversarial paths:** none <!-- cloud mode: paths whose PRs get three focused Codex reviews (security, failure paths, story fit) -->
 - **Data changes:** <!-- cloud mode (CLOUD.md § Data changes): what writes to production data here (tables, stores, packages) and where packages and their review files live; exported content paths (e.g. src/data/**); the audit files the fact angle checks against -->
 - **Builder:** <!-- cloud mode: codex (default where the repo has a Codex environment) or claude; CLOUD.md § Builder -->
+- **Runner offline after:** 30 minutes <!-- cloud mode, runner: mini: how long a required check may sit queued before the Builder reports an offline runner (CLOUD.md § Quota, Runner offline) -->
 - **Human-merge paths:** <!-- cloud mode: paths the Judge never merges even with merge: auto — money, legal text, migrations, auth, the rulebook -->
 - **Auto-queue:** none <!-- cloud mode: kinds of routine proposal that go straight to Kö, e.g. Dependabot patch updates, broken links -->
-- **Signal sources:** <!-- cloud mode: what the weekly routine reads — e.g. Vercel runtime errors, failed Actions runs, Actions minutes, Dependabot, analytics -->
+- **Signal sources:** <!-- cloud mode: what the weekly routine reads — e.g. Vercel runtime errors, failed Actions runs, Actions minutes, the self-hosted runner's status, Dependabot, analytics -->
 
 ## Code Review Rules
 

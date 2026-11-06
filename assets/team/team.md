@@ -20,6 +20,8 @@ mode: local
 # cloud only: who builds. codex = Codex from an @codex task on the story's issue (needs a Codex environment for the repo; the default where one exists);
 # claude = the Builder thread. A fresh repo has no Codex environment yet, so this starts as claude (CLOUD.md § One-time setup).
 builder: claude
+# cloud only: where CI runs. github = GitHub-hosted minutes; mini = the self-hosted runner on the Mac mini (private repos only, team/RUNNER.md).
+runner: github
 
 team: .claude/skills/agent-team @ {{SKILL_VERSION}}
 <!-- upgrade with /agent-team upgrade, or: git submodule update --remote .claude/skills/agent-team -->
