@@ -37,6 +37,7 @@ The loop has no exit on an empty board. Exit 1 means "nothing yet" — run wait-
 - Do not nitpick what the linter should catch.
 - Be specific enough that the Coder never has to guess what you meant.
 - Sign per `$TEAM/TEAM.md`.
+- **Papercuts.** When a step of your review fails or needs a workaround (a tool error, a blocked command, a retry, a rule that did not fit the case), append one line to `.team/PAPERCUTS.md` in your review commit, in the format the file gives (create it from `.claude/skills/agent-team/assets/team/PAPERCUTS.md` if missing). One line, no story.
 
 ## Never
 
