@@ -53,7 +53,11 @@ jobs:
           case "$title" in
             board:*) ;;
             *)
-              if gh api "repos/$REPO/contents/.team?ref=$base" >/dev/null 2>&1; then
+              has_team=""
+              if team_out=$(gh api "repos/$REPO/contents/.team?ref=$base" 2>&1); then has_team=1
+              elif ! grep -q 'HTTP 404' <<<"$team_out"; then refuse "could not tell whether the repo has .team/: $(tr '\n' ' ' <<<"$team_out" | cut -c1-200)"
+              fi
+              if [ -n "$has_team" ]; then
                 files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.status != "removed") | .filename') || refuse "could not list the PR's files"
                 ok=""
                 for f in $(grep -E '^\.team/reviews/[^/]+\.md$' <<<"$files" | grep -v '\.response\.md$'); do
@@ -61,15 +65,27 @@ jobs:
                 done
                 [ -n "$ok" ] || refuse "no review file in .team/reviews/ with 'verdict: approve' at $sha"
               fi
-              codex=$( { gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[].user.login'; gh api --paginate "repos/$REPO/pulls/$PR/reviews" --jq '.[].user.login'; } | grep -c '^chatgpt-codex-connector\[bot\]$' || true)
-              [ "${codex:-0}" -gt 0 ] || refuse "no Codex comment or review on the PR"
+              bot='chatgpt-codex-connector[bot]'
+              comments=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | [.id, .user.login, (.body | test("@codex") | tostring)] | @tsv') || refuse "could not list the PR's comments"
+              codex=$( { cut -f2 <<<"$comments"
+                         gh api --paginate "repos/$REPO/pulls/$PR/reviews" --jq '.[].user.login'
+                         gh api --paginate "repos/$REPO/issues/$PR/reactions" --jq '.[] | select(.content == "+1") | .user.login'
+                         awk -F'\t' '$3 == "true" {print $1}' <<<"$comments" | while read -r id; do
+                           gh api --paginate "repos/$REPO/issues/comments/$id/reactions" --jq '.[] | select(.content == "+1") | .user.login'
+                         done; } | grep -cxF "$bot" || true)
+              [ "${codex:-0}" -gt 0 ] || refuse "no Codex comment, review or 👍 on the PR"
               ;;
           esac
           if ! out=$(gh api -X PUT "repos/$REPO/pulls/$PR/merge" -f sha="$sha" -f merge_method=squash 2>&1); then
             refuse "GitHub refused the merge: $(tr '\n' ' ' <<<"$out" | cut -c1-300)"
           fi
           if [ "$head_repo" = "$REPO" ]; then
-            gh api -X DELETE "repos/$REPO/git/refs/heads/$ref" >/dev/null 2>&1 || echo "branch $ref not deleted"
+            now=$(gh api "repos/$REPO/git/ref/heads/$ref" --jq .object.sha 2>/dev/null || true)
+            if [ "$now" = "$sha" ]; then
+              gh api -X DELETE "repos/$REPO/git/refs/heads/$ref" >/dev/null 2>&1 || echo "branch $ref not deleted"
+            else
+              echo "branch $ref is at ${now:-?}, not $sha: kept"
+            fi
           fi
           for wf in $AFTER_MERGE_WORKFLOWS; do
             gh api -X POST "repos/$REPO/actions/workflows/$wf/dispatches" -f ref="$base" >/dev/null 2>&1 || echo "could not dispatch $wf"
