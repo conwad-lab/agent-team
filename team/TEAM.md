@@ -72,7 +72,7 @@ Everything project-specific — test commands, CI-only checks, review checks, wh
 
 ## The rulebook
 
-`AGENTS.md`, `.team/team.md`, `REVIEW.md` and `.team/roles/*` are the rulebook. Only the human changes it — directly, or through an ORDER row the PO turns into a story whose first line is `Rulebook story.` Any other PR that touches it gets a Must fix. Feedback on the rules goes in PR text, not in a diff.
+`AGENTS.md`, `.team/team.md`, `REVIEW.md` and `.team/roles/*` are the rulebook. Only the human changes it — directly, or through an ORDER row the PO turns into a story whose first line is `Rulebook story.` Any other PR that touches it gets a Must fix. In cloud mode the Judge merges a rulebook story on agreement with Codex (`CLOUD.md` § Judge 5). Feedback on the rules goes in PR text, not in a diff.
 
 ## Seats
 
