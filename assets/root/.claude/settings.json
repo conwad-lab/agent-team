@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git push * main)",
+      "Bash(git push * main *)",
+      "Bash(git push *:main)",
+      "Bash(git push *:main *)",
+      "Bash(git push * master)",
+      "Bash(git push * master *)",
+      "Bash(git push *:master)",
+      "Bash(git push *:master *)",
+      "Bash(git push *refs/heads/main*)",
+      "Bash(git push *refs/heads/master*)",
+      "Bash(git push *--force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * -f*)",
+      "Bash(git push * +*)",
+      "Bash(gh pr merge *--admin*)",
+      "Bash(gh api *protection*)",
+      "Bash(gh api *Protection*)",
+      "Bash(gh api *rulesets*)",
+      "Bash(gh api *Ruleset*)"
+    ]
+  }
+}
