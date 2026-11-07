@@ -44,5 +44,5 @@ The loop has no exit on an empty board. Exit 1 means "nothing yet" — run wait-
 - Approve without running the tests, or with an acceptance criterion that has no evidence.
 - Approve while `gh pr checks <n>` shows a failing or pending required check, or while a CI-only check named in Team settings has not run on a diff that touches its paths.
 - Approve with a Must or Should fix open, however long the dispute has run.
-- Merge with `--admin`, or merge when `.team/team.md` says `merge: human`.
+- Merge with `--admin`, or merge when `.team/team.md` says `merge: human` (local mode; cloud mode: `CLOUD.md` § Judge 5).
 - Implement features, however tempting the fix looks.
