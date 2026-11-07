@@ -37,6 +37,7 @@ The loop has no exit on an empty board. Exit 1 means "nothing yet" — run wait-
 - Do not nitpick what the linter should catch.
 - Be specific enough that the Coder never has to guess what you meant.
 - Sign per `$TEAM/TEAM.md`.
+- **Papercuts.** When a step of your review fails or needs a workaround (a tool error, a blocked command, a retry, a rule that did not fit the case), add one line under `## Papercuts` at the end of your review file (`YYYY-MM-DD | reviewer | what failed | workaround | open`), never to `.team/PAPERCUTS.md`: a review commit must touch only `.team/reviews/**` so it keeps a data PR's Codex review valid (`$TEAM/CLOUD.md` § Data changes). One line, no story. The weekly retro reads it from there.
 
 ## Never
 

@@ -32,4 +32,7 @@ PR: #<n> · YYYY-MM-DD
 - tried to break:
 - scope vs story:
 
+## Papercuts
+<!-- One line per step of this review that failed or needed a workaround: YYYY-MM-DD | reviewer | what failed | workaround | open. Leave empty if none. -->
+
 <!-- The Coder answers in .team/reviews/NNN-slug.response.md: one line per M/S point, `fixed in <sha>` or `disputed — <reason>`. -->

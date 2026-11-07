@@ -37,7 +37,11 @@ This repo is worked on by an agent team. The team's rulebook, roles and template
 - **Runner offline after:** 30 minutes <!-- cloud mode, runner: mini: how long a required check may sit queued before the Builder reports an offline runner (CLOUD.md § Quota, Runner offline) -->
 - **Human-merge paths:** <!-- cloud mode: paths the Judge never merges even with merge: auto — money, legal text, migrations, auth, the rulebook -->
 - **Auto-queue:** none <!-- cloud mode: kinds of routine proposal that go straight to Kö, e.g. Dependabot patch updates, broken links -->
-- **Signal sources:** <!-- cloud mode: what the weekly routine reads — e.g. Vercel runtime errors, failed Actions runs, Actions minutes, the self-hosted runner's status, Dependabot, analytics -->
+- **Signal sources:** <!-- cloud mode: what the weekly routine reads — e.g. Vercel runtime errors, failed Actions runs, Actions minutes, the self-hosted runner's status, Dependabot, analytics. The weekly retro always reads the team's own review files and `.team/PAPERCUTS.md` (CLOUD.md § Routines) -->
+
+## Papercuts
+
+When you build (as Coder or Builder, including Codex from a build task) and a step fails or needs a workaround (a tool error, a blocked command, a retry, a rule that did not fit the case), append one line to `.team/PAPERCUTS.md` in the same commit as the work: `YYYY-MM-DD | role | what failed | workaround | open`. The weekly retro turns repeated papercuts into proposals; never edit or remove other lines. As an attacker (a GitHub review) you write no files: say in the review which check you could not run and why. The Judge logs its papercuts in its review file (`roles/reviewer.md`).
 
 ## Code Review Rules
 
