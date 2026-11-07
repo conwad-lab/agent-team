@@ -22,6 +22,8 @@ mode: local
 builder: claude
 # cloud only: where CI runs. github = GitHub-hosted minutes; mini = the self-hosted runner on the Mac mini (private repos only, team/RUNNER.md).
 runner: github
+# cloud only: the GitHub login the agents act as (CLOUD.md § Walls); none = the human's login, signed "on behalf of".
+agent-account: none
 
 team: .claude/skills/agent-team @ {{SKILL_VERSION}}
 <!-- upgrade with /agent-team upgrade, or: git submodule update --remote .claude/skills/agent-team -->

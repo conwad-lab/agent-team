@@ -35,6 +35,7 @@ copy_tpl() {
 
 copy_tpl "$ASSETS/root/AGENTS.md" "AGENTS.md"
 copy_tpl "$ASSETS/root/CLAUDE.md" "CLAUDE.md"
+copy_tpl "$ASSETS/root/.claude/settings.json" ".claude/settings.json"
 while IFS= read -r -d '' f; do
   copy_tpl "$f" ".team/${f#"$ASSETS"/team/}"
 done < <(find "$ASSETS/team" -type f -print0)
@@ -46,6 +47,7 @@ if [ ${#skipped[@]} -gt 0 ]; then
     case "$s" in
       AGENTS.md) echo "  -> AGENTS.md existed. Add the pointer to .claude/skills/agent-team/team/TEAM.md (see $ASSETS/root/AGENTS.md)" ;;
       CLAUDE.md) echo "  -> CLAUDE.md existed. Make sure it says: read AGENTS.md first." ;;
+      .claude/settings.json) echo "  -> .claude/settings.json existed. Merge the deny list from $ASSETS/root/.claude/settings.json into it (team/CLOUD.md § Walls)." ;;
     esac
   done
 fi
