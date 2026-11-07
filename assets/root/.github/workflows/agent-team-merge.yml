@@ -1,0 +1,78 @@
+# agent-team: the merge step of cloud mode (team/CLOUD.md § Judge 5, § Walls "Merge workflow").
+# The Judge never runs a merge itself. It posts its verdict comment ending with the line
+#   agent-team-merge: <40-hex head sha>
+# and this workflow merges exactly that head (squash), or answers why it did not.
+# It runs from the default branch's copy, never from the PR, and checks out no code.
+# Install: copy to .github/workflows/ in the team repo (a human-merge path). Private repos
+# with `runner: mini` change runs-on to ${{ fromJSON(vars.RUNS_ON || '["self-hosted","mini"]') }}.
+name: agent-team-merge
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+concurrency:
+  group: agent-team-merge-${{ github.event.issue.number }}
+  cancel-in-progress: false
+jobs:
+  merge:
+    if: >-
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, 'agent-team-merge: ') &&
+      (github.event.comment.user.login == github.repository_owner ||
+       (vars.AGENT_ACCOUNT != '' && github.event.comment.user.login == vars.AGENT_ACCOUNT)) &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ${{ fromJSON(vars.RUNS_ON || '["ubuntu-latest"]') }}
+    timeout-minutes: 5
+    steps:
+      - name: Merge the pinned head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          BODY: ${{ github.event.comment.body }}
+          COMMENT_URL: ${{ github.event.comment.html_url }}
+          AFTER_MERGE_WORKFLOWS: ${{ vars.AFTER_MERGE_WORKFLOWS }}
+        shell: bash
+        run: |
+          # --- begin agent-team-merge script
+          set -uo pipefail
+          say() { gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$1" >/dev/null || true; }
+          refuse() { echo "not merged: $1"; say "agent-team-merge did not merge, asked for in $COMMENT_URL: $1"; exit 1; }
+          sha=$(printf '%s\n' "$BODY" | tr -d '\r' | sed -n 's/^agent-team-merge: \([0-9a-f]\{40\}\)[[:space:]]*$/\1/p' | head -n 1)
+          [ -n "$sha" ] || { echo "no 'agent-team-merge: <40-hex sha>' line; nothing to do"; exit 0; }
+          pr=$(gh api "repos/$REPO/pulls/$PR") || refuse "could not read the PR"
+          state=$(jq -r .state <<<"$pr"); draft=$(jq -r .draft <<<"$pr"); head=$(jq -r .head.sha <<<"$pr")
+          title=$(jq -r .title <<<"$pr"); head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pr"); ref=$(jq -r .head.ref <<<"$pr")
+          base=$(jq -r .base.ref <<<"$pr")
+          [ "$state" = open ] || refuse "the PR is $state"
+          [ "$draft" = false ] || refuse "the PR is a draft"
+          [ "$head" = "$sha" ] || refuse "the head is $head, not the pinned $sha; a new head needs a new verdict"
+          case "$title" in
+            board:*) ;;
+            *)
+              if gh api "repos/$REPO/contents/.team?ref=$base" >/dev/null 2>&1; then
+                files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.status != "removed") | .filename') || refuse "could not list the PR's files"
+                ok=""
+                for f in $(grep -E '^\.team/reviews/[^/]+\.md$' <<<"$files" | grep -v '\.response\.md$'); do
+                  if gh api "repos/$REPO/contents/$f?ref=$sha" --jq .content | base64 -d | grep -qE '^verdict:[[:space:]]*approve[[:space:]]*$'; then ok=1; fi
+                done
+                [ -n "$ok" ] || refuse "no review file in .team/reviews/ with 'verdict: approve' at $sha"
+              fi
+              codex=$( { gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[].user.login'; gh api --paginate "repos/$REPO/pulls/$PR/reviews" --jq '.[].user.login'; } | grep -c '^chatgpt-codex-connector\[bot\]$' || true)
+              [ "${codex:-0}" -gt 0 ] || refuse "no Codex comment or review on the PR"
+              ;;
+          esac
+          if ! out=$(gh api -X PUT "repos/$REPO/pulls/$PR/merge" -f sha="$sha" -f merge_method=squash 2>&1); then
+            refuse "GitHub refused the merge: $(tr '\n' ' ' <<<"$out" | cut -c1-300)"
+          fi
+          if [ "$head_repo" = "$REPO" ]; then
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$ref" >/dev/null 2>&1 || echo "branch $ref not deleted"
+          fi
+          for wf in $AFTER_MERGE_WORKFLOWS; do
+            gh api -X POST "repos/$REPO/actions/workflows/$wf/dispatches" -f ref="$base" >/dev/null 2>&1 || echo "could not dispatch $wf"
+          done
+          say "Merged by agent-team-merge: head $sha, as asked in $COMMENT_URL"
+          # --- end agent-team-merge script
