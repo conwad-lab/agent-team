@@ -64,7 +64,7 @@ Because every role writes in a different folder or on a different branch, there 
 
 ## The work order
 
-The human steers with `.team/ORDER.md`: rows under **Kö** are the goal, in order; **Väntar på människan** is parked; **Operatör** is where the PO writes what only the human may do (secrets, deploys, migrations, infrastructure, spend, decisions). The PO takes the next row only when no story is in flight.
+The human steers with `.team/ORDER.md`: rows under **Kö** are the goal, in order; **Väntar på människan** is parked; **Operatör** is where the PO writes what only the human may do (secrets, deploys, migrations, infrastructure, spend, decisions). The PO takes the next row only when no story is in flight (cloud mode: up to **Stories in flight**, `CLOUD.md` § Flow 3).
 
 ## Project settings
 
