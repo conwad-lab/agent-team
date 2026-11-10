@@ -17,7 +17,7 @@ auth: max-only — ingen API-nyckel i rollernas miljö (bin/check-auth stoppar s
 merge: human
 # mode: local (four clones, bin/wait-for) or cloud (Claude Code Projects + Codex on GitHub, see team/CLOUD.md)
 mode: local
-# cloud only: who builds. codex = Codex from an @codex task on the story's issue (needs a Codex environment for the repo; the default where one exists);
+# cloud only: who builds when a plan's ## Estimate names no builder (each plan names its own, CLOUD.md [T2]). codex = Codex from an @codex task on the story's issue (needs a Codex environment for the repo);
 # claude = the Builder thread. A fresh repo has no Codex environment yet, so this starts as claude (SETUP.md § One-time setup per repo).
 builder: claude
 # cloud only: where CI runs. github = GitHub-hosted minutes; mini = the self-hosted runner on the Mac mini (private repos only, team/RUNNER.md).

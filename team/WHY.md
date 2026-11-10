@@ -12,7 +12,7 @@ A rule may be removed by a `Rulebook story.` when its "still needed if" test has
 [M2] One daily digest; Builder and Judge silent — prevents: a stream of agent messages; agents waiting on the human 80 % of the time (Anthropic, 2026-10), #6 — still needed if: the human reads more than one message per day per project — kept
 [M3] Each item opens with the ask — prevents: design (#6), kept because the human skims from the phone — still needed if: a card or digest line needed a follow-up question — kept
 [T1] Claude builds and judges, Codex attacks — prevents: no session judges its own work (Rieseberg talk, #6); on Codex-built PRs Claude is the second family (#12) — still needed if: always while two model families are available — kept
-[T2] builder: codex where a Codex environment exists — prevents: scarce Claude turns spent on code Codex delivers in ~10 min (mondmodel #851, #862, #871; agent-team #12) — still needed if: Codex build tasks keep succeeding (retro: failed @codex tasks) — kept
+[T2] The plan's Estimate picks the builder: S/M plain → codex where a Codex environment exists — prevents: scarce Claude turns spent on code Codex delivers in ~10 min (mondmodel #851, #862, #871; agent-team #12); one builder per repo whatever the story (Wonderful: Codex won 7 of 7 simple runs, Claude 62 vs 55 on complex ones; meetup 2026-11-04, story D) — still needed if: Codex build tasks keep succeeding (retro: failed @codex tasks, `bin/watch --estimates`) — kept (per story since v0.8.2)
 [F1] Outcome rows become stories with a Signal — prevents: design (#6), kept because the Signal is how the team sees a story worked — still needed if: ORDER rows are outcomes — kept
 [F2] Architect runs Baseline; too big → split — prevents: one story = one plan = one PR broken by oversized stories (TEAM.md, local mode) — still needed if: a PR spans more than one story's scope — kept
 [F3] Builder started with repo, paths, § Builder only — prevents: planning context leaking into the build thread (#6) — still needed if: always — kept
@@ -28,7 +28,7 @@ A rule may be removed by a `Rulebook story.` when its "still needed if" test has
 [B5] @codex review on open and every code push — prevents: Codex reviews only on open/ready, never later pushes (checked 2026-10-24, #6) — still needed if: Codex still skips later pushes — kept
 [B6] Four angle comments on Adversarial paths — prevents: one generic review missing security and failure paths (#6) — still needed if: the angle reviews find findings the plain review did not — kept
 [B7] Retry a failed review once; no fallback for data — prevents: Codex quota and error replies silently ending review (#11) — still needed if: Codex reviews fail (retro: failed @codex tasks) — kept
-[B8] Answer every finding; never silence one — prevents: 34 of 90 Should fixes merged without the fix in dignify-your-craft (#10) — still needed if: always — kept
+[B8] Answer every finding; never silence one; Outcome before the Judge — prevents: 34 of 90 Should fixes merged without the fix in dignify-your-craft (#10); no record of who built or what the estimate missed (FOSS: E10 planned at 25 tasks, took 55; story D) — still needed if: always — kept (format moved to `templates/response.md`, [X33])
 [B9] Stop rounds on a clean head, or after three — prevents: endless Codex rounds (#6) — still needed if: always — kept
 [B10] Mark ready; ready review counts — prevents: the ready review left unanswered (#13) — still needed if: [B3] holds — kept
 [B11] Ask for a Judge only on a green head — prevents: Judges started on red heads (#13) — still needed if: always — kept
@@ -60,7 +60,7 @@ A rule may be removed by a `Rulebook story.` when its "still needed if" test has
 [H6] Push after yes voids it; auto-merge off — prevents: auto-merge merging a later head (#19, #20) — still needed if: always — kept
 [H7] Vänta leaves the PR open, in the digest — prevents: nagging (#7) — still needed if: always — kept
 [R1] Daily routine; weekly Signal sources to Förslag, Auto-queue only to Kö — prevents: routine work reaching Kö unasked (#6); daily since v0.8.1 so [R7] runs every day (story B) — still needed if: always — kept
-[R2] Weekly retro reads the agents' own misses — prevents: Builder misses never summed up (KRING, FOSS, meetup 2026-11-04; #16) — still needed if: retro rows get approved — kept
+[R2] Weekly retro reads the agents' own misses and the estimates table — prevents: Builder misses never summed up (KRING, FOSS, meetup 2026-11-04; #16); estimates never checked against outcomes (story D) — still needed if: retro rows get approved — kept
 [R3] Pattern threshold; card that decided nothing — prevents: one-off rows; cards that never change an answer (#16, Judge N2 on #18) — still needed if: see [R2] — kept
 [R4] What can be removed? one row per run — prevents: a rulebook that only grows, 2 065 → 7 778 words in 17 days (Mollick 2026-11-09; this story) — still needed if: always — kept
 [R5] Retro rows never to Kö; never edits rules — prevents: the routine changing the rules it reports on (#16) — still needed if: always — kept
@@ -114,3 +114,8 @@ A rule may be removed by a `Rulebook story.` when its "still needed if" test has
 
 [X31] Retro counts `cards` and `human wait` defined in CLOUD.md — prevents: — still needed if: — — moved to the `## Retro` comment in `assets/team/PAPERCUTS.md`, merged into [R6]
 [X32] Digest lists what waits on the human and for how long — prevents: #7 — still needed if: — — merged into [M2] and [H7] as the board's link; `bin/watch` shows a PR with an open or Vänta card as the human's turn with its age
+
+## Cut or merged in v0.8.2
+
+[X33] Response-file round format in CLOUD.md [B8] and [B13] — prevents: — still needed if: — — moved to `team/templates/response.md`, merged into [B8]
+[X34] [R1] "the rest waits for the human's yes" — prevents: — still needed if: — — dropped as a restatement: Förslag rows never reach Kö except Auto-queue kinds
