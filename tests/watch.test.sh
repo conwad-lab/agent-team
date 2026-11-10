@@ -40,7 +40,7 @@ row()  { grep -F "| $1 |" "$T/board.md"; }
 
 # ---- repo o/r: one story in every state, every stall kind
 put repos/o/r <<< '{"default_branch":"main"}'
-{ for s in 001-ready 002-planned 003-split 004-superseded _005-parked 006-building 007-draft 008-judging 009-approved 010-changes 011-escalated 012-done 013-done-old 015-stale; do
+{ for s in 001-ready 002-planned 003-split 004-superseded _005-parked 006-building 007-draft 008-judging 009-approved 010-changes 011-escalated 012-done 013-done-old 015-stale 016-superseded-pr; do
     echo ".team/backlog/$s.md"; done; printf '%s\n' .team/plans/002-planned.md .team/plans/003-split.md .team/plans/006-building.md .team/backlog/.gitkeep
 } | jq -R '{path: .}' | jq -s '{tree: .}' | put "repos/o/r/git/trees/main?recursive=1"
 put "repos/o/r/contents/.team/plans/003-split.md?ref=main" <<< "{\"content\":\"$(b64 $'---\nverdict: needs-split\n---\n')\"}"
@@ -62,6 +62,7 @@ pr() { # number title state draft merged_at updated_ago ref
   pr 12 "012: done"       closed false "$(t $((2*D)))"  $((2*D))  feat/012-done
   pr 13 "013: done old"   closed false "$(t $((10*D)))" $((10*D)) feat/013-done-old
   pr 15 "015: stale"      open   false -           $((2*H))  feat/015-stale
+  pr 16 "016: superseded" open   true  -           $((1*H))  feat/016-superseded-pr
   pr 14 "014: no story"   open   true  -           $((1*H))  feat/014-x
   pr 20 "board: tidy"     open   false -           $((1*H))  board/2026-11-10-tidy
   printf '{"number":1,"title":"old","state":"closed","draft":false,"merged_at":null,"updated_at":"%s","head":{"ref":"x","sha":"s"},"html_url":"u"}]' "$(t $((20*D)))"
@@ -81,6 +82,7 @@ put "repos/o/r/contents/.team/reviews?ref=sha15" <<< '[{"name":"015-x.md"}]'
 put "repos/o/r/contents/.team/reviews/015-x.md?ref=sha15" <<< "{\"content\":\"$(b64 $'---\nverdict: request-changes\n---\n')\"}"
 put "repos/o/r/commits?sha=sha15&path=.team/reviews/015-x.md&per_page=1" <<< '[{"sha":"r15"}]'
 put "repos/o/r/compare/r15...sha15" <<< '{"files":[{"filename":".team/reviews/015-x.response.md"},{"filename":"src/a.js"}]}'
+put "repos/o/r/contents/.team/backlog/016-superseded-pr.md?ref=main" <<< "{\"content\":\"$(b64 $'---\nsuperseded-by: 017\n---\n')\"}"
 # 009: only the response file changed after the review: the verdict stands
 put "repos/o/r/commits?sha=sha9&path=.team/reviews/009-x.md&per_page=1" <<< '[{"sha":"r9"}]'
 put "repos/o/r/compare/r9...sha9" <<< '{"files":[{"filename":".team/reviews/009-x.response.md"}]}'
@@ -117,7 +119,7 @@ put "repos/o/r/issues/comments/411/reactions" <<< "[{\"user\":{\"login\":\"$BOT\
 # 042: a fix task unanswered → codex-task, never an automatic review retry
 put "repos/o/r/issues/42/comments?per_page=100" <<< "[$(cm 421 conwad-lab $((2*H)) '@codex fix M1: quote the path' | sed 's/,$//')]"
 put "repos/o/r/actions/runs?status=queued&per_page=100" <<< "{\"workflow_runs\":[{\"id\":100,\"name\":\"ci\",\"created_at\":\"$(t 2700)\",\"html_url\":\"r100\"},{\"id\":101,\"name\":\"ci\",\"created_at\":\"$(t 600)\",\"html_url\":\"r101\"},{\"id\":102,\"name\":\"ci\",\"created_at\":\"$(t $((2*H)))\",\"html_url\":\"r102\",\"pull_requests\":[{\"number\":10}]}]}"
-put "repos/o/r/actions/runs?status=failure&created=%3E%3D$(t $D)&per_page=100" <<< "{\"workflow_runs\":[{\"id\":200,\"name\":\"ci\",\"created_at\":\"$(t $H)\",\"html_url\":\"r200\"},{\"id\":201,\"name\":\"e2e\",\"created_at\":\"$(t $H)\",\"html_url\":\"r201\"}]}"
+put "repos/o/r/actions/runs?status=failure&created=%3E%3D$(t $((7*D)))&per_page=100" <<< "{\"workflow_runs\":[{\"id\":200,\"name\":\"ci\",\"created_at\":\"$(t $H)\",\"html_url\":\"r200\"},{\"id\":201,\"name\":\"e2e\",\"created_at\":\"$(t $H)\",\"html_url\":\"r201\"},{\"id\":203,\"name\":\"ci\",\"created_at\":\"$(t $((2*D)))\",\"updated_at\":\"$(t $H)\",\"html_url\":\"r203\"},{\"id\":204,\"name\":\"ci\",\"created_at\":\"$(t $((3*D)))\",\"updated_at\":\"$(t $((2*D)))\",\"html_url\":\"r204\"}]}"
 put repos/o/r/actions/runs/200/jobs <<< '{"jobs":[{"steps":[],"runner_name":null}]}'
 put repos/o/r/actions/runs/201/jobs <<< '{"jobs":[{"steps":[{"name":"x"}],"runner_name":"GitHub Actions 2"}]}'
 
@@ -130,6 +132,7 @@ check "fresh PRs not idle"                    '! has "pr-idle	#7 " && ! has "pr-
 check "branch-idle: no PR, 2 d"               'has "branch-idle	feat/006-building"'
 check "fresh branch not idle"                 '! has "feat/099-fresh"'
 check "queued past 30 min"                    'has "queued	ci: queued" && has "r100" && ! has "r101"'
+check "old run failing today is caught, old failure is not" 'has "r203" && ! has "r204"'
 check "queued run on a carded PR skipped (r3 S1)" '! has "r102"'
 check "not-started run flagged, started one not" 'has "not-started" && has "r200" && ! has "r201"'
 check "codex-retry: asked once, 2 h"          'has "codex-retry	#8:"'
@@ -152,6 +155,7 @@ check "board: ready"             'row 001-ready | grep -q "| ready | Coordinator
 check "board: planned"           'row 002-planned | grep -q "| planned | Coordinator |"'
 check "board: needs-split"       'row 003-split | grep -q "| needs-split | Coordinator |"'
 check "board: superseded absent" '! row 004-superseded'
+check "board: superseded with a PR absent" '! row 016-superseded-pr'
 check "board: parked absent"     '! grep -q "005-parked" "$T/board.md"'
 check "board: branch → building, age" 'row 006-building | grep -q "| building | Builder | 2 d ago |"'
 check "board: draft → building"  'row 007-draft | grep -q "| building | Builder |"'

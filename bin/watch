@@ -140,7 +140,9 @@ watch_repo() {
 
   # not-started
   local since; since="$(iso $(( NOW - DAY )))"
-  api --paginate "repos/$R/actions/runs?status=failure&created=%3E%3D$since&per_page=100" | jq -r '.workflow_runs[] | [.id, .name, (.created_at|fromdateiso8601), .html_url] | @tsv' > "$TMP/failed" || true
+  # runs created in the last 7 days that failed in the last 24 h (a run can queue long or be re-run)
+  api --paginate "repos/$R/actions/runs?status=failure&created=%3E%3D$(iso $(( NOW - 7 * DAY )))&per_page=100" | jq -r --argjson since $(( NOW - DAY )) '.workflow_runs[] |
+      select(((.updated_at // .created_at)|fromdateiso8601) >= $since) | [.id, .name, ((.updated_at // .created_at)|fromdateiso8601), .html_url] | @tsv' > "$TMP/failed" || true
   while IFS=$'\t' read -r id name created url; do
     [ -n "$id" ] || continue
     n="$(api "repos/$R/actions/runs/$id/jobs" | jq '[.jobs[] | select(((.steps // []) | length) > 0 or ((.runner_name // "") != ""))] | length')" || continue
@@ -276,12 +278,13 @@ watch_repo() {
       last="$(awk -F'\t' -v b="$br" '$1 == b {print $2}' "$TMP/branchdate" | head -1)"
     fi
     if [ -z "$state" ]; then
-      [ -n "$(content "$story" "$def" | field superseded-by)" ] && continue
       plan="$(grep -E "^\.team/plans/${id}-" "$TMP/plans" | head -1)"
       if [ -z "$plan" ]; then state=ready; owner=Coordinator
       elif [ "$(content "$plan" "$def" | field verdict)" = needs-split ]; then state=needs-split; owner=Coordinator
       else state=planned; owner=Coordinator; fi
     fi
+    # superseded stories are left out whatever PR or branch they still have
+    [ -n "$story" ] && [ -n "$(content "$story" "$def" | field superseded-by)" ] && continue
     local ord
     case "$state" in escalated) ord=0 ;; approved) ord=1 ;; judging) ord=2 ;; changes-requested) ord=3 ;; building) ord=4 ;;
       planned) ord=5 ;; needs-split) ord=6 ;; ready) ord=7 ;; done) ord=8 ;; *) ord=9 ;; esac
