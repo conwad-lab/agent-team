@@ -141,7 +141,7 @@ watch_repo() {
     # events: time, kind (req|out|-), comment id
     api --paginate "repos/$R/issues/$num/comments?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] |
         [(.created_at|fromdateiso8601),
-         (if .user.login == $bot then "out" elif (.user.login|endswith("[bot]")|not) and (.body|test("^@codex\\b";"m")) then "req" else "-" end),
+         (if .user.login == $bot and (.body|test("\"status\":\"running\"")|not) then "out" elif .user.login == $bot then "-" elif (.user.login|endswith("[bot]")|not) and (.body|test("^@codex\\b";"m")) then "req" else "-" end),
          .id] | @tsv' > "$TMP/ev" || continue
     if [ "$ispr" = true ]; then
       api --paginate "repos/$R/pulls/$num/reviews?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] | select(.user.login == $bot) |

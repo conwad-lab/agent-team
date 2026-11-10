@@ -77,7 +77,9 @@ done
 
 cm() { printf '{"id":%s,"user":{"login":"%s"},"created_at":"%s","body":"%s"},' "$1" "$2" "$(t "$3")" "$4"; }
 BOT='chatgpt-codex-connector[bot]'
-put "repos/o/r/issues/8/comments?per_page=100"  <<< "[$(cm 81 conwad-lab $((2*H)) '@codex review\n\nfocus' | sed 's/,$//')]"
+# 008: Codex's summary comment still says running: not an answer
+jq -n --arg t1 "$(t $((2*H)))" --arg t2 "$(t 7000)" --arg bot "$BOT" '[{id:81,user:{login:"conwad-lab"},created_at:$t1,body:"@codex review\n\nfocus"},
+  {id:82,user:{login:$bot},created_at:$t2,body:"<!-- codex-review-state:v1 {\"code_review\":{\"status\":\"running\"}} -->\nCodex Review Summary: Running"}]' | put "repos/o/r/issues/8/comments?per_page=100"
 put "repos/o/r/issues/7/comments?per_page=100"  <<< "[$(cm 71 conwad-lab $((3*H)) '@codex review')$(cm 72 conwad-lab 5400 '@codex review' | sed 's/,$//')]"
 put "repos/o/r/issues/9/comments?per_page=100"  <<< "[$(cm 91 conwad-lab $((2*H)) '@codex review')$(cm 92 "$BOT" 5400 'Codex Review: no issues')$(cm 93 conwad-lab $((20*H)) 'Card posted 2026-11-09T16:00Z: Human-only, recommended Merga' | sed 's/,$//')]"
 put "repos/o/r/issues/10/comments?per_page=100" <<< "[$(cm 101 conwad-lab $((2*H)) '@codex review')$(cm 102 conwad-lab $((20*H)) 'Card posted 2026-11-09T16:00Z: x')$(cm 103 conwad-lab $((19*H)) 'Card answered 2026-11-09T17:00Z: Vänta' | sed 's/,$//')]"
