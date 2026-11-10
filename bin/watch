@@ -34,7 +34,8 @@
 # --estimates FILE (the weekly retro, CLOUD.md [R2], [T2]): one row per story with a merged PR whose
 # plan on the default branch has `## Estimate` (templates/plan.md). Rounds = `## Codex round` headings
 # in the response file (templates/response.md), hours = PR opened → merged, built-by from its
-# `## Outcome`. Held = built by the planned builder within the estimated rounds. A missing response
+# `## Outcome`. Held = built by the planned builder within the estimated rounds (unknown without a numeric
+# codex-rounds). A missing response
 # file or Outcome shows `—`, never blind.
 
 set -uo pipefail
@@ -326,7 +327,8 @@ estimate_rows() {
     hours="$(awk -v a="$opened" -v b="$(jq -rn --arg t "$merged" '$t|fromdateiso8601')" 'BEGIN {printf "%.0f", (b - a) / 3600}')"
     if [ -z "$built" ]; then held="—"
     elif [ "$built" != "$pbuilder" ]; then held="no (builder)"
-    elif [[ "$erounds" =~ ^[0-9]+$ ]] && [ "$arounds" -gt "$erounds" ]; then held="no (rounds)"
+    elif ! [[ "$erounds" =~ ^[0-9]+$ ]]; then held="? (no codex-rounds)"
+    elif [ "$arounds" -gt "$erounds" ]; then held="no (rounds)"
     else held=yes; fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s/%s\t%s\t%s\t%s\n' "$R" "$base" "${size:-—}" "${risk:-—}" "${pbuilder:-—}" "${built:-—}" \
       "${erounds:-?}" "$arounds" "$hours" "$held" "$url" >> "$EST"
