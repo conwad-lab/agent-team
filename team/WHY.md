@@ -20,7 +20,7 @@ A rule may be removed by a `Rulebook story.` when its "still needed if" test has
 [F5] Plan attack on risky and rulebook stories — prevents: plan errors found only after the build (#12, Conny 2026-11-01) — still needed if: plan attacks still find M/S findings — kept
 [F6] Judge started with repo and PR number only — prevents: a Judge anchored on the planner's view (#6) — still needed if: always — kept
 [F7] request-changes / approve / escalate routing — prevents: design (#6), kept because it is the flow's only exit — still needed if: always — kept
-[F8] Signal check and Log line after merge or close — prevents: merged stories nobody measured (#6); a closed PR left its slot unexplained (#19) — still needed if: always — kept
+[F8] Signal check and Log line after merge or close — prevents: merged stories nobody measured (#6); a closed PR left its slot unexplained (#19) — still needed if: always — kept (status key `NNN:` moved to `bin/watch`'s header, v0.8.1)
 [B1] Builder posts plan attack, never edits the plan — prevents: see [F5]; Builder rewriting the plan it is judged against (#12) — still needed if: plan attacks run — kept
 [B2] Branch pushed at once; read story, plan, roles — prevents: status keyed on the branch (the old § Status table, #6) showed nothing in progress — still needed if: status is read off GitHub — kept
 [B3] PR opened as a draft — prevents: full CI on every fix push, mondmodel 2 922 Actions minutes in three days (agent-team #13, 2026-11-04) — still needed if: CI is billed per job — kept
@@ -59,12 +59,13 @@ A rule may be removed by a `Rulebook story.` when its "still needed if" test has
 [H5] Judge merges the card's head, checks and sync gate — prevents: merging a head pushed after the yes (#7, #20) — still needed if: always — kept
 [H6] Push after yes voids it; auto-merge off — prevents: auto-merge merging a later head (#19, #20) — still needed if: always — kept
 [H7] Vänta leaves the PR open, in the digest — prevents: nagging (#7) — still needed if: always — kept
-[R1] Weekly routine writes Förslag, Auto-queue only to Kö — prevents: routine work reaching Kö unasked (#6) — still needed if: always — kept
+[R1] Daily routine; weekly Signal sources to Förslag, Auto-queue only to Kö — prevents: routine work reaching Kö unasked (#6); daily since v0.8.1 so [R7] runs every day (story B) — still needed if: always — kept
 [R2] Weekly retro reads the agents' own misses — prevents: Builder misses never summed up (KRING, FOSS, meetup 2026-11-04; #16) — still needed if: retro rows get approved — kept
 [R3] Pattern threshold; card that decided nothing — prevents: one-off rows; cards that never change an answer (#16, Judge N2 on #18) — still needed if: see [R2] — kept
 [R4] What can be removed? one row per run — prevents: a rulebook that only grows, 2 065 → 7 778 words in 17 days (Mollick 2026-11-09; this story) — still needed if: always — kept
 [R5] Retro rows never to Kö; never edits rules — prevents: the routine changing the rules it reports on (#16) — still needed if: always — kept
-[R6] Weekly Retro trend line; papercut status — prevents: trend lost between runs (#16) — still needed if: see [R2] — kept
+[R6] Weekly Retro trend line; papercut status — prevents: trend lost between runs (#16) — still needed if: see [R2] — kept (count definitions moved, [X31])
+[R7] Watch every run: board and stalls on one card — prevents: Actions minutes ran out 2026-11-04 and PRs stopped merging, seen only when someone looked a day later; FOSS "a merge stalled the factory and the board showed nothing" (meetup 2026-11-04); story B, v0.8.1 — still needed if: a stall reaches a card later than 24 h after it began, or the board is read — kept
 [Q1] Watch own PR only; no polling; two reminders — prevents: Claude turns spent polling; issue replies wake nobody (#12) — still needed if: issue tasks do not wake threads — kept
 [Q2] Draft guard and ready_for_review on workflows — prevents: mondmodel 2 922 Actions minutes in three days (#13); marking ready started nothing without the type (#13) — still needed if: CI is billed per job — kept
 [Q3] Self-hosted runner rules — prevents: Actions minutes gone 2026-11-04, $0 budget (#15); Codex on #15: OrbStack VMs saw each other's files, cleanup hook failed, identity key — still needed if: a repo has runner: mini — kept
@@ -108,3 +109,8 @@ A rule may be removed by a `Rulebook story.` when its "still needed if" test has
 [X28] One-time setup per repo (8 steps) — prevents: — still needed if: — — moved unchanged to `team/SETUP.md`
 [X29] Retro trend line format in CLOUD.md — prevents: — still needed if: — — moved to `assets/team/PAPERCUTS.md`, merged into [R6]
 [X30] Runner offline rationale (variable change does not move queued jobs; GitHub fails after 24 h) — prevents: #15 — still needed if: — — moved to `team/RUNNER.md` § When it is offline, merged into [Q4]
+
+## Cut or merged in v0.8.1
+
+[X31] Retro counts `cards` and `human wait` defined in CLOUD.md — prevents: — still needed if: — — moved to the `## Retro` comment in `assets/team/PAPERCUTS.md`, merged into [R6]
+[X32] Digest lists what waits on the human and for how long — prevents: #7 — still needed if: — — merged into [M2] and [H7] as the board's link; `bin/watch` shows a PR with an open or Vänta card as the human's turn with its age

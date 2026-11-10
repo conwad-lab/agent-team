@@ -8,4 +8,5 @@ Format: `YYYY-MM-DD | role | what failed | workaround | status`, where status is
 
 ## Retro
 
-<!-- The routine appends one line per week: YYYY-Www | Codex fixed <n> | Judge fixed <n> | failed @codex tasks <n> | escalations <n> | papercuts open <n> | cards <n> | human wait <h> h -->
+<!-- The routine appends one line per week: YYYY-Www | Codex fixed <n> | Judge fixed <n> | failed @codex tasks <n> | escalations <n> | papercuts open <n> | cards <n> | human wait <h> h
+     `cards` and `human wait` come from the card log on the PRs (CLOUD.md § Human approval 1); `human wait` is the hours inside that week of cards on Judge-approved PRs. -->
