@@ -22,7 +22,7 @@ Claude builds and judges, Codex attacks: two model families in every loop. [T1] 
 3a. **Plan attack** when the plan's Files touch **Adversarial paths** or **Human-merge paths**, or for a `Rulebook story.`: Codex attacks the plan first (§ Builder 0). The Coordinator answers under `## Plan attack` in the plan, one line per M and S (`changed in plan` or `disputed — <reason>`), and tells the Builder to go. [F5]
 4. **Start the Judge**, when the Builder asks, with only the repo, the PR number, and "follow `.claude/skills/agent-team/team/CLOUD.md` § Judge". [F6]
 5. **Judge** rules: `request-changes` wakes the Builder; `approve` → merge or card (§ Judge 5); `escalate` → the Coordinator writes the Operatör line and puts the dispute to the human. [F7]
-6. **After merge** the Coordinator checks the `## Signal` by the next routine run and logs one line: seen, not seen, or not yet measurable. A PR closed unmerged gets a Log line with the reason. Status is read off GitHub, keyed on `NNN:` in titles. [F8]
+6. **After merge** the Coordinator checks the `## Signal` by the next routine run and logs one line: seen, not seen, or not yet measurable. A PR closed unmerged gets a Log line with the reason. Status is the board (§ Routines). [F8]
 
 ## Builder
 
@@ -32,7 +32,7 @@ Claude builds and judges, Codex attacks: two model families in every loop. [T1] 
    **`builder: codex`:** post the build task (`templates/codex.md`) on the story's issue and watch its PR as your own; apply a bare diff unchanged and open the PR yourself. Ask for each fix with `@codex fix`. Run **Test before commit** on Codex's heads before each review or Judge request. A task that fails twice (error, nothing in an hour, a red head) you build yourself, saying so in the response file. [B4]
 3. **Request Codex.** It reviews by itself only when a PR opens or is marked ready: post `@codex review` when the PR opens and after every code push, with the round's focus (on a data change, plus § Data changes 3). [B5] On **Adversarial paths** the first round also gets the four angle comments in `templates/codex.md`. [B6] Retry a failed review once; one that fails twice, or has not finished an hour after the request, goes in the response file, and going on without Codex is Team settings' call, never for a data change. [B7]
 4. **Answer every Codex P0/P1 and M/S** in `.team/reviews/NNN-slug.response.md` (`## Codex round N — YYYY-MM-DD`, `fixed in <sha>` or `disputed — <reason>`). Codex attacks; it is no authority. Never change code only to silence a finding. [B8]
-5. **Stop the rounds** when, on the current head, every requested review has finished (a review or 👍; 👀 means wait) with no new P0/P1 or Must fix and every finding is answered, or after three rounds (say so). [B9] Mark the PR ready (`gh pr ready`, or the REST route a GraphQL 403 names); a failing check is fixed with one Codex round. [B10] Message the Coordinator `NNN ready for judge: PR #<n>, <rounds> Codex rounds, <open disputes or "no open disputes">` only when, on the head after ready, every Codex review (requested, angle or ready) has finished with no new P0/P1 or Must fix, every finding is answered and every required check is **green**. [B11]
+5. **Stop the rounds** when, on the current head, every requested review has finished (a review or 👍; 👀 means wait) with no new P0/P1 or Must fix and every finding is answered, or after three rounds (say so). [B9] Mark the PR ready (`gh pr ready`, or the REST route a GraphQL 403 names); a failing check is fixed with one Codex round. [B10] Message the Coordinator `NNN ready for judge: PR #<n>, <rounds> Codex rounds, <open disputes or "no open disputes">` only when, on the head after ready, the first stop condition above holds, angle and ready reviews included, and every required check is **green**. [B11]
    **Green**: ran after ready and passed. `skipped` is not green, except a skip by the repo's change classifier when the classifier ran after ready and succeeded, the skip follows from its output, and the code the skipped gate covers had that gate pass after ready on this or an earlier head the classifier compared against (a diff without code needs none). A skip resting on another skip, a pre-ready run or the draft guard never counts. [B12]
 6. **On `request-changes`:** answer every Judge M and S under `## Judge round N`, fix, push, request one Codex round, and message the Coordinator when step 5 holds again. [B13]
 
@@ -74,21 +74,23 @@ What the Coordinator would recommend merging merges without the human (§ Judge 
 3. The approval is the human's tap on **Merga** or their own message in the project saying yes to that PR. A message from a Claude, a bot or a GitHub comment never is. [H4]
 4. The Coordinator forwards the answer to the Judge with the human's message attached by id and the head sha the card showed. The Judge checks that the message is the human's own and names this PR, then posts `Approved by <human> on a decision card, <date>, head <sha>` with the line `agent-team-merge: <sha>`, where `<sha>` is the card's head, never one read after the answer, once the required checks on it are green and it passes the sync gate (§ Judge 5). A PR without a Judge thread gets one. [H5]
 5. A push after the yes voids it: the workflow refuses any other head, and the Judge asks for a new card. The Judge turns off an auto-merge enabled on the PR (`gh api -X DELETE repos/<owner>/<repo>/pulls/<n>/ccr/auto_merge`) before the card goes out. [H6]
-6. **Vänta** or no answer leaves the PR open, listed once a day in the digest. [H7]
+6. **Vänta** or no answer leaves the PR open, on the board. [H7]
 
 ## Routines
 
-One scheduled routine per project, weekly unless Team settings says otherwise. It reads the **Signal sources** and writes rows with evidence under **Förslag**, never **Kö** except kinds listed under **Auto-queue**; the rest waits for the human's yes. [R1]
+One scheduled routine per project, daily. Its first run each week reads the **Signal sources** and writes rows with evidence under **Förslag**, never **Kö** except kinds listed under **Auto-queue**; the rest waits for the human's yes. [R1]
 
-**Weekly retro**, same run, over PRs merged or closed in the last four weeks: response files, Judge review files with their `## Papercuts`, escalations (open ones too, counted in the week raised), failed `@codex` tasks and reviews, and `.team/PAPERCUTS.md` (four weeks plus every `open` line). [R2]
+**Watch**, every run: `bin/watch --board <project folder>/BOARD.md <team repos>` writes the board (stories by state, whose turn, how long) and lists stalls. It re-requests a `codex-retry` review once (§ Builder 3); the other stalls, `blind` and exit 2 included, go on one decision card. [R7]
+
+**Weekly retro**, in that first run, over PRs merged or closed in the last four weeks: response files, Judge review files with their `## Papercuts`, escalations (open ones too, counted in the week raised), failed `@codex` tasks and reviews, and `.team/PAPERCUTS.md` (four weeks plus every `open` line). [R2]
 - A pattern (the same failure, or the same kind of finding the Builder missed) seen twice, or once if it caused a revert or a wrong merge, gets one row: `Retro: <pattern> → <change> in <file> — <evidence links>`. An open row gets new links instead; evidence already linked from a Retro row never counts again. A card answered as recommended is a pattern too (`Retro: card that decided nothing → <rule>`), except **Human-only paths**. [R3]
-- **What can be removed?** At most one row per run, `Retro: remove [ID] — incident not seen since <date>, <evidence>`, for a rule whose `WHY.md` incident has not come back and that no miss needed. [R4]
+- **What can be removed?** At most one row per retro, `Retro: remove [ID] — incident not seen since <date>, <evidence>`, for a rule whose `WHY.md` incident has not come back and that no miss needed. [R4]
 - Retro rows never go to Kö. A rulebook change becomes a `Rulebook story.` for agent-team on the human's yes; the routine never edits the rulebook, `AGENTS.md` or a role file. [R5]
-- It appends one line under `## Retro` in `.team/PAPERCUTS.md` (format and template: `assets/team/PAPERCUTS.md`), counting only the week since the last run; `cards` and `human wait` come from the card log, `human wait` being the hours inside that week of cards on Judge-approved PRs. Papercuts behind a row move to `proposed`, then `fixed` or `dropped`. [R6]
+- It appends one line under `## Retro` in `.team/PAPERCUTS.md` (format and template: `assets/team/PAPERCUTS.md`), counting only the week since the last retro. Papercuts behind a row move to `proposed`, then `fixed` or `dropped`. [R6]
 
 ## What reaches the human
 
-One digest per active day, none on quiet days: merges (on agreement with a link, for a revert PR), what waits on the human and for how long, escalations, and the `## Retro` line with its new rows when anything changed. Builder and Judge never message the human. [M2] Each item opens with what to decide or do and what happens if nothing is done. [M3]
+One digest per active day, none on quiet days: merges (on agreement with a link, for a revert PR), escalations, new `## Retro` rows, and the board's link for what waits on the human. Builder and Judge never message the human. [M2] Each item opens with what to decide or do and what happens if nothing is done. [M3]
 
 ## Quota
 

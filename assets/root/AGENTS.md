@@ -36,11 +36,11 @@ This repo is worked on by an agent team. The team's rulebook, roles and template
 - **Data changes:** <!-- cloud mode (CLOUD.md § Data changes): what writes to production data here (tables, stores, packages) and where packages and their review files live; exported content paths (e.g. src/data/**); the audit files the fact angle checks against -->
 - **Builder:** <!-- cloud mode: codex (default where the repo has a Codex environment) or claude; CLOUD.md § Builder -->
 - **Stories in flight:** 1 <!-- cloud mode: 1 or 2; 2 needs the main ruleset to require up-to-date branches (strict required status checks); a second story starts only when its plan's Files and the Coder extras do not overlap the first's, neither is a rulebook story or a data change, and the repo's open-PR cap allows (CLOUD.md § Flow 3) -->
-- **Runner offline after:** 30 minutes <!-- cloud mode, runner: mini: how long a required check may sit queued before the Builder reports an offline runner (CLOUD.md § Quota, Runner offline) -->
+- **Runner offline after:** 30 minutes <!-- cloud mode, runner: mini: how long a required check may sit queued before the Builder reports an offline runner (CLOUD.md § Quota, Runner offline); the daily watch uses the same limit (`bin/watch --queued-after`, CLOUD.md § Routines) -->
 - **Human-merge paths:** <!-- cloud mode: paths that get a plan attack and that the Judge merges only on agreement with Codex, never on its word alone (CLOUD.md § Judge 5) — money, legal text, migrations, auth, secrets, the rulebook, `.claude/settings.json` (its deny list, CLOUD.md § Walls), `.github/workflows/agent-team-merge.yml` (the merge workflow, CLOUD.md § Walls) -->
 - **Human-only paths:** none <!-- cloud mode: paths where law, a contract or this repo's own rules require a named human's yes before merge, e.g. live-migration files; always a decision card (CLOUD.md § Human approval) -->
 - **Auto-queue:** none <!-- cloud mode: kinds of routine proposal that go straight to Kö, e.g. Dependabot patch updates, broken links -->
-- **Signal sources:** <!-- cloud mode: what the weekly routine reads — e.g. Vercel runtime errors, failed Actions runs, Actions minutes, the self-hosted runner's status, Dependabot, analytics. The weekly retro always reads the team's own review files and `.team/PAPERCUTS.md` (CLOUD.md § Routines) -->
+- **Signal sources:** <!-- cloud mode: what the routine's first run each week reads — e.g. Vercel runtime errors, failed Actions runs, Actions minutes, the self-hosted runner's status, Dependabot, analytics. The weekly retro always reads the team's own review files and `.team/PAPERCUTS.md` (CLOUD.md § Routines) -->
 
 ## Papercuts
 
