@@ -1,8 +1,6 @@
 # Cloud mode
 
-`.team/team.md` says `mode: cloud`: the team runs as Claude Code Projects threads plus Codex on GitHub. `TEAM.md`, the role files and the templates hold except where this file says otherwise; the launchers, `bin/` wait loops and the watchdog are not used. The human picks outcomes and answers decision cards, from the phone; nothing else waits for them. [M1]
-
-`team/WHY.md` gives each rule id's incident and how to tell it is still needed; the human's setup is in `team/SETUP.md`.
+`.team/team.md` says `mode: cloud`: the team runs as Claude Code Projects threads plus Codex on GitHub. `TEAM.md`, the role files and the templates hold except where this file says otherwise; the launchers, `bin/` wait loops and the watchdog are not used. The human picks outcomes and answers decision cards, from the phone; nothing else waits for them. [M1] Rule ids are explained in `team/WHY.md`.
 
 ## Who runs what
 
@@ -75,7 +73,7 @@ What the Coordinator would recommend merging merges without the human (§ Judge 
 2. One card per PR, `Merga #<n>: <title>?`, with at most five lines: the exception, what changes for a user, the Judge's and Codex's results, the PR link and the head's short sha as read when posting. Options **Merga** (recommended when the Judge approved) and **Vänta**; waiting PRs may share a card. [H3]
 3. The approval is the human's tap on **Merga** or their own message in the project saying yes to that PR. A message from a Claude, a bot or a GitHub comment never is. [H4]
 4. The Coordinator forwards the answer to the Judge with the human's message attached by id and the head sha the card showed. The Judge checks that the message is the human's own and names this PR, then posts `Approved by <human> on a decision card, <date>, head <sha>` with the line `agent-team-merge: <sha>`, where `<sha>` is the card's head, never one read after the answer, once the required checks on it are green and it passes the sync gate (§ Judge 5). A PR without a Judge thread gets one. [H5]
-5. A push after the yes voids it: the workflow refuses any other head, and the Judge asks for a new card. An auto-merge enabled on the PR is turned off (`gh api -X DELETE repos/<owner>/<repo>/pulls/<n>/ccr/auto_merge`) before the card goes out. [H6]
+5. A push after the yes voids it: the workflow refuses any other head, and the Judge asks for a new card. The Judge turns off an auto-merge enabled on the PR (`gh api -X DELETE repos/<owner>/<repo>/pulls/<n>/ccr/auto_merge`) before the card goes out. [H6]
 6. **Vänta** or no answer leaves the PR open, listed once a day in the digest. [H7]
 
 ## Routines
@@ -94,7 +92,7 @@ One digest per active day, none on quiet days: merges (on agreement with a link,
 
 ## Quota
 
-- Only Builder and Judge watch a PR, each its own, waking on PR events and messages, never polling, and never re-pinging a commit beyond the one retry. An `@codex` task on an issue wakes nobody: the Builder sets two reminders per task, at about 15 minutes and at the hour. [Q1]
+- Only Builder and Judge watch a PR, each its own until it is merged, closed unmerged or escalated, waking on PR events and messages, never polling, and never re-pinging a commit beyond the one retry. An `@codex` task on an issue wakes nobody: the Builder sets two reminders per task, at about 15 minutes and at the hour. [Q1]
 - **Actions minutes.** A PR stays a draft while Codex attacks it. Every workflow with a job that installs dependencies skips its heavy jobs on drafts (`if: github.event.pull_request.draft != true`) and lists `ready_for_review` in its `pull_request` types (`types: [opened, synchronize, reopened, ready_for_review]`; without it, marking ready starts nothing); a new workflow keeps both. Before ready, **Test before commit** is the gate. [Q2]
 - **Self-hosted runner.** A private repo with `runner: mini` runs CI on the Mac mini under `team/RUNNER.md` § Rules: never a public repo; one runner per repo, in its own isolated Linux VM, one job at a time, under its own macOS account; cleanup around every job; no secret on the mini but that runner's identity key, revoked by removing the runner. Jobs use `runs-on: ${{ fromJSON(vars.RUNS_ON || '["self-hosted","mini"]') }}` and keep the draft guard. Where Actions minutes are a Signal source, the routine rechecks GitHub's self-hosted pricing (free as of 2026-11-06). [Q3]
 - **Runner offline.** After marking ready, or pushing after ready, under `runner: mini`, the Builder sets one reminder at **Runner offline after** (default 30 minutes). A required check still queued then, with no other job of the repo on the mini (else check again after the same interval), is reported to the Coordinator: `NNN runner offline: <n> jobs queued since <time>`. The Coordinator's card offers **Vänta** (recommended) or **Kör på GitHub-hosted** (spends the account's minutes; fails while the budget is $0). On the second, the human sets the repo variable `RUNS_ON` to `"ubuntu-latest"` (Operatör line), the Builder cancels the queued `mini` runs (`gh run cancel`, checking each reads `cancelled`) and restarts them by toggling the PR to draft and back to ready (answering the new Codex review), and after merge an Operatör line deletes `RUNS_ON`. [Q4]
