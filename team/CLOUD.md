@@ -80,7 +80,7 @@ What the Coordinator would recommend merging merges without the human (§ Judge 
 
 One scheduled routine per project, daily. Its first run each week reads the **Signal sources** and writes rows with evidence under **Förslag**, never **Kö** except kinds listed under **Auto-queue**; the rest waits for the human's yes. [R1]
 
-**Watch**, every run: `bin/watch <team repos>` writes the board (stories by state and whose turn) to the project folder and lists stalls. It re-requests a `codex-retry` review once (§ Builder 3); the other stalls, `blind` included, go on one decision card. [R7]
+**Watch**, every run: `bin/watch --board <project folder>/BOARD.md <team repos>` writes the board (stories by state, whose turn, how long) and lists stalls. It re-requests a `codex-retry` review once (§ Builder 3); the other stalls, `blind` and exit 2 included, go on one decision card. [R7]
 
 **Weekly retro**, in that first run, over PRs merged or closed in the last four weeks: response files, Judge review files with their `## Papercuts`, escalations (open ones too, counted in the week raised), failed `@codex` tasks and reviews, and `.team/PAPERCUTS.md` (four weeks plus every `open` line). [R2]
 - A pattern (the same failure, or the same kind of finding the Builder missed) seen twice, or once if it caused a revert or a wrong merge, gets one row: `Retro: <pattern> → <change> in <file> — <evidence links>`. An open row gets new links instead; evidence already linked from a Retro row never counts again. A card answered as recommended is a pattern too (`Retro: card that decided nothing → <rule>`), except **Human-only paths**. [R3]

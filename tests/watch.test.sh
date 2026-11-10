@@ -86,9 +86,17 @@ put "repos/o/r/issues/10/comments?per_page=100" <<< "[$(cm 101 conwad-lab $((2*H
 put "repos/o/r/issues/comments/101/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\"}]"
 put "repos/o/r/issues/30/comments?per_page=100" <<< "[$(cm 301 conwad-lab 1800 '@codex fix M1' | sed 's/,$//')]"
 iss() { printf '{"number":%s,"html_url":"https://github.com/o/r/issues/%s"%s},' "$1" "$1" "$2"; }
-put "repos/o/r/issues?state=open&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}')$(iss 9 ',"pull_request":{}')$(iss 10 ',"pull_request":{}')$(iss 30 '' | sed 's/,$//')]"
+put "repos/o/r/issues?state=open&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}')$(iss 9 ',"pull_request":{}')$(iss 10 ',"pull_request":{}')$(iss 40 ',"pull_request":{}')$(iss 41 ',"pull_request":{}')$(iss 42 '')$(iss 30 '' | sed 's/,$//')]"
+# 040: two angle requests in one batch, one review answers one of them → one left, not yet retried
+put "repos/o/r/issues/40/comments?per_page=100" <<< "[$(cm 401 conwad-lab $((3*H)) '@codex review — security')$(cm 402 conwad-lab $((3*H-120)) '@codex review — failure paths' | sed 's/,$//')]"
+put "repos/o/r/pulls/40/reviews?per_page=100" <<< "[{\"id\":1,\"user\":{\"login\":\"$BOT\"},\"submitted_at\":\"$(t $((5*H/2)))\"}]"
+# 041: an earlier request answered by 👍, a new one unanswered → retry, not silent
+put "repos/o/r/issues/41/comments?per_page=100" <<< "[$(cm 411 conwad-lab $((5*H)) '@codex review')$(cm 412 conwad-lab $((2*H)) '@codex review' | sed 's/,$//')]"
+put "repos/o/r/issues/comments/411/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\"}]"
+# 042: a fix task unanswered → codex-task, never an automatic review retry
+put "repos/o/r/issues/42/comments?per_page=100" <<< "[$(cm 421 conwad-lab $((2*H)) '@codex fix M1: quote the path' | sed 's/,$//')]"
 put "repos/o/r/actions/runs?status=queued&per_page=100" <<< "{\"workflow_runs\":[{\"id\":100,\"name\":\"ci\",\"created_at\":\"$(t 2700)\",\"html_url\":\"r100\"},{\"id\":101,\"name\":\"ci\",\"created_at\":\"$(t 600)\",\"html_url\":\"r101\"}]}"
-put "repos/o/r/actions/runs?status=failure&created=%3E%3D$(t $D)&per_page=30" <<< "{\"workflow_runs\":[{\"id\":200,\"name\":\"ci\",\"created_at\":\"$(t $H)\",\"html_url\":\"r200\"},{\"id\":201,\"name\":\"e2e\",\"created_at\":\"$(t $H)\",\"html_url\":\"r201\"}]}"
+put "repos/o/r/actions/runs?status=failure&created=%3E%3D$(t $D)&per_page=100" <<< "{\"workflow_runs\":[{\"id\":200,\"name\":\"ci\",\"created_at\":\"$(t $H)\",\"html_url\":\"r200\"},{\"id\":201,\"name\":\"e2e\",\"created_at\":\"$(t $H)\",\"html_url\":\"r201\"}]}"
 put repos/o/r/actions/runs/200/jobs <<< '{"jobs":[{"steps":[],"runner_name":null}]}'
 put repos/o/r/actions/runs/201/jobs <<< '{"jobs":[{"steps":[{"name":"x"}],"runner_name":"GitHub Actions 2"}]}'
 
@@ -107,6 +115,9 @@ check "codex-silent: asked twice"             'has "codex-silent	#7:"'
 check "Codex comment answers"                 '! has "#9: @codex"'
 check "Codex 👍 answers"                      '! has "#10: @codex"'
 check "under an hour is quiet"                '! has "#30:"'
+check "one answer answers one request (M2)"   'has "codex-retry	#40: 1 @codex"'
+check "earlier 👍 not counted (M3)"            'has "codex-retry	#41: 1 @codex"'
+check "fix task is codex-task (M4)"           'has "codex-task	#42:"'
 check "no blind"                              '! has "	blind	"'
 
 check "board: ready"             'row 001-ready | grep -q "| ready | Coordinator |"'
@@ -117,8 +128,8 @@ check "board: parked absent"     '! grep -q "005-parked" "$T/board.md"'
 check "board: branch → building, age" 'row 006-building | grep -q "| building | Builder | 2 d ago |"'
 check "board: draft → building"  'row 007-draft | grep -q "| building | Builder |"'
 check "board: judging"           'row 008-judging | grep -q "| judging | Judge |"'
-check "board: approved, card open → human" 'row 009-approved | grep -q "| approved | human (card open) |"'
-check "board: Vänta → human"     'row 010-changes | grep -q "| changes-requested | human (Vänta) |"'
+check "board: approved, card open → human" 'row 009-approved | grep -q "| approved | human (card open 20 h) |"'
+check "board: Vänta → human"     'row 010-changes | grep -q "| changes-requested | human (Vänta 19 h) |"'
 check "board: escalated"         'row 011-escalated | grep -q "| escalated | human |"'
 check "board: done this week"    'row 012-done | grep -q "| done |"'
 check "board: old done absent"   '! row 013-done-old'
@@ -141,7 +152,13 @@ check "blind: exit 2"                 '[ "$(cat "$T/rc")" = 2 ]'
 check "blind: missing repo"           'has "^o/gone	blind	"'
 check "blind: failing endpoint"       'has "^o/f	blind	cannot read repos/o/f/actions/runs?status=queued"'
 check "blind: retried once"           '[ "$(grep -c "status=queued" "$FIX/calls")" = 2 ]'
+check "blind: a 404 on a required read (M1)" 'touch "$FIX/$(printf "%s" "repos/o/f/branches?per_page=100" | tr -c "A-Za-z0-9" "_").404"; run o/f; has "^o/f	blind	cannot read repos/o/f/branches"'
+run o/gone o/f
 check "blind: named on the board"     'grep -q "^\*\*Blind:\*\* o/gone" "$T/board.md"'
+
+# ---- the board cannot be written (S1)
+: > "$FIX/calls"; PATH="$T/bin:$PATH" bash "$SKILL/bin/watch" --now "$NOW_ISO" --board "$T/no/such/dir/b.md" o/q > "$T/out" 2> "$T/err"; echo $? > "$T/rc"
+check "unwritable board: exit 2 (S1)" '[ "$(cat "$T/rc")" = 2 ] && grep -q "cannot write the board" "$T/err"'
 
 echo "1..$n"
 exit $fail

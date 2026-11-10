@@ -11,10 +11,12 @@
 #   branch-idle   feat/ branch with no PR, no commit for 24 h
 #   queued        workflow run queued longer than --queued-after (Runner offline after, default 30)
 #   not-started   run failed in the last 24 h without a job starting (minutes, spending limit)
-#   codex-retry   @codex request unanswered for an hour, asked once: the routine asks once more
-#   codex-silent  @codex request unanswered for an hour, asked twice or more
+#   codex-retry   @codex review unanswered for an hour, not yet retried: the routine asks once more
+#   codex-silent  @codex review unanswered for an hour after a retry
+#   codex-task    any other @codex request (build, fix, plan attack) unanswered for an hour
 #   blind         a read that failed twice; the watch cannot vouch for that repo
-# Exit 0 no stalls, 1 stalls, 2 any blind. The board file is written every time.
+# Exit 0 no stalls, 1 stalls, 2 any blind or the board could not be written. A 404 is blind
+# except for optional files. The board file is written every time.
 #
 # Board states (CLOUD.md § Flow; v0.8.0 has no status table), owner after the arrow:
 #   ready              story on main, no plan                 → Coordinator
@@ -56,33 +58,30 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 STALLS="$TMP/stalls"; ROWS="$TMP/rows"; BLIND="$TMP/blind"; : > "$STALLS"; : > "$ROWS"; : > "$BLIND"
 stall() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >> "$STALLS"; }
 
-# api PATH... : gh api with one retry. Returns 0 with output, 4 on 404, 1 after two failures
-# (recorded as blind for the current repo). A 404 is an answer (no .team/, no reviews dir).
+# api PATH... : gh api with one retry. Returns 0 with output, 1 after two failures or a 404
+# (recorded as blind for the current repo). opt PATH... : the same, but a 404 is an answer
+# (returns 4, not blind); only for optional files (a tree, the reviews dir, a story or plan).
 api() {
   local out err i
   for i in 1 2; do
     if out="$(gh api "$@" 2>"$TMP/err")"; then printf '%s\n' "$out"; return 0; fi
     err="$(head -1 "$TMP/err" | cut -c1-160)"
-    case "$err" in *"Not Found"*|*"HTTP 404"*) return 4 ;; esac
+    case "$err" in *"Not Found"*|*"HTTP 404"*) [ "${OPT404:-0}" = 1 ] && return 4; break ;; esac
     [ "$i" -eq 1 ] && sleep "${WATCH_RETRY_WAIT:-3}"
   done
   printf '%s\t%s\t%s\n' "$R" "${*: -1}" "$err" >> "$BLIND"
   stall "$R" blind "cannot read ${*: -1}: $err" "$(iso "$NOW")" "https://github.com/$R"
   return 1
 }
-content() { api "repos/$R/contents/$1?ref=$2" | jq -r '.content // empty' | base64 --decode 2>/dev/null; }
+opt() { OPT404=1 api "$@"; }
+content() { opt "repos/$R/contents/$1?ref=$2" | jq -r '.content // empty' | base64 --decode 2>/dev/null; }
 field() { sed -n "s/^$1: *//p" | head -1; }
 
 watch_repo() {
   R="$1"
   local def tree prs branches n
   def="$(api "repos/$R" | jq -r '.default_branch // empty')"
-  if [ -z "$def" ]; then   # api() already recorded a failure; a 404 is recorded here
-    grep -qF "$R"$'\t'"repos/$R"$'\t' "$BLIND" || {
-      printf '%s\t%s\t%s\n' "$R" "repos/$R" "not found or not attached" >> "$BLIND"
-      stall "$R" blind "cannot read repos/$R: not found or not attached" "$(iso "$NOW")" "https://github.com/$R"; }
-    return 0
-  fi
+  [ -n "$def" ] || return 0   # api() recorded it as blind
 
   # --- PRs: newest first; one line per PR
   prs="$(api --paginate "repos/$R/pulls?state=all&per_page=100" | jq -r '.[] |
@@ -98,11 +97,14 @@ watch_repo() {
   : > "$TMP/cards"
   while IFS=$'\t' read -r num title state draft merged upd ref sha url; do
     [ "$state" = open ] || continue
-    local bodies last card=none
-    bodies="$(api --paginate "repos/$R/issues/$num/comments?per_page=100" | jq -r '.[].body')" || continue
-    last="$(printf '%s\n' "$bodies" | grep -E '^Card (posted|answered) ' | tail -1 || true)"
-    case "$last" in "Card posted "*) card=open ;; "Card answered "*Vänta*) card=wait ;; esac
-    printf '%s\t%s\n' "$num" "$card" >> "$TMP/cards"
+    local lines last card=none since=""
+    # every card-log line with its comment's time; the last one decides, its time is the wait's start
+    lines="$(api --paginate "repos/$R/issues/$num/comments?per_page=100" | jq -r '.[] | (.created_at|fromdateiso8601|tostring) as $t |
+        .body | split("\n")[] | select(test("^Card (posted|answered) ")) | $t + "\t" + .')" || continue
+    last="$(printf '%s\n' "$lines" | grep . | tail -1 || true)"
+    case "${last#*$'\t'}" in "Card posted "*) card=open ;; "Card answered "*Vänta*) card=wait ;; esac
+    since="${last%%$'\t'*}"
+    printf '%s\t%s\t%s\n' "$num" "$card" "$since" >> "$TMP/cards"
     [ "$card" = none ] && [ $(( NOW - upd )) -ge $DAY ] && stall "$R" pr-idle "#$num $title: no event for $(age "$upd")" "$(iso "$upd")" "$url"
   done < "$TMP/prs"
 
@@ -118,7 +120,7 @@ watch_repo() {
   done < "$TMP/feat"
 
   # queued
-  api "repos/$R/actions/runs?status=queued&per_page=100" | jq -r '.workflow_runs[] | [.id, .name, (.created_at|fromdateiso8601), .html_url] | @tsv' > "$TMP/queued" || true
+  api --paginate "repos/$R/actions/runs?status=queued&per_page=100" | jq -r '.workflow_runs[] | [.id, .name, (.created_at|fromdateiso8601), .html_url] | @tsv' > "$TMP/queued" || true
   while IFS=$'\t' read -r id name created url; do
     [ -n "$id" ] || continue
     [ $(( NOW - created )) -ge $(( QUEUED_AFTER * 60 )) ] && stall "$R" queued "$name: queued $(age "$created")" "$(iso "$created")" "$url"
@@ -126,40 +128,62 @@ watch_repo() {
 
   # not-started
   local since; since="$(iso $(( NOW - DAY )))"
-  api "repos/$R/actions/runs?status=failure&created=%3E%3D$since&per_page=30" | jq -r '.workflow_runs[] | [.id, .name, (.created_at|fromdateiso8601), .html_url] | @tsv' > "$TMP/failed" || true
+  api --paginate "repos/$R/actions/runs?status=failure&created=%3E%3D$since&per_page=100" | jq -r '.workflow_runs[] | [.id, .name, (.created_at|fromdateiso8601), .html_url] | @tsv' > "$TMP/failed" || true
   while IFS=$'\t' read -r id name created url; do
     [ -n "$id" ] || continue
     n="$(api "repos/$R/actions/runs/$id/jobs" | jq '[.jobs[] | select(((.steps // []) | length) > 0 or ((.runner_name // "") != ""))] | length')" || continue
     [ "$n" = 0 ] && stall "$R" not-started "$name: failed without starting a job (minutes or spending limit?)" "$(iso "$created")" "$url"
   done < "$TMP/failed"
 
-  # codex-retry / codex-silent: open issues and PRs active in the last 7 days
+  # codex-retry / codex-silent / codex-task: open issues and PRs active in the last 7 days.
+  # Each Codex answer (a review, a bot comment other than its running summary, or a 👍 on the
+  # request) answers the oldest open request before it. Unanswered requests older than an hour:
+  # a build, fix or other task → codex-task (never auto-retried); review requests in one batch
+  # (posted within 10 min, e.g. the four angles) → codex-retry; in two or more batches, i.e.
+  # already retried → codex-silent.
   api --paginate "repos/$R/issues?state=open&per_page=100&since=$(iso $(( NOW - 7 * DAY )))" \
     | jq -r '.[] | [.number, (.pull_request != null | tostring), .html_url] | @tsv' > "$TMP/issues" || true
   while IFS=$'\t' read -r num ispr url; do
     [ -n "$num" ] || continue
-    # events: time, kind (req|out|-), comment id
     api --paginate "repos/$R/issues/$num/comments?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] |
         [(.created_at|fromdateiso8601),
-         (if .user.login == $bot and (.body|test("\"status\":\"running\"")|not) then "out" elif .user.login == $bot then "-" elif (.user.login|endswith("[bot]")|not) and (.body|test("^@codex\\b";"m")) then "req" else "-" end),
+         (if .user.login == $bot then (if (.body|test("codex-pull-request-review-summary|\"status\":\"running\"")) then "-" else "out" end)
+          elif (.user.login|endswith("[bot]")) then "-"
+          elif (.body|test("^@codex( security)? review\\b";"m")) then "review"
+          elif (.body|test("^@codex\\b";"m")) then "task" else "-" end),
          .id] | @tsv' > "$TMP/ev" || continue
     if [ "$ispr" = true ]; then
       api --paginate "repos/$R/pulls/$num/reviews?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] | select(.user.login == $bot) |
           [((.submitted_at // "1970-01-01T00:00:00Z")|fromdateiso8601), "out", .id] | @tsv' >> "$TMP/ev" || continue
     fi
-    local reqs=0 lastreq=0 lastid=""
+    : > "$TMP/pending"
+    local t kind cid
     while IFS=$'\t' read -r t kind cid; do
-      case "$kind" in out) reqs=0 ;; req) reqs=$(( reqs + 1 )); lastreq="$t"; lastid="$cid" ;; esac
-    done < <(sort -n "$TMP/ev")
-    [ "$reqs" -gt 0 ] && [ $(( NOW - lastreq )) -ge 3600 ] || continue
-    # a 👍 from Codex on the request is an answer (CLOUD.md § Builder 5)
-    if api "repos/$R/issues/comments/$lastid/reactions" | jq -e --arg bot "$CODEX_BOT" 'any(.[]; .user.login == $bot and .content == "+1")' >/dev/null; then continue; fi
-    local kind=codex-retry; [ "$reqs" -ge 2 ] && kind=codex-silent
-    stall "$R" "$kind" "#$num: @codex asked $reqs time(s), no answer for $(age "$lastreq")" "$(iso "$lastreq")" "$url"
+      case "$kind" in
+        out) sed -i.bak 1d "$TMP/pending" ;;
+        review|task)
+          # a 👍 from Codex on the request answers it (CLOUD.md § Builder 5)
+          if api "repos/$R/issues/comments/$cid/reactions" | jq -e --arg bot "$CODEX_BOT" 'any(.[]; .user.login == $bot and .content == "+1")' >/dev/null; then continue; fi
+          printf '%s\t%s\n' "$t" "$kind" >> "$TMP/pending" ;;
+      esac
+    done < <(sort -n -k1,1 "$TMP/ev")
+    local first=0 lastreq=0 count=0 batches=0 prev=0 tasks=0
+    while IFS=$'\t' read -r t kind; do
+      [ -n "$t" ] || continue
+      count=$(( count + 1 )); lastreq="$t"; [ "$first" = 0 ] && first="$t"
+      [ "$kind" = task ] && tasks=$(( tasks + 1 ))
+      [ "$kind" = review ] && { [ "$prev" = 0 ] || [ $(( t - prev )) -gt 600 ]; } && batches=$(( batches + 1 ))
+      [ "$kind" = review ] && prev="$t"
+    done < "$TMP/pending"
+    [ "$count" -gt 0 ] && [ $(( NOW - first )) -ge 3600 ] || continue
+    kind=codex-retry
+    [ "$batches" -ge 2 ] && kind=codex-silent
+    [ "$tasks" -gt 0 ] && kind=codex-task
+    stall "$R" "$kind" "#$num: $count @codex request(s) unanswered, oldest $(age "$first") old" "$(iso "$first")" "$url"
   done < "$TMP/issues"
 
   # --- board rows
-  tree="$(api "repos/$R/git/trees/$def?recursive=1" | jq -r '.tree[].path')"
+  tree="$(opt "repos/$R/git/trees/$def?recursive=1" | jq -r '.tree[].path')"
   case $? in 0) ;; *) return 0 ;; esac
   printf '%s\n' "$tree" | grep -E '^\.team/backlog/[0-9]{3}-[^/]*\.md$' | sort > "$TMP/stories" || true
   printf '%s\n' "$tree" | grep -E '^\.team/plans/[0-9]{3}-[^/]*\.md$' > "$TMP/plans" || true
@@ -185,7 +209,7 @@ watch_repo() {
       if [ "$pstate" = open ] && [ "$draft" = true ]; then state=building; owner=Builder
       elif [ "$pstate" = open ]; then
         local rf v=""
-        rf="$(api "repos/$R/contents/.team/reviews?ref=$sha" | jq -r '.[].name' | grep -E "^${id}-.*\.md$" | grep -v '\.response\.md$' | head -1)"
+        rf="$(opt "repos/$R/contents/.team/reviews?ref=$sha" | jq -r '.[].name' | grep -E "^${id}-.*\.md$" | grep -v '\.response\.md$' | head -1)"
         [ -n "$rf" ] && v="$(content ".team/reviews/$rf" "$sha" | field verdict)"
         case "$v" in
           approve) state=approved; owner="Judge (merge)" ;;
@@ -195,8 +219,10 @@ watch_repo() {
         esac
       fi
       if [ "$pstate" = open ]; then
-        case "$(awk -F'\t' -v n="$num" '$1 == n {print $2}' "$TMP/cards")" in
-          open) owner="human (card open)" ;; wait) owner="human (Vänta)" ;;
+        local cs cw
+        cs="$(awk -F'\t' -v n="$num" '$1 == n {print $2}' "$TMP/cards")"; cw="$(awk -F'\t' -v n="$num" '$1 == n {print $3}' "$TMP/cards")"
+        case "$cs" in
+          open) owner="human (card open $(age "$cw"))" ;; wait) owner="human (Vänta $(age "$cw"))" ;;
         esac
       elif [ "$merged" != "-" ]; then state=done; owner="—"; [ $(( NOW - upd )) -lt $(( 7 * DAY )) ] || continue
       elif [ -n "$br" ]; then state=building; owner=Builder; last=""; link=""
@@ -236,7 +262,7 @@ if [ -n "$BOARD" ]; then
       if [ "$last" = 0 ]; then a="—"; else a="$(age "$last") ago"; fi
       printf '| %s | %s | %s | %s | %s | %s |\n' "${repo#*/}" "$base" "$state" "$owner" "$a" "${link:-—}"
     done
-  } > "$BOARD"
+  } > "$TMP/board.md" && cp "$TMP/board.md" "$BOARD" || { echo "watch: cannot write the board to $BOARD" >&2; cat "$STALLS"; exit 2; }
 fi
 
 cat "$STALLS"
