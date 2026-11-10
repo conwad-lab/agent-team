@@ -1,6 +1,6 @@
 # Self-hosted runner on the Mac mini
 
-For private cloud-mode repos whose CI should not spend GitHub-hosted Actions minutes. The rules live in `CLOUD.md` § Quota (Self-hosted runner); this file is the human's setup guide. Every step below is an **Operatör** step: only the human does it, on the mini or in the repo's GitHub settings.
+For private cloud-mode repos whose CI should not spend GitHub-hosted Actions minutes. The rules are § Rules below, which `CLOUD.md` § Quota (Self-hosted runner) points to and every team repo follows; the rest of this file is the human's setup guide. Every step below is an **Operatör** step: only the human does it, on the mini or in the repo's GitHub settings.
 
 ## Rules
 
@@ -9,6 +9,7 @@ For private cloud-mode repos whose CI should not spend GitHub-hosted Actions min
 - **One job at a time.** A runner process takes one job at a time; jobs beyond that queue.
 - **Its own macOS account.** The runner runs under a separate macOS user (`ci`) with no personal logins, keychains or browser sessions.
 - **Jobs in a Linux VM.** The runner runs inside an OrbStack Linux machine under `ci`, because service containers and `container:` jobs need Linux and Docker.
+- **Clean between jobs.** Each job starts from a clean workspace, and the cleanup hook (§ Register a repo, step 3) removes credential files, containers and volumes (named ones too) after it, so no secret a job used stays on the mini.
 - **Label `mini`.** Workflows pick the runner with `runs-on: ${{ fromJSON(vars.RUNS_ON || '["self-hosted","mini"]') }}` (`CLOUD.md` § Quota).
 - **No secret in a file, except the runner's own identity.** The registration token is typed on the mini once and is never written into a repo, the rulebook, a story or a chat. Jobs get secrets only from `secrets.*` as environment variables. The one secret that does stay on the mini is the runner's identity: registering creates a key pair whose private key the runner keeps in its folder (`.credentials`, `.credentials_rsaparams`, `.runner`) to authenticate to GitHub. It can only fetch jobs for that one repo and reads no repo secret outside a job. Keep it inside the runner's Linux machine, readable only by its user (`chmod 600 .credentials*`), never copy or back it up, and if the mini is lost or shared, remove the runner on GitHub (§ Remove a runner): that revokes the key.
 
