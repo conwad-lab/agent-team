@@ -8,4 +8,4 @@ Format: `YYYY-MM-DD | role | what failed | workaround | status`, where status is
 
 ## Retro
 
-<!-- The routine appends one line per week: YYYY-Www | Codex fixed <n> | Judge fixed <n> | failed @codex tasks <n> | escalations <n> | papercuts open <n> -->
+<!-- The routine appends one line per week: YYYY-Www | Codex fixed <n> | Judge fixed <n> | failed @codex tasks <n> | escalations <n> | papercuts open <n> | cards <n> | human wait <h> h -->
