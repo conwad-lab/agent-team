@@ -40,7 +40,7 @@ row()  { grep -F "| $1 |" "$T/board.md"; }
 
 # ---- repo o/r: one story in every state, every stall kind
 put repos/o/r <<< '{"default_branch":"main"}'
-{ for s in 001-ready 002-planned 003-split 004-superseded _005-parked 006-building 007-draft 008-judging 009-approved 010-changes 011-escalated 012-done 013-done-old; do
+{ for s in 001-ready 002-planned 003-split 004-superseded _005-parked 006-building 007-draft 008-judging 009-approved 010-changes 011-escalated 012-done 013-done-old 015-stale; do
     echo ".team/backlog/$s.md"; done; printf '%s\n' .team/plans/002-planned.md .team/plans/003-split.md .team/plans/006-building.md .team/backlog/.gitkeep
 } | jq -R '{path: .}' | jq -s '{tree: .}' | put "repos/o/r/git/trees/main?recursive=1"
 put "repos/o/r/contents/.team/plans/003-split.md?ref=main" <<< "{\"content\":\"$(b64 $'---\nverdict: needs-split\n---\n')\"}"
@@ -61,6 +61,7 @@ pr() { # number title state draft merged_at updated_ago ref
   pr 11 "011: escalated"  open   false -           $((3*H))  feat/011-escalated
   pr 12 "012: done"       closed false "$(t $((2*D)))"  $((2*D))  feat/012-done
   pr 13 "013: done old"   closed false "$(t $((10*D)))" $((10*D)) feat/013-done-old
+  pr 15 "015: stale"      open   false -           $((2*H))  feat/015-stale
   pr 14 "014: no story"   open   true  -           $((1*H))  feat/014-x
   pr 20 "board: tidy"     open   false -           $((1*H))  board/2026-11-10-tidy
   printf '{"number":1,"title":"old","state":"closed","draft":false,"merged_at":null,"updated_at":"%s","head":{"ref":"x","sha":"s"},"html_url":"u"}]' "$(t $((20*D)))"
@@ -75,6 +76,14 @@ for p in 009:approve 010:request-changes 011:escalate; do
   put "repos/o/r/contents/.team/reviews/$id-x.md?ref=$s" <<< "{\"content\":\"$(b64 "---"$'\n'"verdict: $v"$'\n'"---"$'\n')\"}"
 done
 
+# 015: request-changes, then the Builder pushed code: the verdict is stale → judging (r3 M1)
+put "repos/o/r/contents/.team/reviews?ref=sha15" <<< '[{"name":"015-x.md"}]'
+put "repos/o/r/contents/.team/reviews/015-x.md?ref=sha15" <<< "{\"content\":\"$(b64 $'---\nverdict: request-changes\n---\n')\"}"
+put "repos/o/r/commits?sha=sha15&path=.team/reviews/015-x.md&per_page=1" <<< '[{"sha":"r15"}]'
+put "repos/o/r/compare/r15...sha15" <<< '{"files":[{"filename":".team/reviews/015-x.response.md"},{"filename":"src/a.js"}]}'
+# 009: only the response file changed after the review: the verdict stands
+put "repos/o/r/commits?sha=sha9&path=.team/reviews/009-x.md&per_page=1" <<< '[{"sha":"r9"}]'
+put "repos/o/r/compare/r9...sha9" <<< '{"files":[{"filename":".team/reviews/009-x.response.md"}]}'
 cm() { printf '{"id":%s,"user":{"login":"%s"},"created_at":"%s","body":"%s"},' "$1" "$2" "$(t "$3")" "$4"; }
 BOT='chatgpt-codex-connector[bot]'
 # 008: Codex's summary comment still says running: not an answer
@@ -86,7 +95,12 @@ put "repos/o/r/issues/10/comments?per_page=100" <<< "[$(cm 101 conwad-lab $((2*H
 put "repos/o/r/issues/comments/101/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\"}]"
 put "repos/o/r/issues/30/comments?per_page=100" <<< "[$(cm 301 conwad-lab 1800 '@codex fix M1' | sed 's/,$//')]"
 iss() { printf '{"number":%s,"html_url":"https://github.com/o/r/issues/%s"%s},' "$1" "$1" "$2"; }
-put "repos/o/r/issues?state=open&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}')$(iss 9 ',"pull_request":{}')$(iss 10 ',"pull_request":{}')$(iss 40 ',"pull_request":{}')$(iss 41 ',"pull_request":{}')$(iss 42 '')$(iss 43 ',"pull_request":{}')$(iss 44 ',"pull_request":{}')$(iss 46 ',"pull_request":{}')$(iss 30 '')$(printf '{"number":45,"html_url":"https://github.com/o/r/issues/45","user":{"login":"conwad-lab"},"created_at":"%s","body":"@codex build .team/plans/045-x.md"}' "$(t $((3*H)))")]"
+put "repos/o/r/issues?state=open&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}')$(iss 9 ',"pull_request":{}')$(iss 10 ',"pull_request":{}')$(iss 40 ',"pull_request":{}')$(iss 41 ',"pull_request":{}')$(iss 42 '')$(iss 43 ',"pull_request":{}')$(iss 44 ',"pull_request":{}')$(iss 46 ',"pull_request":{}')$(iss 30 '')$(iss 48 ',"pull_request":{}')$(printf '{"number":47,"html_url":"u47","user":{"login":"conwad-lab"},"created_at":"%s","body":"@codex build x"},' "$(t $((3*H)))")$(printf '{"number":45,"html_url":"https://github.com/o/r/issues/45","user":{"login":"conwad-lab"},"created_at":"%s","body":"@codex build .team/plans/045-x.md"}' "$(t $((3*H)))")]"
+put "repos/o/r/issues/45/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"eyes\"}]"
+# 047: an issue whose body got an @codex line by an edit: Codex never reacted, so no task (r3 M3)
+# 048: original review 5 h, its retry 3 h, one result 2 h: the retry is still a retry (r3 M2)
+put "repos/o/r/issues/48/comments?per_page=100" <<< "[$(cm 481 conwad-lab $((5*H)) '@codex review')$(cm 482 conwad-lab $((3*H)) '@codex review' | sed 's/,$//')]"
+put "repos/o/r/pulls/48/reviews?per_page=100" <<< "[{\"id\":2,\"user\":{\"login\":\"$BOT\"},\"submitted_at\":\"$(t $((2*H)))\"}]"
 # 043: the summary comment, completed, is still not an answer (round 2 M1)
 jq -n --arg t1 "$(t $((2*H)))" --arg t2 "$(t 6900)" --arg bot "$BOT" '[{id:431,user:{login:"conwad-lab"},created_at:$t1,body:"@codex review"},
   {id:432,user:{login:$bot},created_at:$t2,body:"<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {\"status\":\"completed\"} -->"}]' | put "repos/o/r/issues/43/comments?per_page=100"
@@ -102,7 +116,7 @@ put "repos/o/r/issues/41/comments?per_page=100" <<< "[$(cm 411 conwad-lab $((5*H
 put "repos/o/r/issues/comments/411/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\"}]"
 # 042: a fix task unanswered → codex-task, never an automatic review retry
 put "repos/o/r/issues/42/comments?per_page=100" <<< "[$(cm 421 conwad-lab $((2*H)) '@codex fix M1: quote the path' | sed 's/,$//')]"
-put "repos/o/r/actions/runs?status=queued&per_page=100" <<< "{\"workflow_runs\":[{\"id\":100,\"name\":\"ci\",\"created_at\":\"$(t 2700)\",\"html_url\":\"r100\"},{\"id\":101,\"name\":\"ci\",\"created_at\":\"$(t 600)\",\"html_url\":\"r101\"}]}"
+put "repos/o/r/actions/runs?status=queued&per_page=100" <<< "{\"workflow_runs\":[{\"id\":100,\"name\":\"ci\",\"created_at\":\"$(t 2700)\",\"html_url\":\"r100\"},{\"id\":101,\"name\":\"ci\",\"created_at\":\"$(t 600)\",\"html_url\":\"r101\"},{\"id\":102,\"name\":\"ci\",\"created_at\":\"$(t $((2*H)))\",\"html_url\":\"r102\",\"pull_requests\":[{\"number\":10}]}]}"
 put "repos/o/r/actions/runs?status=failure&created=%3E%3D$(t $D)&per_page=100" <<< "{\"workflow_runs\":[{\"id\":200,\"name\":\"ci\",\"created_at\":\"$(t $H)\",\"html_url\":\"r200\"},{\"id\":201,\"name\":\"e2e\",\"created_at\":\"$(t $H)\",\"html_url\":\"r201\"}]}"
 put repos/o/r/actions/runs/200/jobs <<< '{"jobs":[{"steps":[],"runner_name":null}]}'
 put repos/o/r/actions/runs/201/jobs <<< '{"jobs":[{"steps":[{"name":"x"}],"runner_name":"GitHub Actions 2"}]}'
@@ -116,6 +130,7 @@ check "fresh PRs not idle"                    '! has "pr-idle	#7 " && ! has "pr-
 check "branch-idle: no PR, 2 d"               'has "branch-idle	feat/006-building"'
 check "fresh branch not idle"                 '! has "feat/099-fresh"'
 check "queued past 30 min"                    'has "queued	ci: queued" && has "r100" && ! has "r101"'
+check "queued run on a carded PR skipped (r3 S1)" '! has "r102"'
 check "not-started run flagged, started one not" 'has "not-started" && has "r200" && ! has "r201"'
 check "codex-retry: asked once, 2 h"          'has "codex-retry	#8:"'
 check "codex-silent: asked twice"             'has "codex-silent	#7:"'
@@ -129,6 +144,8 @@ check "completed summary is no answer (r2 M1)" 'has "codex-retry	#43:"'
 check "answers match their kind (r2 M2)"      'has "codex-retry	#44: 1 @codex"'
 check "issue-body build task (r2 M3)"         'has "codex-task	#45:"'
 check "fresh retry waits its hour (r2 S1)"    '! has "#46:"'
+check "edited body is no task (r3 M3)"        '! has "#47:"'
+check "partial answer keeps the retry (r3 M2)" 'has "codex-silent	#48:"'
 check "no blind"                              '! has "	blind	"'
 
 check "board: ready"             'row 001-ready | grep -q "| ready | Coordinator |"'
@@ -142,6 +159,7 @@ check "board: judging"           'row 008-judging | grep -q "| judging | Judge |
 check "board: approved, card open → human" 'row 009-approved | grep -q "| approved | human (card open 20 h) |"'
 check "board: Vänta → human"     'row 010-changes | grep -q "| changes-requested | human (Vänta 19 h) |"'
 check "board: escalated"         'row 011-escalated | grep -q "| escalated | human |"'
+check "board: stale verdict → judging (r3 M1)" 'row 015-stale | grep -q "| judging | Judge |"'
 check "board: done this week"    'row 012-done | grep -q "| done |"'
 check "board: old done absent"   '! row 013-done-old'
 check "board: PR without story"  'grep -q "| 014 (story not on main) | building |" "$T/board.md"'

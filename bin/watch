@@ -74,10 +74,10 @@ api() {
   return 1
 }
 opt() { OPT404=1 api "$@"; }
-answer() { # answer FILE KIND FALLBACK: an answer removes the oldest open request of KIND, else of FALLBACK
-  local n
-  n="$(awk -F'\t' -v k="$2" '$2 == k {print NR; exit}' "$1")"
-  [ -n "$n" ] || n="$(awk -F'\t' -v k="$3" '$2 == k {print NR; exit}' "$1")"
+answer() { # answer FILE KIND...: an answer removes the oldest open request of the first KIND found
+  local n="" f="$1" k; shift
+  for k in "$@"; do [ -n "$n" ] || n="$(awk -F'\t' -v k="$k" '$2 == k {print NR; exit}' "$f")"; done
+  set -- "$f"
   [ -n "$n" ] && { sed "${n}d" "$1" > "$1.tmp"; mv "$1.tmp" "$1"; }
   return 0
 }
@@ -127,9 +127,14 @@ watch_repo() {
   done < "$TMP/feat"
 
   # queued
-  api --paginate "repos/$R/actions/runs?status=queued&per_page=100" | jq -r '.workflow_runs[] | [.id, .name, (.created_at|fromdateiso8601), .html_url] | @tsv' > "$TMP/queued" || true
-  while IFS=$'\t' read -r id name created url; do
+  api --paginate "repos/$R/actions/runs?status=queued&per_page=100" | jq -r '.workflow_runs[] | [.id, .name, (.created_at|fromdateiso8601), .html_url,
+      ([.pull_requests[]?.number | tostring] | join(","))] | @tsv' > "$TMP/queued" || true
+  while IFS=$'\t' read -r id name created url prnums; do
     [ -n "$id" ] || continue
+    # a run on a PR with an open or Vänta card is already on a card (CLOUD.md § Human approval)
+    local carded=0 pn
+    for pn in ${prnums//,/ }; do awk -F'\t' -v n="$pn" '$1 == n && $2 != "none" {f=1} END {exit !f}' "$TMP/cards" && carded=1; done
+    [ "$carded" = 1 ] && continue
     [ $(( NOW - created )) -ge $(( QUEUED_AFTER * 60 )) ] && stall "$R" queued "$name: queued $(age "$created")" "$(iso "$created")" "$url"
   done < "$TMP/queued"
 
@@ -155,7 +160,13 @@ watch_repo() {
         (if ((.user.login // "")|endswith("[bot]")|not) and ((.body // "")|test("^@codex\\b";"m")) then "task" else "-" end)] | @tsv' > "$TMP/issues" || true
   while IFS=$'\t' read -r num ispr url created bodykind; do
     [ -n "$num" ] || continue
-    [ "$ispr" = false ] && [ "$bodykind" = task ] && printf '%s\ttask\tissue\n' "$created" > "$TMP/ev" || : > "$TMP/ev"
+    # a new issue's body is a request only when Codex reacted to the issue (it launched the task);
+    # an edited body starts nothing (templates/codex.md), and an edit leaves no reaction
+    : > "$TMP/ev"
+    if [ "$ispr" = false ] && [ "$bodykind" = task ] &&
+       api "repos/$R/issues/$num/reactions" | jq -e --arg bot "$CODEX_BOT" 'any(.[]; .user.login == $bot)' >/dev/null; then
+      printf '%s\ttask\tissue\n' "$created" > "$TMP/ev"
+    fi
     api --paginate "repos/$R/issues/$num/comments?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] |
         [(.created_at|fromdateiso8601),
          (if .user.login == $bot then (if (.body|test("codex-pull-request-review-summary|codex-review-state:")) then "-"
@@ -172,27 +183,33 @@ watch_repo() {
     local t kind cid rpath
     while IFS=$'\t' read -r t kind cid; do
       case "$kind" in
-        rout) answer "$TMP/pending" review task ;;
-        out) answer "$TMP/pending" task review ;;
+        rout) answer "$TMP/pending" review task retry ;;
+        out) answer "$TMP/pending" task review retry ;;
         review|task)
           rpath="repos/$R/issues/comments/$cid/reactions"; [ "$cid" = issue ] && rpath="repos/$R/issues/$num/reactions"
           if api "$rpath" | jq -e --arg bot "$CODEX_BOT" 'any(.[]; .user.login == $bot and .content == "+1")' >/dev/null; then continue; fi
+          # a review request posted while another is still open is that request's retry
+          # (more than 10 min later: requests posted together, like the four angles, are one batch)
+          local lastopen
+          lastopen="$(awk -F'\t' '$2 == "review" || $2 == "retry" {t=$1} END {print t}' "$TMP/pending")"
+          [ "$kind" = review ] && [ -n "$lastopen" ] && [ $(( t - lastopen )) -gt 600 ] && kind=retry
           printf '%s\t%s\n' "$t" "$kind" >> "$TMP/pending" ;;
       esac
     done < <(sort -n -k1,1 "$TMP/ev")
-    local first=0 count=0 batches=0 prev=0 last_batch=0 tasks=0 first_task=0
+    local first=0 count=0 tasks=0 first_task=0 reviews=0 first_review=0 retried=0 last_retry=0
     while IFS=$'\t' read -r t kind; do
       [ -n "$t" ] || continue
       count=$(( count + 1 )); [ "$first" = 0 ] && first="$t"
-      if [ "$kind" = task ]; then tasks=$(( tasks + 1 )); [ "$first_task" = 0 ] && first_task="$t"; continue; fi
-      if [ "$prev" = 0 ] || [ $(( t - prev )) -gt 600 ]; then batches=$(( batches + 1 )); last_batch="$t"; fi
-      prev="$t"
+      case "$kind" in
+        task) tasks=$(( tasks + 1 )); [ "$first_task" = 0 ] && first_task="$t" ;;
+        review) reviews=$(( reviews + 1 )); [ "$first_review" = 0 ] && first_review="$t" ;;
+        retry) retried=1; last_retry="$t" ;;
+      esac
     done < "$TMP/pending"
     [ "$count" -gt 0 ] || continue
     if [ "$tasks" -gt 0 ] && [ $(( NOW - first_task )) -ge 3600 ]; then kind=codex-task
-    elif [ "$batches" -eq 0 ]; then continue
-    elif [ "$batches" -eq 1 ] && [ $(( NOW - last_batch )) -ge 3600 ]; then kind=codex-retry
-    elif [ "$batches" -ge 2 ] && [ $(( NOW - last_batch )) -ge 3600 ]; then kind=codex-silent
+    elif [ "$retried" = 1 ]; then [ $(( NOW - last_retry )) -ge 3600 ] || continue; kind=codex-silent
+    elif [ "$reviews" -gt 0 ] && [ $(( NOW - first_review )) -ge 3600 ]; then kind=codex-retry
     else continue; fi
     stall "$R" "$kind" "#$num: $count @codex request(s) unanswered, oldest $(age "$first") old" "$(iso "$first")" "$url"
   done < "$TMP/issues"
@@ -226,6 +243,16 @@ watch_repo() {
         local rf v=""
         rf="$(opt "repos/$R/contents/.team/reviews?ref=$sha" | jq -r '.[].name' | grep -E "^${id}-.*\.md$" | grep -v '\.response\.md$' | head -1)"
         [ -n "$rf" ] && v="$(content ".team/reviews/$rf" "$sha" | field verdict)"
+        # a verdict is current only when no commit after the review file's last change touches
+        # anything but .team/reviews/ (the Builder's fixes and response file make it stale)
+        if [ -n "$v" ]; then
+          local rsha
+          rsha="$(api "repos/$R/commits?sha=$sha&path=.team/reviews/$rf&per_page=1" | jq -r '.[0].sha // empty')"
+          if [ -n "$rsha" ] && [ "$rsha" != "$sha" ] &&
+             api "repos/$R/compare/$rsha...$sha" | jq -e '[.files[]?.filename | select(startswith(".team/reviews/") | not)] | length > 0' >/dev/null; then
+            v=""
+          fi
+        fi
         case "$v" in
           approve) state=approved; owner="Judge (merge)" ;;
           request-changes) state=changes-requested; owner=Builder ;;
