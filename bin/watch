@@ -74,7 +74,14 @@ api() {
   return 1
 }
 opt() { OPT404=1 api "$@"; }
-content() { opt "repos/$R/contents/$1?ref=$2" | jq -r '.content // empty' | base64 --decode 2>/dev/null; }
+answer() { # answer FILE KIND FALLBACK: an answer removes the oldest open request of KIND, else of FALLBACK
+  local n
+  n="$(awk -F'\t' -v k="$2" '$2 == k {print NR; exit}' "$1")"
+  [ -n "$n" ] || n="$(awk -F'\t' -v k="$3" '$2 == k {print NR; exit}' "$1")"
+  [ -n "$n" ] && { sed "${n}d" "$1" > "$1.tmp"; mv "$1.tmp" "$1"; }
+  return 0
+}
+content() { opt "repos/$R/contents/$1?ref=$2" | jq -r '.content // empty' 2>/dev/null | base64 --decode 2>/dev/null; }
 field() { sed -n "s/^$1: *//p" | head -1; }
 
 watch_repo() {
@@ -136,49 +143,57 @@ watch_repo() {
   done < "$TMP/failed"
 
   # codex-retry / codex-silent / codex-task: open issues and PRs active in the last 7 days.
-  # Each Codex answer (a review, a bot comment other than its running summary, or a 👍 on the
-  # request) answers the oldest open request before it. Unanswered requests older than an hour:
-  # a build, fix or other task → codex-task (never auto-retried); review requests in one batch
-  # (posted within 10 min, e.g. the four angles) → codex-retry; in two or more batches, i.e.
-  # already retried → codex-silent.
+  # Requests: a comment, or a new issue's body (templates/codex.md), with a line starting `@codex`.
+  # Answers: a Codex review or review receipt answers the oldest open review request; another
+  # Codex comment answers the oldest open task, else the oldest review; a 👍 from Codex answers
+  # its own request. Codex's summary comment (edited in place) is never an answer.
+  # Unanswered after an hour: any task → codex-task (never auto-retried); review requests in one
+  # batch (within 10 min, e.g. the four angles) → codex-retry; a later batch is the retry, and
+  # only when it too has waited an hour → codex-silent.
   api --paginate "repos/$R/issues?state=open&per_page=100&since=$(iso $(( NOW - 7 * DAY )))" \
-    | jq -r '.[] | [.number, (.pull_request != null | tostring), .html_url] | @tsv' > "$TMP/issues" || true
-  while IFS=$'\t' read -r num ispr url; do
+    | jq -r '.[] | [.number, (.pull_request != null | tostring), .html_url, ((.created_at // "1970-01-01T00:00:00Z")|fromdateiso8601),
+        (if ((.user.login // "")|endswith("[bot]")|not) and ((.body // "")|test("^@codex\\b";"m")) then "task" else "-" end)] | @tsv' > "$TMP/issues" || true
+  while IFS=$'\t' read -r num ispr url created bodykind; do
     [ -n "$num" ] || continue
+    [ "$ispr" = false ] && [ "$bodykind" = task ] && printf '%s\ttask\tissue\n' "$created" > "$TMP/ev" || : > "$TMP/ev"
     api --paginate "repos/$R/issues/$num/comments?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] |
         [(.created_at|fromdateiso8601),
-         (if .user.login == $bot then (if (.body|test("codex-pull-request-review-summary|\"status\":\"running\"")) then "-" else "out" end)
+         (if .user.login == $bot then (if (.body|test("codex-pull-request-review-summary|codex-review-state:")) then "-"
+                                        elif (.body|test("codex-review-receipt")) then "rout" else "out" end)
           elif (.user.login|endswith("[bot]")) then "-"
           elif (.body|test("^@codex( security)? review\\b";"m")) then "review"
           elif (.body|test("^@codex\\b";"m")) then "task" else "-" end),
-         .id] | @tsv' > "$TMP/ev" || continue
+         .id] | @tsv' >> "$TMP/ev" || continue
     if [ "$ispr" = true ]; then
       api --paginate "repos/$R/pulls/$num/reviews?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] | select(.user.login == $bot) |
-          [((.submitted_at // "1970-01-01T00:00:00Z")|fromdateiso8601), "out", .id] | @tsv' >> "$TMP/ev" || continue
+          [((.submitted_at // "1970-01-01T00:00:00Z")|fromdateiso8601), "rout", .id] | @tsv' >> "$TMP/ev" || continue
     fi
     : > "$TMP/pending"
-    local t kind cid
+    local t kind cid rpath
     while IFS=$'\t' read -r t kind cid; do
       case "$kind" in
-        out) sed -i.bak 1d "$TMP/pending" ;;
+        rout) answer "$TMP/pending" review task ;;
+        out) answer "$TMP/pending" task review ;;
         review|task)
-          # a 👍 from Codex on the request answers it (CLOUD.md § Builder 5)
-          if api "repos/$R/issues/comments/$cid/reactions" | jq -e --arg bot "$CODEX_BOT" 'any(.[]; .user.login == $bot and .content == "+1")' >/dev/null; then continue; fi
+          rpath="repos/$R/issues/comments/$cid/reactions"; [ "$cid" = issue ] && rpath="repos/$R/issues/$num/reactions"
+          if api "$rpath" | jq -e --arg bot "$CODEX_BOT" 'any(.[]; .user.login == $bot and .content == "+1")' >/dev/null; then continue; fi
           printf '%s\t%s\n' "$t" "$kind" >> "$TMP/pending" ;;
       esac
     done < <(sort -n -k1,1 "$TMP/ev")
-    local first=0 lastreq=0 count=0 batches=0 prev=0 tasks=0
+    local first=0 count=0 batches=0 prev=0 last_batch=0 tasks=0 first_task=0
     while IFS=$'\t' read -r t kind; do
       [ -n "$t" ] || continue
-      count=$(( count + 1 )); lastreq="$t"; [ "$first" = 0 ] && first="$t"
-      [ "$kind" = task ] && tasks=$(( tasks + 1 ))
-      [ "$kind" = review ] && { [ "$prev" = 0 ] || [ $(( t - prev )) -gt 600 ]; } && batches=$(( batches + 1 ))
-      [ "$kind" = review ] && prev="$t"
+      count=$(( count + 1 )); [ "$first" = 0 ] && first="$t"
+      if [ "$kind" = task ]; then tasks=$(( tasks + 1 )); [ "$first_task" = 0 ] && first_task="$t"; continue; fi
+      if [ "$prev" = 0 ] || [ $(( t - prev )) -gt 600 ]; then batches=$(( batches + 1 )); last_batch="$t"; fi
+      prev="$t"
     done < "$TMP/pending"
-    [ "$count" -gt 0 ] && [ $(( NOW - first )) -ge 3600 ] || continue
-    kind=codex-retry
-    [ "$batches" -ge 2 ] && kind=codex-silent
-    [ "$tasks" -gt 0 ] && kind=codex-task
+    [ "$count" -gt 0 ] || continue
+    if [ "$tasks" -gt 0 ] && [ $(( NOW - first_task )) -ge 3600 ]; then kind=codex-task
+    elif [ "$batches" -eq 0 ]; then continue
+    elif [ "$batches" -eq 1 ] && [ $(( NOW - last_batch )) -ge 3600 ]; then kind=codex-retry
+    elif [ "$batches" -ge 2 ] && [ $(( NOW - last_batch )) -ge 3600 ]; then kind=codex-silent
+    else continue; fi
     stall "$R" "$kind" "#$num: $count @codex request(s) unanswered, oldest $(age "$first") old" "$(iso "$first")" "$url"
   done < "$TMP/issues"
 

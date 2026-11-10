@@ -86,7 +86,14 @@ put "repos/o/r/issues/10/comments?per_page=100" <<< "[$(cm 101 conwad-lab $((2*H
 put "repos/o/r/issues/comments/101/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\"}]"
 put "repos/o/r/issues/30/comments?per_page=100" <<< "[$(cm 301 conwad-lab 1800 '@codex fix M1' | sed 's/,$//')]"
 iss() { printf '{"number":%s,"html_url":"https://github.com/o/r/issues/%s"%s},' "$1" "$1" "$2"; }
-put "repos/o/r/issues?state=open&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}')$(iss 9 ',"pull_request":{}')$(iss 10 ',"pull_request":{}')$(iss 40 ',"pull_request":{}')$(iss 41 ',"pull_request":{}')$(iss 42 '')$(iss 30 '' | sed 's/,$//')]"
+put "repos/o/r/issues?state=open&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}')$(iss 9 ',"pull_request":{}')$(iss 10 ',"pull_request":{}')$(iss 40 ',"pull_request":{}')$(iss 41 ',"pull_request":{}')$(iss 42 '')$(iss 43 ',"pull_request":{}')$(iss 44 ',"pull_request":{}')$(iss 46 ',"pull_request":{}')$(iss 30 '')$(printf '{"number":45,"html_url":"https://github.com/o/r/issues/45","user":{"login":"conwad-lab"},"created_at":"%s","body":"@codex build .team/plans/045-x.md"}' "$(t $((3*H)))")]"
+# 043: the summary comment, completed, is still not an answer (round 2 M1)
+jq -n --arg t1 "$(t $((2*H)))" --arg t2 "$(t 6900)" --arg bot "$BOT" '[{id:431,user:{login:"conwad-lab"},created_at:$t1,body:"@codex review"},
+  {id:432,user:{login:$bot},created_at:$t2,body:"<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {\"status\":\"completed\"} -->"}]' | put "repos/o/r/issues/43/comments?per_page=100"
+# 044: a fix answered after an older review hangs: the answer takes the task, the review stays open (round 2 M2)
+put "repos/o/r/issues/44/comments?per_page=100" <<< "[$(cm 441 conwad-lab $((3*H)) '@codex review')$(cm 442 conwad-lab 600 '@codex fix M1')$(cm 443 "$BOT" 300 'Pushed a fix for M1.' | sed 's/,$//')]"
+# 046: a retry five minutes old is still within its hour (round 2 S1)
+put "repos/o/r/issues/46/comments?per_page=100" <<< "[$(cm 461 conwad-lab $((3*H)) '@codex review')$(cm 462 conwad-lab 300 '@codex review' | sed 's/,$//')]"
 # 040: two angle requests in one batch, one review answers one of them → one left, not yet retried
 put "repos/o/r/issues/40/comments?per_page=100" <<< "[$(cm 401 conwad-lab $((3*H)) '@codex review — security')$(cm 402 conwad-lab $((3*H-120)) '@codex review — failure paths' | sed 's/,$//')]"
 put "repos/o/r/pulls/40/reviews?per_page=100" <<< "[{\"id\":1,\"user\":{\"login\":\"$BOT\"},\"submitted_at\":\"$(t $((5*H/2)))\"}]"
@@ -118,6 +125,10 @@ check "under an hour is quiet"                '! has "#30:"'
 check "one answer answers one request (M2)"   'has "codex-retry	#40: 1 @codex"'
 check "earlier 👍 not counted (M3)"            'has "codex-retry	#41: 1 @codex"'
 check "fix task is codex-task (M4)"           'has "codex-task	#42:"'
+check "completed summary is no answer (r2 M1)" 'has "codex-retry	#43:"'
+check "answers match their kind (r2 M2)"      'has "codex-retry	#44: 1 @codex"'
+check "issue-body build task (r2 M3)"         'has "codex-task	#45:"'
+check "fresh retry waits its hour (r2 S1)"    '! has "#46:"'
 check "no blind"                              '! has "	blind	"'
 
 check "board: ready"             'row 001-ready | grep -q "| ready | Coordinator |"'
