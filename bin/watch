@@ -3,7 +3,7 @@
 # GitHub REST only: no GraphQL (cloud sessions get 403) and no clone, so the
 # project routine runs it from any team repo's submodule.
 #
-#   bin/watch [--board FILE] [--now ISO] [--queued-after MIN] owner/repo...
+#   bin/watch [--board FILE] [--estimates FILE] [--now ISO] [--queued-after MIN] owner/repo...
 #
 # Stdout: one stall per line, tab-separated: repo kind what since link
 #   pr-idle       open PR (board PRs too) with no event for 24 h, unless its card log
@@ -30,21 +30,29 @@
 #   done / closed      PR merged / closed in the last 7 days  → —
 # Superseded (superseded-by:) and parked (_NNN) stories are left out; older done/closed too.
 # A PR belongs to story NNN when its title starts `NNN:`.
+#
+# --estimates FILE (the weekly retro, CLOUD.md [R2], [T2]): one row per story with a merged PR whose
+# plan on the default branch has `## Estimate` (templates/plan.md). Rounds = `## Codex round` headings
+# in the response file (templates/response.md), hours = PR opened → merged, built-by from its
+# `## Outcome`. Held = built by the planned builder within the estimated rounds (unknown without a numeric
+# codex-rounds). A missing response
+# file or Outcome shows `—`, never blind.
 
 set -uo pipefail
-BOARD=""; NOW_ISO=""; QUEUED_AFTER=30
+BOARD=""; ESTIMATES=""; NOW_ISO=""; QUEUED_AFTER=30
 while [ $# -gt 0 ]; do
   case "$1" in
     --board) BOARD="$2"; shift 2 ;;
+    --estimates) ESTIMATES="$2"; shift 2 ;;
     --now) NOW_ISO="$2"; shift 2 ;;
     --queued-after) QUEUED_AFTER="$2"; shift 2 ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
     --) shift; break ;;
     -*) echo "watch: unknown option $1" >&2; exit 2 ;;
     *) break ;;
   esac
 done
-[ $# -gt 0 ] || { echo "usage: bin/watch [--board FILE] [--now ISO] [--queued-after MIN] owner/repo..." >&2; exit 2; }
+[ $# -gt 0 ] || { echo "usage: bin/watch [--board FILE] [--estimates FILE] [--now ISO] [--queued-after MIN] owner/repo..." >&2; exit 2; }
 command -v jq >/dev/null || { echo "watch: jq missing" >&2; exit 2; }
 
 if [ -n "$NOW_ISO" ]; then NOW="$(jq -rn --arg t "$NOW_ISO" '$t|fromdateiso8601')" || exit 2
@@ -55,7 +63,7 @@ iso() { jq -rn --argjson s "$1" '$s|todateiso8601'; }
 age() { local s=$(( NOW - $1 )); if [ "$s" -lt 7200 ]; then echo "$(( s / 60 )) min"; elif [ "$s" -lt 172800 ]; then echo "$(( s / 3600 )) h"; else echo "$(( s / 86400 )) d"; fi; }
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-STALLS="$TMP/stalls"; ROWS="$TMP/rows"; BLIND="$TMP/blind"; : > "$STALLS"; : > "$ROWS"; : > "$BLIND"
+STALLS="$TMP/stalls"; ROWS="$TMP/rows"; BLIND="$TMP/blind"; EST="$TMP/est"; : > "$STALLS"; : > "$ROWS"; : > "$BLIND"; : > "$EST"
 stall() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >> "$STALLS"; }
 
 # api PATH... : gh api with one retry. Returns 0 with output, 1 after two failures or a 404
@@ -93,7 +101,7 @@ watch_repo() {
   # --- PRs: newest first; one line per PR
   prs="$(api --paginate "repos/$R/pulls?state=all&per_page=100" | jq -r '.[] |
       [.number, (.title|gsub("\t";" ")), .state, (.draft|tostring), (.merged_at // "-"), (.updated_at|fromdateiso8601),
-       .head.ref, .head.sha, .html_url] | @tsv')" || return 0
+       .head.ref, .head.sha, .html_url, ((.created_at // "1970-01-01T00:00:00Z")|fromdateiso8601)] | @tsv')" || return 0
   printf '%s\n' "$prs" | sort -t$'\t' -k6,6nr > "$TMP/prs"
 
   # --- branches
@@ -102,7 +110,7 @@ watch_repo() {
 
   # card log on every open PR (CLOUD.md § Human approval 1): open | wait | none; then pr-idle
   : > "$TMP/cards"
-  while IFS=$'\t' read -r num title state draft merged upd ref sha url; do
+  while IFS=$'\t' read -r num title state draft merged upd ref sha url opened; do
     [ "$state" = open ] || continue
     local lines last card=none since=""
     # every card-log line with its comment's time; the last one decides, its time is the wait's start
@@ -238,7 +246,7 @@ watch_repo() {
     # a branch counts only when no PR of this story came from it
     br="$(grep -E "^feat/${id}-" "$TMP/feat" | cut -f1 | grep -vxF -f "$TMP/mine-refs" | head -1 || true)"
     if [ -n "$pr" ]; then
-      IFS=$'\t' read -r num title pstate draft merged upd ref sha url <<< "$pr"
+      IFS=$'\t' read -r num title pstate draft merged upd ref sha url opened <<< "$pr"
       last="$upd"; link="[#$num]($url)"
       if [ "$pstate" = open ] && [ "$draft" = true ]; then state=building; owner=Builder
       elif [ "$pstate" = open ]; then
@@ -290,6 +298,41 @@ watch_repo() {
       planned) ord=5 ;; needs-split) ord=6 ;; ready) ord=7 ;; done) ord=8 ;; *) ord=9 ;; esac
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$R" "$ord" "${last:-0}" "$base" "$state" "$owner" "$link" >> "$ROWS"
   done < "$TMP/ids"
+  [ -n "$ESTIMATES" ] && estimate_rows "$def"
+  return 0
+}
+
+section() { awk -v h="## $1" '$0 == h || index($0, h " ") == 1 {on=1; next} /^## / {on=0} on'; }
+
+# estimate_rows DEFAULT_BRANCH: one $EST row per story with a merged PR and a plan with `## Estimate`
+estimate_rows() {
+  local def="$1" id base story mpr plan est size risk erounds pbuilder resp rtext built arounds hours held
+  local num title pstate draft merged upd ref sha url opened
+  while IFS=$'\t' read -r id base story; do
+    [ -n "$story" ] || continue
+    mpr="$(awk -F'\t' -v id="$id" '(index($2, id ":") == 1 || index($7, "feat/" id "-") == 1) && $5 != "-"' "$TMP/prs" | head -1)"
+    [ -n "$mpr" ] || continue
+    plan="$(grep -E "^\.team/plans/${id}-" "$TMP/plans" | head -1)"
+    [ -n "$plan" ] || continue
+    est="$(content "$plan" "$def" | section Estimate)"
+    [ -n "$est" ] || continue
+    size="$(printf '%s\n' "$est" | field size | awk '{print $1}')"; risk="$(printf '%s\n' "$est" | field risk | awk '{print $1}')"
+    erounds="$(printf '%s\n' "$est" | field codex-rounds | awk '{print $1}')"
+    pbuilder="$(printf '%s\n' "$est" | field builder | awk '{print $1}')"
+    IFS=$'\t' read -r num title pstate draft merged upd ref sha url opened <<< "$mpr"
+    resp="$(printf '%s\n' "$tree" | grep -E "^\.team/reviews/${id}-.*\.response\.md$" | head -1 || true)"
+    rtext=""; [ -n "$resp" ] && rtext="$(content "$resp" "$def")"
+    built="$(printf '%s\n' "$rtext" | section Outcome | field built-by | awk '{print $1}' | sed 's/->/→/')"
+    arounds="$(printf '%s\n' "$rtext" | grep -c '^## Codex round ' || true)"
+    hours="$(awk -v a="$opened" -v b="$(jq -rn --arg t "$merged" '$t|fromdateiso8601')" 'BEGIN {printf "%.0f", (b - a) / 3600}')"
+    if [ -z "$built" ]; then held="—"
+    elif [ "$built" != "$pbuilder" ]; then held="no (builder)"
+    elif ! [[ "$erounds" =~ ^[0-9]+$ ]]; then held="? (no codex-rounds)"
+    elif [ "$arounds" -gt "$erounds" ]; then held="no (rounds)"
+    else held=yes; fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s/%s\t%s\t%s\t%s\n' "$R" "$base" "${size:-—}" "${risk:-—}" "${pbuilder:-—}" "${built:-—}" \
+      "${erounds:-?}" "$arounds" "$hours" "$held" "$url" >> "$EST"
+  done < "$TMP/ids"
 }
 
 for repo in "$@"; do watch_repo "$repo"; done
@@ -308,6 +351,29 @@ if [ -n "$BOARD" ]; then
       printf '| %s | %s | %s | %s | %s | %s |\n' "${repo#*/}" "$base" "$state" "$owner" "$a" "${link:-—}"
     done
   } > "$TMP/board.md" && cp "$TMP/board.md" "$BOARD" || { echo "watch: cannot write the board to $BOARD" >&2; cat "$STALLS"; exit 2; }
+fi
+
+if [ -n "$ESTIMATES" ]; then
+  {
+    echo "# Estimates — $(iso "$NOW")"
+    echo
+    echo "Generated by \`bin/watch --estimates\` from GitHub; do not edit. Merged stories whose plan has \`## Estimate\`."
+    if [ -s "$BLIND" ]; then echo; echo "**Blind:** $(cut -f1,2 "$BLIND" | tr '\t' ' ' | paste -sd ';' - | sed 's/;/; /g')"; fi
+    echo
+    echo "| Repo | Story | Size | Risk | Planned | Built by | Codex rounds est/actual | Hours to merge | Held |"
+    echo "|---|---|---|---|---|---|---|---|---|"
+    sort -t$'\t' -k1,1 -k2,2 "$EST" | while IFS=$'\t' read -r repo base size risk planned built rounds hours held url; do
+      printf '| %s | [%s](%s) | %s | %s | %s | %s | %s | %s | %s |\n' "${repo#*/}" "$base" "$url" "$size" "$risk" "$planned" "$built" "$rounds" "$hours" "$held"
+    done
+    echo
+    echo "| Size | Built by | Stories | Held | Median hours |"
+    echo "|---|---|---|---|---|"
+    awk -F'\t' '{print $3 "\t" $6 "\t" $8 "\t" ($9 == "yes")}' "$EST" | sort -t$'\t' -k1,1 -k2,2 -k3,3n | awk -F'\t' '
+      function flush() { if (n) printf "| %s | %s | %d | %d | %s |\n", s, b, n, h, (n % 2 ? v[(n + 1) / 2] : (v[n / 2] + v[n / 2 + 1]) / 2) }
+      $1 != s || $2 != b { flush(); s = $1; b = $2; n = 0; h = 0 }
+      { v[++n] = $3; h += $4 }
+      END { flush() }'
+  } > "$TMP/est.md" && cp "$TMP/est.md" "$ESTIMATES" || { echo "watch: cannot write the estimates to $ESTIMATES" >&2; cat "$STALLS"; exit 2; }
 fi
 
 cat "$STALLS"

@@ -193,5 +193,54 @@ check "blind: named on the board"     'grep -q "^\*\*Blind:\*\* o/gone" "$T/boar
 : > "$FIX/calls"; PATH="$T/bin:$PATH" bash "$SKILL/bin/watch" --now "$NOW_ISO" --board "$T/no/such/dir/b.md" o/q > "$T/out" 2> "$T/err"; echo $? > "$T/rc"
 check "unwritable board: exit 2 (S1)" '[ "$(cat "$T/rc")" = 2 ] && grep -q "cannot write the board" "$T/err"'
 
+# ---- estimates (story D): merged stories with an Estimate against their Outcome
+put repos/o/e <<< '{"default_branch":"main"}'
+printf '%s\n' .team/backlog/007-norounds.md .team/plans/007-norounds.md .team/reviews/007-norounds.response.md .team/backlog/001-held.md .team/backlog/002-rounds.md .team/backlog/003-switch.md .team/backlog/004-nooutcome.md .team/backlog/005-noest.md .team/backlog/006-open.md \
+  .team/plans/001-held.md .team/plans/002-rounds.md .team/plans/003-switch.md .team/plans/004-nooutcome.md .team/plans/005-noest.md .team/plans/006-open.md \
+  .team/reviews/001-held.response.md .team/reviews/002-rounds.response.md .team/reviews/003-switch.response.md \
+  | jq -R '{path: .}' | jq -s '{tree: .}' | put "repos/o/e/git/trees/main?recursive=1"
+plan() { put "repos/o/e/contents/.team/plans/$1.md?ref=main" <<< "{\"content\":\"$(b64 "---"$'\n'"verdict: plan"$'\n'"---"$'\n\n'"## Approach"$'\n'"builder: claude in prose"$'\n\n'"$2")\"}"; }
+est() { printf '## Estimate\nsize: %s\nrisk: %s\nfiles: 3\ncodex-rounds: %s\nbuilder: %s — reason\n\n## Files\n' "$@"; }
+plan 001-held "$(est S plain 2 codex)"
+plan 002-rounds "$(est M plain 1 codex)"
+plan 003-switch "$(est S plain 2 codex)"
+plan 004-nooutcome "$(est L adversarial 3 claude)"
+plan 005-noest $'## Files\n- x'
+plan 006-open "$(est S plain 1 codex)"
+plan 007-norounds "$(est S plain '<n>' codex)"
+resp() { put "repos/o/e/contents/.team/reviews/$1.response.md?ref=main" <<< "{\"content\":\"$(b64 "$2")\"}"; }
+resp 001-held $'## Codex round 1 — 2026-11-01\n- M1 fixed in a\n\n## Codex round 2 — 2026-11-01\n- none\n\n## Outcome\nbuilt-by: codex\nmissed: nothing'
+resp 002-rounds $'## Codex round 1 — 2026-11-01\n## Codex round 2 — 2026-11-01\n## Codex round 3 — 2026-11-02\n## Judge round 1 — 2026-11-02\n\n## Outcome\nbuilt-by: codex\nmissed: the parser'
+resp 007-norounds $'## Codex round 1 — 2026-11-01\n\n## Outcome\nbuilt-by: codex'
+resp 003-switch $'## Codex round 1 — 2026-11-01\n\n## Outcome\nbuilt-by: codex->claude\nmissed: Codex failed twice'
+epr() { # number title merged_ago opened_ago
+  printf '{"number":%s,"title":"%s","state":"closed","draft":false,"merged_at":"%s","updated_at":"%s","created_at":"%s","head":{"ref":"feat/x","sha":"s%s"},"html_url":"https://github.com/o/e/pull/%s"},' \
+    "$1" "$2" "$(t "$3")" "$(t "$3")" "$(t "$4")" "$1" "$1"; }
+{ printf '['
+  epr 1 "001: held" $((20*D)) $((20*D+4*H))
+  epr 2 "002: rounds" $((2*D)) $((2*D+10*H))
+  epr 3 "003: switch" $((3*D)) $((3*D+6*H))
+  epr 4 "004: no outcome" $((1*D)) $((1*D+30*H))
+  epr 5 "005: no estimate" $((1*D)) $((1*D+2*H))
+  epr 7 "007: no rounds" $((1*D)) $((1*D+1*H))
+  printf '{"number":6,"title":"006: open","state":"open","draft":true,"merged_at":null,"updated_at":"%s","created_at":"%s","head":{"ref":"feat/006-open","sha":"s6"},"html_url":"u6"}]' "$(t H)" "$(t H)"
+} | put "repos/o/e/pulls?state=all&per_page=100"
+
+run o/e
+check "estimates: no flag, no plan reads" '! grep -q "plans/001-held" "$FIX/calls" && [ ! -e "$T/est.md" ]'
+: > "$FIX/calls"; PATH="$T/bin:$PATH" bash "$SKILL/bin/watch" --now "$NOW_ISO" --estimates "$T/est.md" o/e > "$T/out" 2> "$T/err"; echo $? > "$T/rc"
+erow() { grep -F "[$1](" "$T/est.md"; }
+check "estimates: written, exit 0"     '[ "$(cat "$T/rc")" = 0 ] && grep -q "^| Repo | Story | Size |" "$T/est.md"'
+check "estimates: held"                'erow 001-held | grep -q "| S | plain | codex | codex | 2/2 | 4 | yes |"'
+check "estimates: rounds over"         'erow 002-rounds | grep -q "| M | plain | codex | codex | 1/3 | 10 | no (rounds) |"'
+check "estimates: builder switched"    'erow 003-switch | grep -q "| codex | codex→claude | 2/1 | 6 | no (builder) |"'
+check "estimates: no outcome → —"      'erow 004-nooutcome | grep -q "| L | adversarial | claude | — | 3/0 | 30 | — |"'
+check "estimates: no Estimate absent"  '! erow 005-noest'
+check "estimates: unmerged absent"     '! erow 006-open'
+check "estimates: prose builder: ignored" '! grep -q "| claude in" "$T/est.md"'
+check "estimates: no numeric rounds → unknown (r1 S1)" 'erow 007-norounds | grep -q "| ? (no codex-rounds) |"'
+check "estimates: footer S codex"      'grep -q "^| S | codex | 2 | 1 | 2.5 |" "$T/est.md"'
+check "estimates: footer median"       'grep -q "^| M | codex | 1 | 0 | 10 |" "$T/est.md"'
+
 echo "1..$n"
 exit $fail

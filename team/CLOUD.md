@@ -12,7 +12,7 @@
 | **Judge** (Reviewer): a thread per PR, without the planning context | the review file, PR comments, the merge request | code |
 | Human | outcome rows, card answers | — |
 
-Claude builds and judges, Codex attacks: two model families in every loop. [T1] `builder: codex` where the repo has a Codex environment, else `claude`; Team settings or a story's ORDER row may choose `claude`. [T2]
+Claude builds and judges, Codex attacks: two model families in every loop. [T1] The plan's **Estimate** names the builder: `codex` for an S or M `plain` story where the repo has a Codex environment, else `claude`; an ORDER row wins, Team settings' `builder:` is the fallback. [T2]
 
 ## Flow
 
@@ -31,10 +31,10 @@ Claude builds and judges, Codex attacks: two model families in every loop. [T1] 
 2. Build with tests; **Test before commit** before every push. Open the PR **as a draft**, title `NNN: <story title>`, a body line per acceptance criterion saying how it was shown. [B3]
    **`builder: codex`:** post the build task (`templates/codex.md`) on the story's issue and watch its PR as your own; apply a bare diff unchanged and open the PR yourself. Ask for each fix with `@codex fix`. Run **Test before commit** on Codex's heads before each review or Judge request. A task that fails twice (error, nothing in an hour, a red head) you build yourself, saying so in the response file. [B4]
 3. **Request Codex.** It reviews by itself only when a PR opens or is marked ready: post `@codex review` when the PR opens and after every code push, with the round's focus (on a data change, plus § Data changes 3). [B5] On **Adversarial paths** the first round also gets the four angle comments in `templates/codex.md`. [B6] Retry a failed review once; one that fails twice, or has not finished an hour after the request, goes in the response file, and going on without Codex is Team settings' call, never for a data change. [B7]
-4. **Answer every Codex P0/P1 and M/S** in `.team/reviews/NNN-slug.response.md` (`## Codex round N — YYYY-MM-DD`, `fixed in <sha>` or `disputed — <reason>`). Codex attacks; it is no authority. Never change code only to silence a finding. [B8]
+4. **Answer every Codex P0/P1 and M/S** in `.team/reviews/NNN-slug.response.md` (`templates/response.md`; its **Outcome** filled before the Judge request). Codex attacks; it is no authority. Never change code only to silence a finding. [B8]
 5. **Stop the rounds** when, on the current head, every requested review has finished (a review or 👍; 👀 means wait) with no new P0/P1 or Must fix and every finding is answered, or after three rounds (say so). [B9] Mark the PR ready (`gh pr ready`, or the REST route a GraphQL 403 names); a failing check is fixed with one Codex round. [B10] Message the Coordinator `NNN ready for judge: PR #<n>, <rounds> Codex rounds, <open disputes or "no open disputes">` only when, on the head after ready, the first stop condition above holds, angle and ready reviews included, and every required check is **green**. [B11]
    **Green**: ran after ready and passed. `skipped` is not green, except a skip by the repo's change classifier when the classifier ran after ready and succeeded, the skip follows from its output, and the code the skipped gate covers had that gate pass after ready on this or an earlier head the classifier compared against (a diff without code needs none). A skip resting on another skip, a pre-ready run or the draft guard never counts. [B12]
-6. **On `request-changes`:** answer every Judge M and S under `## Judge round N`, fix, push, request one Codex round, and message the Coordinator when step 5 holds again. [B13]
+6. **On `request-changes`:** answer every Judge M and S, fix, push, request one Codex round, and message the Coordinator when step 5 holds again. [B13]
 
 ## Judge
 
@@ -78,11 +78,11 @@ What the Coordinator would recommend merging merges without the human (§ Judge 
 
 ## Routines
 
-One scheduled routine per project, daily. Its first run each week reads the **Signal sources** and writes rows with evidence under **Förslag**, never **Kö** except kinds listed under **Auto-queue**; the rest waits for the human's yes. [R1]
+One scheduled routine per project, daily. Its first run each week reads the **Signal sources** and writes rows with evidence under **Förslag**, never **Kö** except kinds listed under **Auto-queue**. [R1]
 
 **Watch**, every run: `bin/watch --board <project folder>/BOARD.md <team repos>` writes the board (stories by state, whose turn, how long) and lists stalls. It re-requests a `codex-retry` review once (§ Builder 3); the other stalls, `blind` and exit 2 included, go on one decision card. [R7]
 
-**Weekly retro**, in that first run, over PRs merged or closed in the last four weeks: response files, Judge review files with their `## Papercuts`, escalations (open ones too, counted in the week raised), failed `@codex` tasks and reviews, and `.team/PAPERCUTS.md` (four weeks plus every `open` line). [R2]
+**Weekly retro**, in that first run, over PRs merged or closed in the last four weeks: response files, Judge review files with their `## Papercuts`, escalations (open ones too, counted in the week raised), failed `@codex` tasks and reviews, `.team/PAPERCUTS.md` (four weeks plus every `open` line) and `bin/watch --estimates`. [R2]
 - A pattern (the same failure, or the same kind of finding the Builder missed) seen twice, or once if it caused a revert or a wrong merge, gets one row: `Retro: <pattern> → <change> in <file> — <evidence links>`. An open row gets new links instead; evidence already linked from a Retro row never counts again. A card answered as recommended is a pattern too (`Retro: card that decided nothing → <rule>`), except **Human-only paths**. [R3]
 - **What can be removed?** At most one row per retro, `Retro: remove [ID] — incident not seen since <date>, <evidence>`, for a rule whose `WHY.md` incident has not come back and that no miss needed. [R4]
 - Retro rows never go to Kö. A rulebook change becomes a `Rulebook story.` for agent-team on the human's yes; the routine never edits the rulebook, `AGENTS.md` or a role file. [R5]
