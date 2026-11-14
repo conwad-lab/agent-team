@@ -61,7 +61,9 @@ jobs:
                 files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.status != "removed") | .filename') || refuse "could not list the PR's files"
                 ok=""
                 for f in $(grep -E '^\.team/reviews/[^/]+\.md$' <<<"$files" | grep -v '\.response\.md$'); do
-                  if gh api "repos/$REPO/contents/$f?ref=$sha" --jq .content | base64 -d | grep -qE '^verdict:[[:space:]]*approve[[:space:]]*$'; then ok=1; fi
+                  # decode in full first: grep -q in a pipe exits early and base64 dies of SIGPIPE under pipefail (tb-site #34)
+                  review=$(gh api "repos/$REPO/contents/$f?ref=$sha" --jq .content | base64 -d) || refuse "could not read $f at $sha"
+                  if grep -qE '^verdict:[[:space:]]*approve[[:space:]]*$' <<<"$review"; then ok=1; fi
                 done
                 [ -n "$ok" ] || refuse "no review file in .team/reviews/ with 'verdict: approve' at $sha"
               fi

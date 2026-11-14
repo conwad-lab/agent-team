@@ -22,7 +22,7 @@ case "$*" in
   "api repos/o/r/pulls/7") cat "$FAKE/pr.json" ;;
   "api repos/o/r/contents/.team?ref=main") [ -f "$FAKE/team-500" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }; [ -f "$FAKE/has-team" ] && echo '[]' || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; } ;;
   "api --paginate repos/o/r/pulls/7/files --jq"*) printf '%s\n' .team/reviews/007-x.md .team/reviews/007-x.response.md src/a.js ;;
-  "api repos/o/r/contents/.team/reviews/007-x.md?ref="*) printf '%s' "$(cat "$FAKE/review.md")" | base64 ;;
+  "api repos/o/r/contents/.team/reviews/007-x.md?ref="*) [ -f "$FAKE/review-500" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }; base64 < "$FAKE/review.md" ;;
   "api repos/o/r/contents/.team/reviews/007-x.response.md?ref="*) printf 'verdict: approve\n' | base64 ;;
   "api --paginate repos/o/r/issues/7/comments --jq"*) cat "$FAKE/comments" 2>/dev/null ;;
   "api --paginate repos/o/r/issues/7/reactions --jq"*) cat "$FAKE/pr-reactions" 2>/dev/null ;;
@@ -80,6 +80,12 @@ merged && ok "Codex 👍 on the @codex request comment counts" || nok "Codex �
 
 setup "feat: x" false $S; : > "$FAKE/comments"; echo 'chatgpt-codex-connector[bot]' > "$FAKE/pr-reactions"; run "agent-team-merge: $S"
 merged && ok "Codex 👍 on the PR counts" || nok "Codex 👍 on the PR"
+
+setup "feat: x" false $S; { printf -- '---\nverdict: approve\n---\n'; head -c 1000000 /dev/zero | tr '\0' 'x' | fold -w 100; } > "$FAKE/review.md"; run "agent-team-merge: $S"
+merged && ok "large approving review file (grep stops early, base64 must not fail the test): merges" || nok "large approving review file"
+
+setup "feat: x" false $S; touch "$FAKE/review-500"; run "agent-team-merge: $S"
+! merged && said "could not read .team/reviews/007-x.md" && [ "$(cat "$FAKE/rc")" = 1 ] && ok "review file unreadable: refused, names the file" || nok "review file unreadable"
 
 setup "feat: x" false $S; touch "$FAKE/team-500"; run "agent-team-merge: $S"
 ! merged && said "could not tell whether the repo has .team/" && ok ".team lookup error (not 404): refused" || nok ".team lookup error"
