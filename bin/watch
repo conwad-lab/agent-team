@@ -84,14 +84,20 @@ api() {
 opt() { OPT404=1 api "$@"; }
 # pages PATH: every page of a per_page=100 list. Builds `&page=N` itself instead of following
 # gh --paginate's Link headers: those point at repositories/<id>/..., which the cloud proxy
-# refuses (403), so a repo with over 100 PRs went blind. Stops at the first short page.
+# refuses (403), so a repo with over 100 PRs went blind. Stops at the first short page; a failed
+# page, or more than WATCH_MAX_PAGES (default 50) full pages, is blind, never a silent cut.
 pages() {
-  local n=1 out c
+  local n=1 out c max="${WATCH_MAX_PAGES:-50}"
   while :; do
     if [ "$n" -eq 1 ]; then out="$(api "$1")" || return 1; else out="$(api "$1&page=$n")" || return 1; fi
     printf '%s\n' "$out"
     c="$(jq 'if type == "array" then length else (.workflow_runs // [] | length) end' <<< "$out" 2>/dev/null)"
-    [ "${c:-0}" -ge 100 ] && [ "$n" -lt 100 ] || return 0
+    [ "${c:-0}" -ge 100 ] || return 0
+    if [ "$n" -ge "$max" ]; then
+      printf '%s\t%s\t%s\n' "$R" "$1" "more than $max pages" >> "$BLIND"
+      stall "$R" blind "cannot read $1: more than $max pages" "$(iso "$NOW")" "https://github.com/$R"
+      return 1
+    fi
     n=$(( n + 1 ))
   done
 }

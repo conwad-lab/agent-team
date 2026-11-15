@@ -252,6 +252,12 @@ run o/p
 check "pages: an idle PR on page 2 is seen" 'has "^o/p	pr-idle	#5 005: idle"'
 check "pages: page 2 asked for by number"   'grep -qx "repos/o/p/pulls?state=all&per_page=100&page=2" "$FIX/calls"'
 check "pages: stops at the short page"      '! grep -q "page=3" "$FIX/calls" && [ "$(cat "$T/rc")" = 1 ]'
+touch "$FIX/$(printf '%s' 'repos/o/p/pulls?state=all&per_page=100&page=2' | tr -c 'A-Za-z0-9' '_').502"
+run o/p
+check "pages: a failing page 2 is blind and named" 'has "^o/p	blind	cannot read repos/o/p/pulls?state=all&per_page=100&page=2" && [ "$(cat "$T/rc")" = 2 ]'
+rm -f "$FIX/$(printf '%s' 'repos/o/p/pulls?state=all&per_page=100&page=2' | tr -c 'A-Za-z0-9' '_').502"
+WATCH_MAX_PAGES=1 run o/p
+check "pages: past the cap is blind, not cut"   'has "^o/p	blind	cannot read repos/o/p/pulls?state=all&per_page=100: more than 1 pages" && ! grep -q "page=2" "$FIX/calls"'
 
 echo "1..$n"
 exit $fail
