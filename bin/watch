@@ -82,6 +82,19 @@ api() {
   return 1
 }
 opt() { OPT404=1 api "$@"; }
+# pages PATH: every page of a per_page=100 list. Builds `&page=N` itself instead of following
+# gh --paginate's Link headers: those point at repositories/<id>/..., which the cloud proxy
+# refuses (403), so a repo with over 100 PRs went blind. Stops at the first short page.
+pages() {
+  local n=1 out c
+  while :; do
+    if [ "$n" -eq 1 ]; then out="$(api "$1")" || return 1; else out="$(api "$1&page=$n")" || return 1; fi
+    printf '%s\n' "$out"
+    c="$(jq 'if type == "array" then length else (.workflow_runs // [] | length) end' <<< "$out" 2>/dev/null)"
+    [ "${c:-0}" -ge 100 ] && [ "$n" -lt 100 ] || return 0
+    n=$(( n + 1 ))
+  done
+}
 answer() { # answer FILE KIND...: an answer removes the oldest open request of the first KIND found
   local n="" f="$1" k; shift
   for k in "$@"; do [ -n "$n" ] || n="$(awk -F'\t' -v k="$k" '$2 == k {print NR; exit}' "$f")"; done
@@ -99,13 +112,13 @@ watch_repo() {
   [ -n "$def" ] || return 0   # api() recorded it as blind
 
   # --- PRs: newest first; one line per PR
-  prs="$(api --paginate "repos/$R/pulls?state=all&per_page=100" | jq -r '.[] |
+  prs="$(pages "repos/$R/pulls?state=all&per_page=100" | jq -r '.[] |
       [.number, (.title|gsub("\t";" ")), .state, (.draft|tostring), (.merged_at // "-"), (.updated_at|fromdateiso8601),
        .head.ref, .head.sha, .html_url, ((.created_at // "1970-01-01T00:00:00Z")|fromdateiso8601)] | @tsv')" || return 0
   printf '%s\n' "$prs" | sort -t$'\t' -k6,6nr > "$TMP/prs"
 
   # --- branches
-  branches="$(api --paginate "repos/$R/branches?per_page=100" | jq -r '.[] | [.name, .commit.sha] | @tsv')" || return 0
+  branches="$(pages "repos/$R/branches?per_page=100" | jq -r '.[] | [.name, .commit.sha] | @tsv')" || return 0
   printf '%s\n' "$branches" | grep -E '^feat/' > "$TMP/feat" || true
 
   # card log on every open PR (CLOUD.md § Human approval 1): open | wait | none; then pr-idle
@@ -114,7 +127,7 @@ watch_repo() {
     [ "$state" = open ] || continue
     local lines last card=none since=""
     # every card-log line with its comment's time; the last one decides, its time is the wait's start
-    lines="$(api --paginate "repos/$R/issues/$num/comments?per_page=100" | jq -r '.[] | (.created_at|fromdateiso8601|tostring) as $t |
+    lines="$(pages "repos/$R/issues/$num/comments?per_page=100" | jq -r '.[] | (.created_at|fromdateiso8601|tostring) as $t |
         .body | split("\n")[] | select(test("^Card (posted|answered) ")) | $t + "\t" + .')" || continue
     last="$(printf '%s\n' "$lines" | grep . | tail -1 || true)"
     case "${last#*$'\t'}" in "Card posted "*) card=open ;; "Card answered "*Vänta*) card=wait ;; esac
@@ -135,7 +148,7 @@ watch_repo() {
   done < "$TMP/feat"
 
   # queued
-  api --paginate "repos/$R/actions/runs?status=queued&per_page=100" | jq -r '.workflow_runs[] | [.id, .name, (.created_at|fromdateiso8601), .html_url,
+  pages "repos/$R/actions/runs?status=queued&per_page=100" | jq -r '.workflow_runs[] | [.id, .name, (.created_at|fromdateiso8601), .html_url,
       ([.pull_requests[]?.number | tostring] | join(","))] | @tsv' > "$TMP/queued" || true
   while IFS=$'\t' read -r id name created url prnums; do
     [ -n "$id" ] || continue
@@ -149,7 +162,7 @@ watch_repo() {
   # not-started
   local since; since="$(iso $(( NOW - DAY )))"
   # runs created in the last 7 days that failed in the last 24 h (a run can queue long or be re-run)
-  api --paginate "repos/$R/actions/runs?status=failure&created=%3E%3D$(iso $(( NOW - 7 * DAY )))&per_page=100" | jq -r --argjson since $(( NOW - DAY )) '.workflow_runs[] |
+  pages "repos/$R/actions/runs?status=failure&created=%3E%3D$(iso $(( NOW - 7 * DAY )))&per_page=100" | jq -r --argjson since $(( NOW - DAY )) '.workflow_runs[] |
       select(((.updated_at // .created_at)|fromdateiso8601) >= $since) | [.id, .name, ((.updated_at // .created_at)|fromdateiso8601), .html_url] | @tsv' > "$TMP/failed" || true
   while IFS=$'\t' read -r id name created url; do
     [ -n "$id" ] || continue
@@ -165,7 +178,7 @@ watch_repo() {
   # Unanswered after an hour: any task → codex-task (never auto-retried); review requests in one
   # batch (within 10 min, e.g. the four angles) → codex-retry; a later batch is the retry, and
   # only when it too has waited an hour → codex-silent.
-  api --paginate "repos/$R/issues?state=open&per_page=100&since=$(iso $(( NOW - 7 * DAY )))" \
+  pages "repos/$R/issues?state=open&per_page=100&since=$(iso $(( NOW - 7 * DAY )))" \
     | jq -r '.[] | [.number, (.pull_request != null | tostring), .html_url, ((.created_at // "1970-01-01T00:00:00Z")|fromdateiso8601),
         (if ((.user.login // "")|endswith("[bot]")|not) and ((.body // "")|test("^@codex\\b";"m")) then "task" else "-" end)] | @tsv' > "$TMP/issues" || true
   while IFS=$'\t' read -r num ispr url created bodykind; do
@@ -177,7 +190,7 @@ watch_repo() {
        api "repos/$R/issues/$num/reactions" | jq -e --arg bot "$CODEX_BOT" 'any(.[]; .user.login == $bot)' >/dev/null; then
       printf '%s\ttask\tissue\n' "$created" > "$TMP/ev"
     fi
-    api --paginate "repos/$R/issues/$num/comments?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] |
+    pages "repos/$R/issues/$num/comments?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] |
         [(.created_at|fromdateiso8601),
          (if .user.login == $bot then (if (.body|test("codex-pull-request-review-summary|codex-review-state:")) then "-"
                                         elif (.body|test("codex-review-receipt")) then "rout" else "out" end)
@@ -186,7 +199,7 @@ watch_repo() {
           elif (.body|test("^@codex\\b";"m")) then "task" else "-" end),
          .id] | @tsv' >> "$TMP/ev" || continue
     if [ "$ispr" = true ]; then
-      api --paginate "repos/$R/pulls/$num/reviews?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] | select(.user.login == $bot) |
+      pages "repos/$R/pulls/$num/reviews?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] | select(.user.login == $bot) |
           [((.submitted_at // "1970-01-01T00:00:00Z")|fromdateiso8601), "rout", .id] | @tsv' >> "$TMP/ev" || continue
     fi
     : > "$TMP/pending"
