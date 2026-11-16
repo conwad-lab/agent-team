@@ -113,11 +113,20 @@ merged && ok "usage-limit reply, then a Codex review: merges" || nok "quota then
 setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q},{id:15,user:{login:$bot},body:"<!-- codex-review-receipt:v1 -->\nCodex Review: no major issues in the usage limit rule."}]'; run "agent-team-merge: $S"
 merged && ok "usage-limit reply, then a review receipt comment (even one that says usage limit): merges" || nok "quota then receipt"
 
+setup "feat: x" false $S; cj '[{id:15,user:{login:$bot},body:"<!-- codex-review-receipt:v1 -->\n\nCodex Review: no major issues in the `codex-pull-request-review-summary` and `codex-review-state:` filter."}]'; run "agent-team-merge: $S"
+merged && ok "a receipt that names the summary markers still counts (Codex M2 on #27)" || nok "receipt naming the summary markers"
+
+setup "feat: x" false $S; cj '[{id:17,user:{login:$bot},body:"To use Codex here, [create an environment for this repo](https://chatgpt.com/codex/cloud/settings/environments)."},{id:18,user:{login:$bot},body:"I quote <!-- codex-review-receipt:v1 --> but did not review."}]'; run "agent-team-merge: $S"
+! merged && said "no Codex comment, review or 👍" && ok "a setup notice, or the marker quoted mid-comment, is no review: refused" || nok "setup notice"
+
+setup "feat: x" false $S; cj '[{id:19,user:{login:"someone"},body:"<!-- codex-review-receipt:v1 -->\nCodex Review: fine"}]'; run "agent-team-merge: $S"
+! merged && ok "a receipt marker in someone else's comment: refused" || nok "foreign receipt"
+
 setup "feat: x" false $S; cj '[{id:11,user:{login:"conwad-lab"},body:"@codex review"},{id:13,user:{login:$bot},body:$q}]'; echo "$BOT" > "$FAKE/c11-reactions"; run "agent-team-merge: $S"
 merged && ok "usage-limit reply, then a Codex 👍 on the request: merges" || nok "quota then 👍"
 
 setup "feat: x" false $S; cj '[{id:16,user:{login:$bot},body:null}]'; run "agent-team-merge: $S"
-merged && ok "a Codex comment with an empty body still counts (jq does not fail)" || nok "null body"
+! merged && said "no Codex comment, review or 👍" && ok "a Codex comment with an empty body: refused for that reason (jq does not fail)" || nok "null body"
 
 grep -q 'github.event.comment.body }}' "$WF" && ! grep -qE 'run:.*\$\{\{' "$WF" && ok "comment body reaches the script only through env" || nok "body through env"
 grep -q 'actions/checkout' "$WF" && nok "checks out no code" || ok "checks out no code"

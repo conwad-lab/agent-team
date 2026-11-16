@@ -68,11 +68,10 @@ jobs:
                 [ -n "$ok" ] || refuse "no review file in .team/reviews/ with 'verdict: approve' at $sha"
               fi
               bot='chatgpt-codex-connector[bot]'
-              # a Codex comment counts only when it is not a usage-limit reply (unless it carries a review receipt)
-              # and not Codex's status summary, which a review stopped by the quota leaves too (agent-team #24, #25)
+              # a Codex comment counts only when it opens with the review receipt marker a finished review leaves:
+              # a usage-limit reply, the status summary and a setup notice are no review (agent-team #24, #25, #27)
               comments=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | [.id,
-                (if (((.body // "") | test("usage limit"; "i")) and ((.body // "") | test("codex-review-receipt") | not))
-                    or ((.body // "") | test("codex-pull-request-review-summary|codex-review-state:")) then "-" else .user.login end),
+                (if ((.body // "") | test("^\\s*<!-- codex-review-receipt")) then .user.login else "-" end),
                 ((.body // "") | test("@codex") | tostring)] | @tsv') || refuse "could not list the PR's comments"
               codex=$( { cut -f2 <<<"$comments"
                          gh api --paginate "repos/$REPO/pulls/$PR/reviews" --jq '.[].user.login'
@@ -80,7 +79,7 @@ jobs:
                          awk -F'\t' '$3 == "true" {print $1}' <<<"$comments" | while read -r id; do
                            gh api --paginate "repos/$REPO/issues/comments/$id/reactions" --jq '.[] | select(.content == "+1") | .user.login'
                          done; } | grep -cxF "$bot" || true)
-              [ "${codex:-0}" -gt 0 ] || refuse "no Codex comment, review or 👍 on the PR (a usage-limit reply or the status summary is not a review)"
+              [ "${codex:-0}" -gt 0 ] || refuse "no Codex comment, review or 👍 on the PR (a usage-limit reply, the status summary or a setup notice is not a review)"
               ;;
           esac
           if ! out=$(gh api -X PUT "repos/$REPO/pulls/$PR/merge" -f sha="$sha" -f merge_method=squash 2>&1); then

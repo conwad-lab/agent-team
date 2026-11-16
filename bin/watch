@@ -186,7 +186,7 @@ watch_repo() {
   # its own request. Codex's summary comment (edited in place) is never an answer.
   # A Codex comment saying its usage limit is reached answers like any comment (so nothing is left
   # hanging when the quota is back) but starts or continues a quota streak; any later review, receipt
-  # or other Codex comment ends it. A streak still open → codex-quota, whatever else is unanswered.
+  # or other Codex comment, or a 👍 newer than the last such reply, ends it. A streak still open → codex-quota, whatever else is unanswered.
   # Unanswered after an hour: any task → codex-task (never auto-retried); review requests in one
   # batch (within 10 min, e.g. the four angles) → codex-retry; a later batch is the retry, and
   # only when it too has waited an hour → codex-silent.
@@ -216,7 +216,7 @@ watch_repo() {
           [((.submitted_at // "1970-01-01T00:00:00Z")|fromdateiso8601), "rout", .id] | @tsv' >> "$TMP/ev" || continue
     fi
     : > "$TMP/pending"
-    local t kind cid rpath qfirst="" qlast=""
+    local t kind cid rpath qfirst="" qlast="" tlast=0
     while IFS=$'\t' read -r t kind cid; do
       case "$kind" in
         rout) answer "$TMP/pending" review task retry; qfirst="" ;;
@@ -224,7 +224,15 @@ watch_repo() {
         quota) answer "$TMP/pending" review task retry; [ -n "$qfirst" ] || qfirst="$t"; qlast="$t" ;;
         review|task)
           rpath="repos/$R/issues/comments/$cid/reactions"; [ "$cid" = issue ] && rpath="repos/$R/issues/$num/reactions"
-          if api "$rpath" | jq -e --arg bot "$CODEX_BOT" 'any(.[]; .user.login == $bot and .content == "+1")' >/dev/null; then continue; fi
+          # a 👍 answers its request; dated by the reaction (else the request), it also ends a quota streak
+          local thumb
+          thumb="$(api "$rpath" | jq -r --arg bot "$CODEX_BOT" '[.[] | select(.user.login == $bot and .content == "+1")] |
+              if length == 0 then "none" else ([.[] | (.created_at // empty) | fromdateiso8601] | max // 0) end' 2>/dev/null)"
+          if [ -n "$thumb" ] && [ "$thumb" != none ]; then
+            [ "$thumb" -gt 0 ] 2>/dev/null || thumb="$t"
+            [ "$thumb" -gt "$tlast" ] && tlast="$thumb"
+            continue
+          fi
           # a review request posted while another is still open is that request's retry
           # (more than 10 min later: requests posted together, like the four angles, are one batch)
           local lastopen
@@ -233,6 +241,7 @@ watch_repo() {
           printf '%s\t%s\n' "$t" "$kind" >> "$TMP/pending" ;;
       esac
     done < <(sort -n -k1,1 "$TMP/ev")
+    [ -n "$qfirst" ] && [ "$tlast" -gt "$qlast" ] && qfirst=""
     if [ -n "$qfirst" ]; then
       stall "$R" codex-quota "#$num: Codex usage limit reached, last reply $(age "$qlast") ago" "$(iso "$qfirst")" "$url"
       continue
