@@ -16,7 +16,7 @@
 #   codex-task    any other @codex request (build, fix, plan attack) unanswered for an hour
 #   codex-quota   Codex's latest reply on an open PR or issue says its usage limit is reached (since =
 #                 the first such reply in a row). Instead of the other codex kinds there: the routine
-#                 re-asks once per run, no card before 72 h, no second story for 24 h (CLOUD.md [F4], [R7])
+#                 (and of pr-idle for that PR) the routine re-asks once per run, no card before 72 h, no second story for 24 h (CLOUD.md [F4], [R7])
 #   blind         a read that failed twice; the watch cannot vouch for that repo
 # Exit 0 no stalls, 1 stalls, 2 any blind or the board could not be written. A 404 is blind
 # except for optional files. The board file is written every time.
@@ -245,6 +245,8 @@ watch_repo() {
     # the streak: usage-limit replies since the last finished answer (review, receipt, comment or 👍)
     read -r qfirst qlast < <(sort -t$'\t' -k1,1n -k2,2 "$TMP/quota" | awk -F'\t' '$2 == "e" {f = ""} $2 == "q" {if (f == "") f = $1; l = $1} END {if (f != "") print f, l}')
     if [ -n "$qfirst" ]; then
+      # the wait is the quota's, not an idle PR's: pr-idle would put it on the card [H1] holds back
+      if [ "$ispr" = true ]; then awk -F'\t' -v r="$R" -v p="#$num " '!($1 == r && $2 == "pr-idle" && index($3, p) == 1)' "$STALLS" > "$STALLS.tmp"; mv "$STALLS.tmp" "$STALLS"; fi
       stall "$R" codex-quota "#$num: Codex usage limit reached, last reply $(age "$qlast") ago" "$(iso "$qfirst")" "$url"
       continue
     fi

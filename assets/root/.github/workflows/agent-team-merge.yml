@@ -67,6 +67,9 @@ jobs:
                 done
                 [ -n "$ok" ] || refuse "no review file in .team/reviews/ with 'verdict: approve' at $sha"
               fi
+              # the human's yes on a decision card (CLOUD.md § Human approval 4) stands in for the Codex review:
+              # the card exists because Codex could not finish one. The review file above is still required.
+              carded=$(printf '%s\n' "$BODY" | tr -d '\r' | grep -cE '^Approved by .+ on a decision card, .*head [0-9a-f]{7,40}' || true)
               bot='chatgpt-codex-connector[bot]'
               # a Codex comment counts only when it opens with the review receipt marker a finished review leaves:
               # a usage-limit reply, the status summary and a setup notice are no review (agent-team #24, #25, #27)
@@ -79,7 +82,7 @@ jobs:
                          awk -F'\t' '$3 == "true" {print $1}' <<<"$comments" | while read -r id; do
                            gh api --paginate "repos/$REPO/issues/comments/$id/reactions" --jq '.[] | select(.content == "+1") | .user.login'
                          done; } | grep -cxF "$bot" || true)
-              [ "${codex:-0}" -gt 0 ] || refuse "no Codex comment, review or 👍 on the PR (a usage-limit reply, the status summary or a setup notice is not a review)"
+              [ "${codex:-0}" -gt 0 ] || [ "${carded:-0}" -gt 0 ] || refuse "no Codex comment, review or 👍 on the PR (a usage-limit reply, the status summary or a setup notice is not a review) and no 'Approved by <human> on a decision card' line"
               ;;
           esac
           if ! out=$(gh api -X PUT "repos/$REPO/pulls/$PR/merge" -f sha="$sha" -f merge_method=squash 2>&1); then

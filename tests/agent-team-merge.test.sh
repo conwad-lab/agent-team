@@ -125,6 +125,18 @@ setup "feat: x" false $S; cj '[{id:19,user:{login:"someone"},body:"<!-- codex-re
 setup "feat: x" false $S; cj '[{id:11,user:{login:"conwad-lab"},body:"@codex review"},{id:13,user:{login:$bot},body:$q}]'; echo "$BOT" > "$FAKE/c11-reactions"; run "agent-team-merge: $S"
 merged && ok "usage-limit reply, then a Codex 👍 on the request: merges" || nok "quota then 👍"
 
+setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q}]'; run "Approved by Conny on a decision card, 2026-11-19, head $S
+agent-team-merge: $S"
+merged && ok "quota-only PR, the human's yes on a decision card: merges (Codex r3 M2 on #27)" || nok "card route"
+
+setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q}]'; printf 'verdict: request-changes\n' > "$FAKE/review.md"; run "Approved by Conny on a decision card, 2026-11-19, head $S
+agent-team-merge: $S"
+! merged && said "no review file" && ok "card route still needs the approving review file" || nok "card route without review file"
+
+setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q}]'; run "The PR was not Approved by Conny on a decision card, 2026-11-19, head $S
+agent-team-merge: $S"
+! merged && ok "the card line counts only at the start of a line" || nok "card line mid-line"
+
 setup "feat: x" false $S; cj '[{id:16,user:{login:$bot},body:null}]'; run "agent-team-merge: $S"
 ! merged && said "no Codex comment, review or 👍" && ok "a Codex comment with an empty body: refused for that reason (jq does not fail)" || nok "null body"
 
