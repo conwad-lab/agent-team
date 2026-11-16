@@ -260,7 +260,7 @@ jq -n --arg bot "$BOT" --arg q "$QUOTA" --arg t1 "$(t $((3*H)))" --arg t2 "$(t $
 # 2: usage limit 30 h ago, re-asked, usage limit again 5 h ago → one streak, since the first reply
 put "repos/o/k/issues/2/comments?per_page=100" <<< "[$(cm 21 conwad-lab $((30*H+60)) '@codex review')$(cm 22 "$BOT" $((30*H)) 'You have reached your Codex usage limits for code reviews.')$(cm 23 conwad-lab $((5*H+60)) '@codex review')$(cm 24 "$BOT" $((5*H)) 'You have reached your Codex usage limits.' | sed 's/,$//')]"
 # 3: usage limit, re-asked, then a finished review (receipt) → the quota is back, nothing to say
-put "repos/o/k/issues/3/comments?per_page=100" <<< "[$(cm 31 conwad-lab $((5*H+60)) '@codex review')$(cm 32 "$BOT" $((5*H)) 'You have reached your Codex usage limits for code reviews.')$(cm 33 conwad-lab $((2*H)) '@codex review')$(cm 34 "$BOT" $H '<!-- codex-review-receipt:v1 --> Codex Review: no major issues, usage limit rule included.' | sed 's/,$//')]"
+put "repos/o/k/issues/3/comments?per_page=100" <<< "[$(cm 31 conwad-lab $((5*H+60)) '@codex review')$(cm 32 "$BOT" $((5*H)) 'You have reached your Codex usage limits for code reviews.')$(cm 33 conwad-lab $((2*H)) '@codex review')$(cm 34 "$BOT" $H '<!-- codex-review-receipt:v1 --> Codex Review: no major issues, usage limit rule and codex-pull-request-review-summary filter included.' | sed 's/,$//')]"
 # 4: usage limit, then a re-request Codex has not answered for 2 h → still codex-quota, never codex-retry
 put "repos/o/k/issues/4/comments?per_page=100" <<< "[$(cm 41 conwad-lab $((5*H+60)) '@codex review')$(cm 42 "$BOT" $((5*H)) 'You have reached your Codex usage limits for code reviews.')$(cm 43 conwad-lab $((2*H)) '@codex review' | sed 's/,$//')]"
 # 5: a fix task on an issue stopped by the quota → codex-quota, not codex-task
@@ -284,7 +284,7 @@ check "quota: a 👍 on a later request ends the streak (#27 M1)" '! has "#6:" &
 check "quota: a 👍 older than the usage-limit reply does not" 'has "codex-quota	#7:"'
 check "quota: a usage-limit reply is codex-quota, exit 1" 'has "^o/k	codex-quota	#1: Codex usage limit reached" && [ "$(cat "$T/rc")" = 1 ]'
 check "quota: streak dated from its first reply"  'has "codex-quota	#2: Codex usage limit reached, last reply 5 h ago	$(t $((30*H)))	"'
-check "quota: a finished review ends the streak"  '! has "#3:"'
+check "quota: a finished review ends the streak, a receipt naming the summary markers too (#27 ready review)"  '! has "#3:"'
 check "quota: wins over an unanswered re-request" 'has "codex-quota	#4:"'
 check "quota: a task stopped by the quota"        'has "codex-quota	#5:"'
 check "quota: no other codex kind on those"       '! has "codex-retry" && ! has "codex-silent" && ! has "codex-task"'

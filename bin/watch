@@ -204,7 +204,8 @@ watch_repo() {
     fi
     pages "repos/$R/issues/$num/comments?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] |
         [(.created_at|fromdateiso8601),
-         (if .user.login == $bot then (if (.body|test("codex-pull-request-review-summary|codex-review-state:")) then "-"
+         (if .user.login == $bot then (if (.body|test("^\\s*<!-- codex-review-receipt")) then "rout"
+                                        elif (.body|test("codex-pull-request-review-summary|codex-review-state:")) then "-"
                                         elif (.body|test("codex-review-receipt")) then "rout"
                                         elif (.body|test("usage limit"; "i")) then "quota" else "out" end)
           elif (.user.login|endswith("[bot]")) then "-"
