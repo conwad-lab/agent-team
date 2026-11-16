@@ -7,8 +7,10 @@
 #
 # Stdout: one stall per line, tab-separated: repo kind what since link
 #   pr-idle       open PR (board PRs too) with no event for 24 h, unless its card log
-#                 (CLOUD.md § Human approval 1) shows an open card or a Vänta answer
-#   branch-idle   feat/ branch with no PR, no commit for 24 h
+#                 (CLOUD.md § Human approval 1) shows an open card or a Vänta answer, or the
+#                 PR is parked (below)
+#   branch-idle   feat/ branch with no PR, no commit for 24 h, and commits ahead of the default
+#                 branch (compare API); one with none is listed on the board as `in main, delete`
 #   queued        workflow run queued longer than --queued-after (Runner offline after, default 30)
 #   not-started   run failed in the last 24 h without a job starting (minutes, spending limit)
 #   codex-retry   @codex review unanswered for an hour, not yet retried: the routine asks once more
@@ -18,6 +20,10 @@
 #                 the first such reply in a row). Instead of the other codex kinds there: the routine
 #                 (and of pr-idle for that PR) the routine re-asks once per run, no card before 72 h, no second story for 24 h (CLOUD.md [F4], [R7])
 #   blind         a read that failed twice; the watch cannot vouch for that repo
+# Parked (CLOUD.md [R8]): a comment line `Parked until YYYY-MM-DD: <reason>` on an open PR by the
+# repo owner or $AGENT_ACCOUNT (env; the merge workflow's variable) skips pr-idle (and queued runs
+# on it) through that UTC day. Of the card-log and park lines, the last one decides: a later card
+# line wins, a past date or a stranger's line parks nothing. The board lists parked PRs.
 # Exit 0 no stalls, 1 stalls, 2 any blind or the board could not be written. A 404 is blind
 # except for optional files. The board file is written every time.
 #
@@ -49,7 +55,7 @@ while [ $# -gt 0 ]; do
     --estimates) ESTIMATES="$2"; shift 2 ;;
     --now) NOW_ISO="$2"; shift 2 ;;
     --queued-after) QUEUED_AFTER="$2"; shift 2 ;;
-    -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,48p' "$0"; exit 0 ;;
     --) shift; break ;;
     -*) echo "watch: unknown option $1" >&2; exit 2 ;;
     *) break ;;
@@ -66,7 +72,8 @@ iso() { jq -rn --argjson s "$1" '$s|todateiso8601'; }
 age() { local s=$(( NOW - $1 )); if [ "$s" -lt 7200 ]; then echo "$(( s / 60 )) min"; elif [ "$s" -lt 172800 ]; then echo "$(( s / 3600 )) h"; else echo "$(( s / 86400 )) d"; fi; }
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-STALLS="$TMP/stalls"; ROWS="$TMP/rows"; BLIND="$TMP/blind"; EST="$TMP/est"; : > "$STALLS"; : > "$ROWS"; : > "$BLIND"; : > "$EST"
+STALLS="$TMP/stalls"; ROWS="$TMP/rows"; BLIND="$TMP/blind"; EST="$TMP/est"; PARKED="$TMP/parked"
+: > "$STALLS"; : > "$ROWS"; : > "$BLIND"; : > "$EST"; : > "$PARKED"
 stall() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >> "$STALLS"; }
 
 # api PATH... : gh api with one retry. Returns 0 with output, 1 after two failures or a 404
@@ -130,27 +137,54 @@ watch_repo() {
   branches="$(pages "repos/$R/branches?per_page=100" | jq -r '.[] | [.name, .commit.sha] | @tsv')" || return 0
   printf '%s\n' "$branches" | grep -E '^feat/' > "$TMP/feat" || true
 
-  # card log on every open PR (CLOUD.md § Human approval 1): open | wait | none; then pr-idle
+  # card log on every open PR (CLOUD.md § Human approval 1) and park lines ([R8]): open | wait | parked | none; then pr-idle
   : > "$TMP/cards"
   while IFS=$'\t' read -r num title state draft merged upd ref sha url opened; do
     [ "$state" = open ] || continue
-    local lines last card=none since=""
-    # every card-log line with its comment's time; the last one decides, its time is the wait's start
-    lines="$(pages "repos/$R/issues/$num/comments?per_page=100" | jq -r '.[] | (.created_at|fromdateiso8601|tostring) as $t |
-        .body | split("\n")[] | select(test("^Card (posted|answered) ")) | $t + "\t" + .')" || continue
+    local lines last card=none since="" until
+    # every card-log line, and every park line by the owner or the agent account, with its comment's
+    # time; the last one decides, its time is the wait's start (for parked: the date it runs to)
+    lines="$(pages "repos/$R/issues/$num/comments?per_page=100" | jq -r --arg owner "${R%%/*}" --arg agent "${AGENT_ACCOUNT:-}" '.[] |
+        (.created_at|fromdateiso8601|tostring) as $t | ((.user.login // "")|ascii_downcase) as $u |
+        (.body // "") | split("\n")[] | sub("\r$"; "") |
+        select(test("^Card (posted|answered) ") or (test("^Parked until [0-9]{4}-[0-9]{2}-[0-9]{2}: \\S") and
+          ($u == ($owner|ascii_downcase) or ($agent != "" and $u == ($agent|ascii_downcase))))) | $t + "\t" + .')" || continue
     last="$(printf '%s\n' "$lines" | grep . | tail -1 || true)"
-    case "${last#*$'\t'}" in "Card posted "*) card=open ;; "Card answered "*Vänta*) card=wait ;; esac
     since="${last%%$'\t'*}"
+    case "${last#*$'\t'}" in
+      "Card posted "*) card=open ;;
+      "Card answered "*Vänta*) card=wait ;;
+      "Parked until "*)
+        last="${last#*$'\t'}"; since="${last:13:10}"
+        # through the end of that UTC day; a date that is not a real calendar day (jq would roll
+        # 2026-11-31 over to 12-01) or that jq cannot read parks nothing
+        until="$(jq -rn --arg d "$since" '($d + "T23:59:59Z") | fromdateiso8601 | select(todateiso8601[0:10] == $d)' 2>/dev/null)"
+        if [[ "$until" =~ ^[0-9]+$ ]] && [ "$NOW" -le "$until" ]; then
+          card=parked
+          printf '%s\t#%s %s\tparked until %s: %s\tCoordinator\t[#%s](%s)\n' "$R" "$num" "$title" "$since" "${last#*: }" "$num" "$url" >> "$PARKED"
+        fi ;;
+    esac
     printf '%s\t%s\t%s\n' "$num" "$card" "$since" >> "$TMP/cards"
     [ "$card" = none ] && [ $(( NOW - upd )) -ge $DAY ] && stall "$R" pr-idle "#$num $title: no event for $(age "$upd")" "$(iso "$upd")" "$url"
   done < "$TMP/prs"
 
-  # branch-idle (and branch dates for the board)
-  : > "$TMP/branchdate"
+  # branch-idle (and branch dates for the board); a branch with nothing ahead of the default
+  # branch is already in it: no stall, listed for deletion (an Operatör line: cloud sessions cannot delete)
+  : > "$TMP/branchdate"; : > "$TMP/inmain"
   while IFS=$'\t' read -r name sha; do
     [ -n "$name" ] || continue
     grep -qF "$(printf '\t%s\t' "$name")" "$TMP/prs" && continue
-    local d
+    local d ahead
+    ahead="$(api "repos/$R/compare/$def...$name")" || continue
+    # only valid JSON with a whole, non-negative JSON number counts; anything else is blind, never a skip
+    ahead="$(jq -e '.ahead_by | select(type == "number" and . >= 0 and floor == .)' <<< "$ahead" 2>/dev/null)" || ahead=""
+    [[ "$ahead" =~ ^[0-9]+$ ]] || { printf '%s\t%s\t%s\n' "$R" "repos/$R/compare/$def...$name" "no ahead_by" >> "$BLIND"
+      stall "$R" blind "cannot read repos/$R/compare/$def...$name: no ahead_by" "$(iso "$NOW")" "https://github.com/$R"; continue; }
+    if [ "$ahead" = 0 ]; then
+      printf '%s\n' "$name" >> "$TMP/inmain"
+      printf '%s\t%s\tin main, delete\tOperatör\t[branch](https://github.com/%s/tree/%s)\n' "$R" "$name" "$R" "$name" >> "$PARKED"
+      continue
+    fi
     d="$(api "repos/$R/commits/$sha" | jq -r '.commit.committer.date | fromdateiso8601')" || continue
     printf '%s\t%s\n' "$name" "$d" >> "$TMP/branchdate"
     [ $(( NOW - d )) -ge $DAY ] && stall "$R" branch-idle "$name: no PR, no commit for $(age "$d")" "$(iso "$d")" "https://github.com/$R/tree/$name"
@@ -289,7 +323,7 @@ watch_repo() {
     [ -n "$pr" ] || pr="$(head -1 "$TMP/mine")"
     cut -f7 "$TMP/mine" | sort -u > "$TMP/mine-refs"
     # a branch counts only when no PR of this story came from it
-    br="$(grep -E "^feat/${id}-" "$TMP/feat" | cut -f1 | grep -vxF -f "$TMP/mine-refs" | head -1 || true)"
+    br="$(grep -E "^feat/${id}-" "$TMP/feat" | cut -f1 | grep -vxF -f "$TMP/mine-refs" | grep -vxF -f "$TMP/inmain" | head -1 || true)"
     if [ -n "$pr" ]; then
       IFS=$'\t' read -r num title pstate draft merged upd ref sha url opened <<< "$pr"
       last="$upd"; link="[#$num]($url)"
@@ -320,6 +354,7 @@ watch_repo() {
         cs="$(awk -F'\t' -v n="$num" '$1 == n {print $2}' "$TMP/cards")"; cw="$(awk -F'\t' -v n="$num" '$1 == n {print $3}' "$TMP/cards")"
         case "$cs" in
           open) owner="human (card open $(age "$cw"))" ;; wait) owner="human (Vänta $(age "$cw"))" ;;
+          parked) owner="Coordinator (parked until $cw)" ;;
         esac
       elif [ "$merged" != "-" ]; then state=done; owner="—"; [ $(( NOW - upd )) -lt $(( 7 * DAY )) ] || continue
       elif [ -n "$br" ]; then state=building; owner=Builder; last=""; link=""
@@ -398,6 +433,16 @@ if [ -n "$BOARD" ]; then
       if [ "$last" = 0 ]; then a="—"; else a="$(age "$last") ago"; fi
       printf '| %s | %s | %s | %s | %s | %s |\n' "${repo#*/}" "$base" "$state" "$owner" "$a" "${link:-—}"
     done
+    if [ -s "$PARKED" ]; then
+      echo
+      echo "## Parked PRs and branches in main"
+      echo
+      echo "| Repo | PR or branch | State | Whose turn | Link |"
+      echo "|---|---|---|---|---|"
+      sort -t$'\t' -k1,1 -k2,2 "$PARKED" | while IFS=$'\t' read -r repo what state owner link; do
+        printf '| %s | %s | %s | %s | %s |\n' "${repo#*/}" "${what//|/\\|}" "${state//|/\\|}" "$owner" "$link"
+      done
+    fi
   } > "$TMP/board.md" && cp "$TMP/board.md" "$BOARD" || { echo "watch: cannot write the board to $BOARD" >&2; cat "$STALLS"; exit 2; }
 fi
 

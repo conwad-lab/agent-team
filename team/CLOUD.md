@@ -1,6 +1,6 @@
 # Cloud mode
 
-`.team/team.md` says `mode: cloud`: the team runs as Claude Code Projects threads plus Codex on GitHub. `TEAM.md`, the role files and the templates hold except where this file says otherwise; the launchers, `bin/` wait loops and the watchdog are not used. The human picks outcomes and answers decision cards, from the phone; nothing else waits for them. [M1] Rule ids are explained in `team/WHY.md`.
+`.team/team.md` says `mode: cloud`: the team runs as Claude Code Projects threads plus Codex on GitHub. `TEAM.md`, the role files and the templates hold except where this file says otherwise; the launchers, `bin/` wait loops and the watchdog are not used. The human picks outcomes and answers cards, from the phone; nothing else waits for them. [M1] Rule ids are explained in `team/WHY.md`.
 
 ## Who runs what
 
@@ -12,7 +12,7 @@
 | **Judge** (Reviewer): a thread per PR, without the planning context | the review file, PR comments, the merge request | code |
 | Human | outcome rows, card answers | — |
 
-Claude builds and judges, Codex attacks: two model families in every loop. [T1] The plan's **Estimate** names the builder: `codex` for an S or M `plain` story where the repo has a Codex environment, else `claude`; an ORDER row wins, Team settings' `builder:` is the fallback. Its `model:` (light, standard, strongest; ids in the project instructions) is the Builder thread's; the Judge runs standard, or the plan's strongest. [T2]
+Claude builds and judges, Codex attacks: two model families in every loop. [T1] The plan's **Estimate** names the builder: `codex` for an S or M `plain` story where the repo has a Codex environment, else `claude`; an ORDER row wins, Team settings' `builder:` is the fallback. Its `model:` (ids in the project instructions) is the Builder thread's; the Judge runs standard, or the plan's strongest. [T2]
 
 ## Flow
 
@@ -80,13 +80,13 @@ What the Coordinator would recommend merging merges without the human (§ Judge 
 
 One scheduled routine per project, daily. Its first run each week reads the **Signal sources** and writes rows with evidence under **Förslag**, never **Kö** except kinds listed under **Auto-queue**. [R1]
 
-**Watch**, every run: `bin/watch --board <project folder>/BOARD.md <team repos>` writes the board and lists stalls. It re-requests a `codex-retry` review once (§ Builder 3) and a `codex-quota` head once per run, no card before 72 hours; the other stalls, `blind` and exit 2 included, go on one decision card. [R7]
+**Watch**, every run: `bin/watch --board <project folder>/BOARD.md <team repos>` writes the board and lists stalls, skipping PRs the Coordinator commented `Parked until YYYY-MM-DD: <reason>` until then. [R8] It re-requests a `codex-retry` review once and a `codex-quota` head once per run, no card before 72 hours; the other stalls, `blind` and exit 2 included, go on one card. [R7]
 
 **Weekly retro**, in that first run, over PRs merged or closed in the last four weeks: response files, Judge review files with their `## Papercuts`, escalations (open ones too, counted in the week raised), failed `@codex` tasks and reviews, `.team/PAPERCUTS.md` (four weeks plus every `open` line) and `bin/watch --estimates`. [R2]
 - A pattern (the same failure, or the same kind of finding the Builder missed) seen twice, or once if it caused a revert or a wrong merge, gets one row: `Retro: <pattern> → <change> in <file> — <evidence links>`. An open row gets new links instead; evidence already linked from a Retro row never counts again. A card answered as recommended is a pattern too (`Retro: card that decided nothing → <rule>`), except **Human-only paths**. [R3]
 - **What can be removed?** At most one row per retro, `Retro: remove [ID] — incident not seen since <date>, <evidence>`, for a rule whose `WHY.md` incident has not come back and that no miss needed. [R4]
 - Retro rows never go to Kö. A rulebook change becomes a `Rulebook story.` for agent-team on the human's yes; the routine never edits the rulebook, `AGENTS.md` or a role file. [R5]
-- It appends one line under `## Retro` in `.team/PAPERCUTS.md` (format and template: `assets/team/PAPERCUTS.md`), counting only the week since the last retro. Papercuts behind a row move to `proposed`, then `fixed` or `dropped`. [R6]
+- It appends one line under `## Retro` in `.team/PAPERCUTS.md` (format: `assets/team/PAPERCUTS.md`), counting only the week since the last retro. Papercuts behind a row move to `proposed`, then `fixed` or `dropped`. [R6]
 
 ## What reaches the human
 
@@ -111,4 +111,4 @@ The human sets these up, in full in `team/SETUP.md`; no agent changes them.
 
 ## Rulebook changes
 
-A `Rulebook story.` may not make `team/CLOUD.md` longer (in a product repo: `.claude/skills/agent-team/team/CLOUD.md` at the old and new submodule pin): the Judge compares `wc -w` on the default branch and on the head and requests changes when the head is longer, unless the human's ORDER row lifts it. A new rule gets an id and a `WHY.md` line. The review file answers `Remove: <rule id and why>` or `Remove: nothing, because <reason>`. [C1]
+A `Rulebook story.` may not make `team/CLOUD.md` longer (in a product repo: `.claude/skills/agent-team/team/CLOUD.md` at the old and new submodule pin): the Judge requests changes when the head's `wc -w` exceeds the default branch's, unless the human's ORDER row lifts it. A new rule gets an id and a `WHY.md` line. The review file answers `Remove: <rule id and why>` or `Remove: nothing, because <reason>`. [C1]

@@ -68,6 +68,8 @@ pr() { # number title state draft merged_at updated_ago ref
   printf '{"number":1,"title":"old","state":"closed","draft":false,"merged_at":null,"updated_at":"%s","head":{"ref":"x","sha":"s"},"html_url":"u"}]' "$(t $((20*D)))"
 } | put "repos/o/r/pulls?state=all&per_page=100"
 put "repos/o/r/branches?per_page=100" <<< '[{"name":"main","commit":{"sha":"m"}},{"name":"feat/006-building","commit":{"sha":"b6"}},{"name":"feat/008-judging","commit":{"sha":"sha8"}},{"name":"feat/099-fresh","commit":{"sha":"b99"}}]'
+put "repos/o/r/compare/main...feat/006-building" <<< '{"ahead_by":3}'
+put "repos/o/r/compare/main...feat/099-fresh" <<< '{"ahead_by":1}'
 put repos/o/r/commits/b6  <<< "{\"commit\":{\"committer\":{\"date\":\"$(t $((2*D)))\"}}}"
 put repos/o/r/commits/b99 <<< "{\"commit\":{\"committer\":{\"date\":\"$(t $((2*H)))\"}}}"
 put "repos/o/r/contents/.team/reviews?ref=sha8" <<< '[{"name":"008-x.response.md"}]'
@@ -305,6 +307,75 @@ check "pages: a failing page 2 is blind and named" 'has "^o/p	blind	cannot read 
 rm -f "$FIX/$(printf '%s' 'repos/o/p/pulls?state=all&per_page=100&page=2' | tr -c 'A-Za-z0-9' '_').502"
 WATCH_MAX_PAGES=1 run o/p
 check "pages: past the cap is blind, not cut"   'has "^o/p	blind	cannot read repos/o/p/pulls?state=all&per_page=100: more than 1 pages" && ! grep -q "page=2" "$FIX/calls"'
+
+# ---- parked PRs and branches already in main (v0.8.7, CLOUD.md [R8])
+put repos/o/z <<< '{"default_branch":"main"}'
+printf '%s\n' .team/backlog/006-parked-story.md | jq -R '{path: .}' | jq -s '{tree: .}' | put "repos/o/z/git/trees/main?recursive=1"
+{ printf '['
+  for i in 1 2 3 4 5 6 7 8 9; do
+    title="00$i: pr $i"
+    printf '{"number":%s,"title":"%s","state":"open","draft":false,"merged_at":null,"updated_at":"%s","head":{"ref":"feat/00%s-pr","sha":"z%s"},"html_url":"https://github.com/o/z/pull/%s"}' "$i" "$title" "$(t $((30*H)))" "$i" "$i" "$i"
+    [ "$i" -lt 9 ] && printf ','
+  done; printf ']'; } | put "repos/o/z/pulls?state=all&per_page=100"
+pc() { jq -n --arg u "$1" --arg t "$(t "$2")" --arg b "$3" --argjson id "${4:-1}" '{id:$id,user:{login:$u},created_at:$t,body:$b}'; }
+# 1: parked by the owner, date ahead, CRLF body as GitHub stores it → no stall, on the board
+pc o $((20*H)) $'Parkerad.\r\nParked until 2026-12-01: no Actions minutes\r\nmore' | jq -s . | put "repos/o/z/issues/1/comments?per_page=100"
+# 2: parked by the owner, date past → stall
+pc o $((20*H)) 'Parked until 2026-11-09: waited' | jq -s . | put "repos/o/z/issues/2/comments?per_page=100"
+# 3: a stranger's park line → stall
+pc stranger $((20*H)) 'Parked until 2026-12-01: let me park it' | jq -s . | put "repos/o/z/issues/3/comments?per_page=100"
+# 4: parked, then a later card line → the card line decides (answered Merga: none) → stall
+{ pc o $((20*H)) 'Parked until 2026-12-01: x' 1; pc o $((10*H)) 'Card answered 2026-11-10T02:00Z: Merga' 2; } | jq -s . | put "repos/o/z/issues/4/comments?per_page=100"
+# 5: parked by the agent account → no stall
+pc agent-bot $((20*H)) 'Parked until 2026-12-01: by the agent account' | jq -s . | put "repos/o/z/issues/5/comments?per_page=100"
+# 6: a story PR, parked → the story row is the Coordinator's
+pc o $((20*H)) 'Parked until 2026-12-01: story waits' | jq -s . | put "repos/o/z/issues/6/comments?per_page=100"
+# 7: a card line, then a park line → the park line decides → no stall
+{ pc o $((20*H)) 'Card posted 2026-11-09T16:00Z: x, recommended Merga' 1; pc o $((10*H)) 'Parked until 2026-12-01: later' 2; } | jq -s . | put "repos/o/z/issues/7/comments?per_page=100"
+# 8: parked until today: holds through the end of the UTC day
+pc o $((20*H)) 'Parked until 2026-11-10: today' | jq -s . | put "repos/o/z/issues/8/comments?per_page=100"
+# 9: a date that does not exist (jq rolls it over to 12-01) parks nothing → stall (#28 Codex M1)
+pc o $((20*H)) 'Parked until 2026-11-31: typo' | jq -s . | put "repos/o/z/issues/9/comments?per_page=100"
+put "repos/o/z/branches?per_page=100" <<< '[{"name":"main","commit":{"sha":"m"}},{"name":"feat/020-inmain","commit":{"sha":"c20"}},{"name":"feat/021-ahead","commit":{"sha":"c21"}}]'
+put "repos/o/z/compare/main...feat/020-inmain" <<< '{"ahead_by":0,"behind_by":4}'
+put "repos/o/z/compare/main...feat/021-ahead" <<< '{"ahead_by":2}'
+put repos/o/z/commits/c20 <<< "{\"commit\":{\"committer\":{\"date\":\"$(t $((5*D)))\"}}}"
+put repos/o/z/commits/c21 <<< "{\"commit\":{\"committer\":{\"date\":\"$(t $((5*D)))\"}}}"
+AGENT_ACCOUNT=agent-bot run o/z
+check "parked: future date, owner's line → no pr-idle"   '! has "pr-idle	#1 "'
+check "parked: past date → pr-idle"                      'has "pr-idle	#2 "'
+check "parked: a stranger's line → pr-idle"              'has "pr-idle	#3 "'
+check "parked: a later card line wins → pr-idle"         'has "pr-idle	#4 "'
+check "parked: the agent account's line → no pr-idle"   '! has "pr-idle	#5 "'
+check "parked: a later park line wins over a card line"  '! has "pr-idle	#7 "'
+check "parked: holds through its own day"                '! has "pr-idle	#8 "'
+check "parked: a nonexistent date parks nothing (#28 M1)" 'has "pr-idle	#9 "'
+check "parked: board row → Coordinator"                  'row 006-parked-story | grep -q "| Coordinator (parked until 2026-12-01) |"'
+check "parked: board lists it with its reason"           'grep -qF "| z | #1 001: pr 1 | parked until 2026-12-01: no Actions minutes | Coordinator | [#1](https://github.com/o/z/pull/1) |" "$T/board.md"'
+check "parked: past or stranger lines not on the board"  '! grep -qF "#2 002" "$T/board.md" && ! grep -qF "#3 003" "$T/board.md"'
+check "in main: ahead_by 0 → no branch-idle"             '! has "feat/020-inmain"'
+check "in main: listed for deletion"                     'grep -qF "| z | feat/020-inmain | in main, delete | Operatör |" "$T/board.md"'
+check "in main: own commits ahead → branch-idle"         'has "branch-idle	feat/021-ahead"'
+check "in main: no commit read for it"                   '! grep -qx "repos/o/z/commits/c20" "$FIX/calls"'
+check "parked: exit 1, no blind"                         '[ "$(cat "$T/rc")" = 1 ] && ! has "	blind	"'
+run o/z
+check "parked: without AGENT_ACCOUNT only the owner parks" 'has "pr-idle	#5 " && ! has "pr-idle	#1 "'
+touch "$FIX/$(printf '%s' 'repos/o/z/compare/main...feat/020-inmain' | tr -c 'A-Za-z0-9' '_').502"
+run o/z
+check "in main: a failed compare is blind, never a skip" 'has "^o/z	blind	cannot read repos/o/z/compare/main...feat/020-inmain" && [ "$(cat "$T/rc")" = 2 ] && ! grep -qF "feat/020-inmain | in main" "$T/board.md"'
+rm -f "$FIX/$(printf '%s' 'repos/o/z/compare/main...feat/020-inmain' | tr -c 'A-Za-z0-9' '_').502"
+put "repos/o/z/compare/main...feat/020-inmain" <<< '{"message":"odd"}'
+run o/z
+check "in main: a compare without ahead_by is blind"     'has "^o/z	blind	cannot read repos/o/z/compare/main...feat/020-inmain: no ahead_by"'
+put "repos/o/z/compare/main...feat/020-inmain" <<< '{"ahead_by":"0"}'
+run o/z
+check "in main: ahead_by as a string is blind (#28 M2)"  'has "^o/z	blind	cannot read repos/o/z/compare/main...feat/020-inmain: no ahead_by"'
+put "repos/o/z/compare/main...feat/020-inmain" <<< '{"ahead_by":0} trailing junk'
+run o/z
+check "in main: invalid JSON after a zero is blind (#28 M2)" 'has "^o/z	blind	cannot read repos/o/z/compare/main...feat/020-inmain: no ahead_by" && [ "$(cat "$T/rc")" = 2 ]'
+touch "$FIX/$(printf '%s' 'repos/o/z/issues/1/comments?per_page=100' | tr -c 'A-Za-z0-9' '_').502"
+run o/z
+check "parked: a failed comment read is blind"           'has "^o/z	blind	cannot read repos/o/z/issues/1/comments" && [ "$(cat "$T/rc")" = 2 ]'
 
 echo "1..$n"
 exit $fail
