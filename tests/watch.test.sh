@@ -367,6 +367,12 @@ rm -f "$FIX/$(printf '%s' 'repos/o/z/compare/main...feat/020-inmain' | tr -c 'A-
 put "repos/o/z/compare/main...feat/020-inmain" <<< '{"message":"odd"}'
 run o/z
 check "in main: a compare without ahead_by is blind"     'has "^o/z	blind	cannot read repos/o/z/compare/main...feat/020-inmain: no ahead_by"'
+put "repos/o/z/compare/main...feat/020-inmain" <<< '{"ahead_by":"0"}'
+run o/z
+check "in main: ahead_by as a string is blind (#28 M2)"  'has "^o/z	blind	cannot read repos/o/z/compare/main...feat/020-inmain: no ahead_by"'
+put "repos/o/z/compare/main...feat/020-inmain" <<< '{"ahead_by":0} trailing junk'
+run o/z
+check "in main: invalid JSON after a zero is blind (#28 M2)" 'has "^o/z	blind	cannot read repos/o/z/compare/main...feat/020-inmain: no ahead_by" && [ "$(cat "$T/rc")" = 2 ]'
 touch "$FIX/$(printf '%s' 'repos/o/z/issues/1/comments?per_page=100' | tr -c 'A-Za-z0-9' '_').502"
 run o/z
 check "parked: a failed comment read is blind"           'has "^o/z	blind	cannot read repos/o/z/issues/1/comments" && [ "$(cat "$T/rc")" = 2 ]'

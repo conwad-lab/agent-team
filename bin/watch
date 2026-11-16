@@ -176,7 +176,8 @@ watch_repo() {
     grep -qF "$(printf '\t%s\t' "$name")" "$TMP/prs" && continue
     local d ahead
     ahead="$(api "repos/$R/compare/$def...$name")" || continue
-    ahead="$(jq -r '.ahead_by // empty' <<< "$ahead" 2>/dev/null)"
+    # only valid JSON with a whole, non-negative JSON number counts; anything else is blind, never a skip
+    ahead="$(jq -e '.ahead_by | select(type == "number" and . >= 0 and floor == .)' <<< "$ahead" 2>/dev/null)" || ahead=""
     [[ "$ahead" =~ ^[0-9]+$ ]] || { printf '%s\t%s\t%s\n' "$R" "repos/$R/compare/$def...$name" "no ahead_by" >> "$BLIND"
       stall "$R" blind "cannot read repos/$R/compare/$def...$name: no ahead_by" "$(iso "$NOW")" "https://github.com/$R"; continue; }
     if [ "$ahead" = 0 ]; then
