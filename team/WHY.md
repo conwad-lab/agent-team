@@ -16,12 +16,12 @@ A rule may be removed by a `Rulebook story.` when its "still needed if" test has
 [F1] Outcome rows become stories with a Signal — prevents: design (#6), kept because the Signal is how the team sees a story worked — still needed if: ORDER rows are outcomes — kept
 [F2] Architect runs Baseline; too big → split — prevents: one story = one plan = one PR broken by oversized stories (TEAM.md, local mode) — still needed if: a PR spans more than one story's scope — kept
 [F3] Builder started with repo, paths, § Builder only — prevents: planning context leaking into the build thread (#6) — still needed if: always — kept
-[F4] Stories in flight ≤ 2, disjoint files, conditions a–d — prevents: one waiting PR stopped the whole repo (R2, #19); Codex M1–M4 on #19: racing merges, PAPERCUTS conflicts, PR-less stories over the cap, busy runner read as offline — still needed if: a repo runs two stories at once — kept
+[F4] Stories in flight ≤ 2, disjoint files, conditions a–d; in flight until the PR is merged or closed, escalated or not — prevents: one waiting PR stopped the whole repo (R2, #19); Codex M1–M4 on #19: racing merges, PAPERCUTS conflicts, PR-less stories over the cap, busy runner read as offline; the end of flight lost in v0.8.0, so an escalation could free the slot (Astra on #21, v0.8.5) — still needed if: a repo runs two stories at once — kept
 [F5] Plan attack on risky and rulebook stories — prevents: plan errors found only after the build (#12, Conny 2026-11-01) — still needed if: plan attacks still find M/S findings — kept
 [F6] Judge started with repo and PR number only — prevents: a Judge anchored on the planner's view (#6) — still needed if: always — kept
 [F7] request-changes / approve / escalate routing — prevents: design (#6), kept because it is the flow's only exit — still needed if: always — kept
 [F8] Signal check and Log line after merge or close — prevents: merged stories nobody measured (#6); a closed PR left its slot unexplained (#19) — still needed if: always — kept (status key `NNN:` moved to `bin/watch`'s header, v0.8.1)
-[B1] Builder posts plan attack, never edits the plan — prevents: see [F5]; Builder rewriting the plan it is judged against (#12) — still needed if: plan attacks run — kept
+[B1] Builder posts plan attack, asks once more on an error, builds on the Coordinator's go once `## Plan attack` answers every M and S, never edits the plan — prevents: see [F5]; Builder rewriting the plan it is judged against (#12); retry, go gate and the Coordinator's failure note lost in v0.8.0 (Astra on #21, v0.8.5) — still needed if: plan attacks run — kept
 [B2] Branch pushed at once; read story, plan, roles — prevents: status keyed on the branch (the old § Status table, #6) showed nothing in progress — still needed if: status is read off GitHub — kept
 [B3] PR opened as a draft — prevents: full CI on every fix push, mondmodel 2 922 Actions minutes in three days (agent-team #13, 2026-11-04) — still needed if: CI is billed per job — kept
 [B4] builder: codex task, fixes by Codex, two failures → build yourself — prevents: Claude writing Codex's fixes; a stuck story when Codex fails (#12) — still needed if: builder: codex is used — kept
@@ -72,9 +72,9 @@ A rule may be removed by a `Rulebook story.` when its "still needed if" test has
 [Q4] Runner offline card and RUNS_ON fallback — prevents: jobs queued 24 h then failed with the mini down (#15); busy runner read as offline, Codex M4 on #19 — still needed if: see [Q3] — kept
 [W1] Main ruleset without bypass — prevents: "never push to main" was text only (FOSS, meetup 2026-11-04; #17) — still needed if: always — kept
 [W2] Board PRs with path check — prevents: see [J1] — still needed if: see [W1] — kept
-[W3] Merge workflow on a pinned comment — prevents: cloud sessions blocked the Judge's own merge, agent-team #17, #18, relationsmodellen-site #48 (2026-11-07, #20) — still needed if: cloud sessions still block agent merges — kept
+[W3] Merge workflow on a pinned comment — prevents: cloud sessions blocked the Judge's own merge, agent-team #17, #18, relationsmodellen-site #48 (2026-11-07, #20); `SETUP.md` asked a Codex comment of board PRs too, against [J1] and the workflow (Astra on #21, v0.8.5) — still needed if: cloud sessions still block agent merges — kept
 [W4] Deny rules in .claude/settings.json — prevents: see [W1]; early stop before GitHub refuses (#17) — still needed if: always — kept
-[W5] Agent account limits — prevents: agent acts indistinguishable from the human's (KRING, #17) — still needed if: an agent account exists — kept
+[W5] Agent account limits; cloud threads act on the human's login through the Claude GitHub App — prevents: agent acts indistinguishable from the human's (KRING, #17); that exception lost in v0.8.0, so the login read as proof the human acted (Astra on #21, v0.8.5) — still needed if: an agent account exists — kept
 [C1] One in, one out; "What can be removed?" — prevents: 13 rulebook PRs since v0.7.0 added rules, none removed one (this story, 2026-11-10) — still needed if: always — kept
 
 ## Cut or merged in v0.8.0
@@ -86,7 +86,7 @@ A rule may be removed by a `Rulebook story.` when its "still needed if" test has
 [X5] Flow diagram — prevents: nothing; repeats the numbered steps — still needed if: — — cut
 [X6] Coordinator ticks the row, pushes — prevents: design (#6) — still needed if: — — merged into [F1] and [W2]
 [X7] Builder step 4 restated in Flow — prevents: nothing; repeats § Builder — still needed if: — — cut
-[X8] A story in flight until merged or closed — prevents: — still needed if: — — merged into [F4]
+[X8] A story in flight until merged or closed — prevents: — still needed if: — — kept in [F4], last sentence (dropped in v0.8.0, back in v0.8.5)
 [X9] Second story cost note in § Quota — prevents: double minutes (#19) — still needed if: — — merged into [F4]
 [X10] Status table (12 rows) — prevents: design (#6); every row repeats a Flow, Builder, Judge or Quota step — still needed if: a thread cannot tell whose turn it is from the flow — merged into [F8]
 [X11] Plan attack prompt in CLOUD.md — prevents: — still needed if: — — moved to `team/templates/codex.md`, merged into [B1]
