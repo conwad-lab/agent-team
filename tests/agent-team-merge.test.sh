@@ -137,6 +137,19 @@ setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q}]'; run "The PR 
 agent-team-merge: $S"
 ! merged && ok "the card line counts only at the start of a line" || nok "card line mid-line"
 
+setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q}]'; run "Approved by Conny on a decision card, 2026-11-19, head ffffffffffffffffffffffffffffffffffffffff
+agent-team-merge: $S"
+! merged && said "no Codex comment, review or 👍" && ok "a card approval of another head opens nothing (Codex r4 M1 on #27)" || nok "card for another head"
+
+setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q}]'; run "Approved by <human> on a decision card, <date>, head 0123456
+Approved by Conny on a decision card, 2026-11-19, head 0123456 and more
+agent-team-merge: $S"
+! merged && ok "the format with placeholders, or trailing text after the head: opens nothing" || nok "card placeholders"
+
+setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q}]'; run "Approved by Conny on a decision card, 2026-11-19, head 0123456789ab
+agent-team-merge: $S"
+merged && ok "a card approval naming the pinned head by a short sha: merges" || nok "card short sha"
+
 setup "feat: x" false $S; cj '[{id:16,user:{login:$bot},body:null}]'; run "agent-team-merge: $S"
 ! merged && said "no Codex comment, review or 👍" && ok "a Codex comment with an empty body: refused for that reason (jq does not fail)" || nok "null body"
 

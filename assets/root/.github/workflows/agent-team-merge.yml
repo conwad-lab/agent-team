@@ -69,7 +69,12 @@ jobs:
               fi
               # the human's yes on a decision card (CLOUD.md § Human approval 4) stands in for the Codex review:
               # the card exists because Codex could not finish one. The review file above is still required.
-              carded=$(printf '%s\n' "$BODY" | tr -d '\r' | grep -cE '^Approved by .+ on a decision card, .*head [0-9a-f]{7,40}' || true)
+              # The whole line, with a YYYY-MM-DD date and this head (40 hex, or a prefix of at least 7): an approval
+              # of another head, a quoted old one or the format with placeholders opens nothing.
+              carded=0
+              for h in $(printf '%s\n' "$BODY" | tr -d '\r' | sed -nE 's/^Approved by [^<>`]+ on a decision card, [0-9]{4}-[0-9]{2}-[0-9]{2}, head ([0-9a-f]{7,40})[[:space:]]*$/\1/p'); do
+                case "$sha" in "$h"*) carded=1 ;; esac
+              done
               bot='chatgpt-codex-connector[bot]'
               # a Codex comment counts only when it opens with the review receipt marker a finished review leaves:
               # a usage-limit reply, the status summary and a setup notice are no review (agent-team #24, #25, #27)
