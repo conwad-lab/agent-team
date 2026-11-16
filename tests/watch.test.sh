@@ -249,7 +249,7 @@ check "estimates: footer median"       'grep -q "^| M | codex | 1 | 0 | 10 |" "$
 # ---- codex-quota (v0.8.6): Codex's latest reply says its usage limit is reached (wording from agent-team #24, #25)
 put repos/o/k <<< '{"default_branch":"main"}'
 QUOTA='You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage).'
-put "repos/o/k/issues?state=open&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 1 ',"pull_request":{}')$(iss 2 ',"pull_request":{}')$(iss 3 ',"pull_request":{}')$(iss 4 ',"pull_request":{}')$(iss 5 '')$(iss 6 ',"pull_request":{}')$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}' | sed 's/,$//')]"
+put "repos/o/k/issues?state=open&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 1 ',"pull_request":{}')$(iss 2 ',"pull_request":{}')$(iss 3 ',"pull_request":{}')$(iss 4 ',"pull_request":{}')$(iss 5 '')$(iss 6 ',"pull_request":{}')$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}')$(iss 9 ',"pull_request":{}' | sed 's/,$//')]"
 sed -i 's#github.com/o/r/issues#github.com/o/k/issues#g' "$FIX/$(printf '%s' "repos/o/k/issues?state=open&per_page=100&since=$(t $((7*D)))" | tr -c 'A-Za-z0-9' '_')"
 # 1: asked 3 h ago, the only answer is a usage-limit reply (and the summary) → codex-quota, not codex-retry
 jq -n --arg bot "$BOT" --arg q "$QUOTA" --arg t1 "$(t $((3*H)))" --arg t2 "$(t $((3*H-10)))" '[{id:11,user:{login:"conwad-lab"},created_at:$t1,body:"@codex review"},
@@ -272,7 +272,11 @@ put "repos/o/k/issues/comments/71/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"
 # 8: as 6, but the 👍 carries no date: the request's own time (after the usage-limit reply) dates it
 put "repos/o/k/issues/8/comments?per_page=100" <<< "[$(cm 81 conwad-lab $((5*H+60)) '@codex review')$(cm 82 "$BOT" $((5*H)) 'You have reached your Codex usage limits for code reviews.')$(cm 83 conwad-lab $((2*H)) '@codex review' | sed 's/,$//')]"
 put "repos/o/k/issues/comments/83/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\"}]"
+# 9: usage limit 80 h ago, a retry got its 👍 1 h ago, then a new request got a usage-limit reply: a new streak (#27 r2 M1)
+put "repos/o/k/issues/9/comments?per_page=100" <<< "[$(cm 91 conwad-lab $((80*H+60)) '@codex review')$(cm 92 "$BOT" $((80*H)) 'You have reached your Codex usage limits for code reviews.')$(cm 93 conwad-lab $((2*H)) '@codex review')$(cm 94 conwad-lab 1200 '@codex review')$(cm 95 "$BOT" 600 'You have reached your Codex usage limits for code reviews.' | sed 's/,$//')]"
+put "repos/o/k/issues/comments/93/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\",\"created_at\":\"$(t $H)\"}]"
 run o/k
+check "quota: a 👍 between two usage-limit replies starts a new streak (#27 r2 M1)" 'has "codex-quota	#9: Codex usage limit reached, last reply 10 min ago	$(t 600)	"'
 check "quota: a 👍 on a later request ends the streak (#27 M1)" '! has "#6:" && ! has "#8:"'
 check "quota: a 👍 older than the usage-limit reply does not" 'has "codex-quota	#7:"'
 check "quota: a usage-limit reply is codex-quota, exit 1" 'has "^o/k	codex-quota	#1: Codex usage limit reached" && [ "$(cat "$T/rc")" = 1 ]'
