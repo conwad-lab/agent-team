@@ -201,15 +201,15 @@ printf '%s\n' .team/backlog/007-norounds.md .team/plans/007-norounds.md .team/re
   | jq -R '{path: .}' | jq -s '{tree: .}' | put "repos/o/e/git/trees/main?recursive=1"
 plan() { put "repos/o/e/contents/.team/plans/$1.md?ref=main" <<< "{\"content\":\"$(b64 "---"$'\n'"verdict: plan"$'\n'"---"$'\n\n'"## Approach"$'\n'"builder: claude in prose"$'\n\n'"$2")\"}"; }
 est() { printf '## Estimate\nsize: %s\nrisk: %s\nfiles: 3\ncodex-rounds: %s\nbuilder: %s — reason\n\n## Files\n' "$@"; }
-plan 001-held "$(est S plain 2 codex)"
-plan 002-rounds "$(est M plain 1 codex)"
+plan 001-held "$(printf '## Estimate\nsize: S\nrisk: plain\nfiles: 3\ncodex-rounds: 2\nbuilder: codex — reason\nmodel: light — a small plain story\n\n## Files\n')"
+plan 002-rounds "$(printf '## Estimate\nsize: M\nrisk: plain\nfiles: 3\ncodex-rounds: 1\nbuilder: codex — reason\nmodel: standard — M plain\n\n## Files\nmodel: prose outside the Estimate\n')"
 plan 003-switch "$(est S plain 2 codex)"
 plan 004-nooutcome "$(est L adversarial 3 claude)"
 plan 005-noest $'## Files\n- x'
 plan 006-open "$(est S plain 1 codex)"
 plan 007-norounds "$(est S plain '<n>' codex)"
 resp() { put "repos/o/e/contents/.team/reviews/$1.response.md?ref=main" <<< "{\"content\":\"$(b64 "$2")\"}"; }
-resp 001-held $'## Codex round 1 — 2026-11-01\n- M1 fixed in a\n\n## Codex round 2 — 2026-11-01\n- none\n\n## Outcome\nbuilt-by: codex\nmissed: nothing'
+resp 001-held $'## Codex round 1 — 2026-11-01\n- M1 fixed in a\n\n## Codex round 2 — 2026-11-01\n- none\n\n## Outcome\nbuilt-by: codex\nmodel: claude-sonnet-5-5\nmissed: nothing'
 resp 002-rounds $'## Codex round 1 — 2026-11-01\n## Codex round 2 — 2026-11-01\n## Codex round 3 — 2026-11-02\n## Judge round 1 — 2026-11-02\n\n## Outcome\nbuilt-by: codex\nmissed: the parser'
 resp 007-norounds $'## Codex round 1 — 2026-11-01\n\n## Outcome\nbuilt-by: codex'
 resp 003-switch $'## Codex round 1 — 2026-11-01\n\n## Outcome\nbuilt-by: codex->claude\nmissed: Codex failed twice'
@@ -239,8 +239,55 @@ check "estimates: no Estimate absent"  '! erow 005-noest'
 check "estimates: unmerged absent"     '! erow 006-open'
 check "estimates: prose builder: ignored" '! grep -q "| claude in" "$T/est.md"'
 check "estimates: no numeric rounds → unknown (r1 S1)" 'erow 007-norounds | grep -q "| ? (no codex-rounds) |"'
+check "estimates: Model column (v0.8.6)"  'grep -q "| Held | Model planned → actual |$" "$T/est.md"'
+check "estimates: model planned → actual" 'erow 001-held | grep -q "| yes | light → claude-sonnet-5-5 |$"'
+check "estimates: model planned, none recorded" 'erow 002-rounds | grep -q "| no (rounds) | standard → — |$"'
+check "estimates: no model on either side → —" 'erow 004-nooutcome | grep -q "| — | — |$"'
 check "estimates: footer S codex"      'grep -q "^| S | codex | 2 | 1 | 2.5 |" "$T/est.md"'
 check "estimates: footer median"       'grep -q "^| M | codex | 1 | 0 | 10 |" "$T/est.md"'
+
+# ---- codex-quota (v0.8.6): Codex's latest reply says its usage limit is reached (wording from agent-team #24, #25)
+put repos/o/k <<< '{"default_branch":"main"}'
+# PR 2 has been quiet for 30 h and waits only on the quota; PR 3 is quiet too, its quota wait over (#27 r3 M1)
+printf '[{"number":2,"title":"002: quota","state":"open","draft":true,"merged_at":null,"updated_at":"%s","head":{"ref":"feat/002-quota","sha":"k2"},"html_url":"https://github.com/o/k/pull/2"},{"number":3,"title":"003: idle","state":"open","draft":true,"merged_at":null,"updated_at":"%s","head":{"ref":"feat/003-idle","sha":"k3"},"html_url":"https://github.com/o/k/pull/3"}]' "$(t $((30*H)))" "$(t $((30*H)))" | put "repos/o/k/pulls?state=all&per_page=100"
+QUOTA='You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage).'
+put "repos/o/k/issues?state=open&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 1 ',"pull_request":{}')$(iss 2 ',"pull_request":{}')$(iss 3 ',"pull_request":{}')$(iss 4 ',"pull_request":{}')$(iss 5 '')$(iss 6 ',"pull_request":{}')$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}')$(iss 9 ',"pull_request":{}' | sed 's/,$//')]"
+sed -i 's#github.com/o/r/issues#github.com/o/k/issues#g' "$FIX/$(printf '%s' "repos/o/k/issues?state=open&per_page=100&since=$(t $((7*D)))" | tr -c 'A-Za-z0-9' '_')"
+# 1: asked 3 h ago, the only answer is a usage-limit reply (and the summary) → codex-quota, not codex-retry
+jq -n --arg bot "$BOT" --arg q "$QUOTA" --arg t1 "$(t $((3*H)))" --arg t2 "$(t $((3*H-10)))" '[{id:11,user:{login:"conwad-lab"},created_at:$t1,body:"@codex review"},
+  {id:12,user:{login:$bot},created_at:$t2,body:"<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {\"status\":\"failed\"} -->"},
+  {id:13,user:{login:$bot},created_at:$t2,body:$q}]' | put "repos/o/k/issues/1/comments?per_page=100"
+# 2: usage limit 30 h ago, re-asked, usage limit again 5 h ago → one streak, since the first reply
+put "repos/o/k/issues/2/comments?per_page=100" <<< "[$(cm 21 conwad-lab $((30*H+60)) '@codex review')$(cm 22 "$BOT" $((30*H)) 'You have reached your Codex usage limits for code reviews.')$(cm 23 conwad-lab $((5*H+60)) '@codex review')$(cm 24 "$BOT" $((5*H)) 'You have reached your Codex usage limits.' | sed 's/,$//')]"
+# 3: usage limit, re-asked, then a finished review (receipt) → the quota is back, nothing to say
+put "repos/o/k/issues/3/comments?per_page=100" <<< "[$(cm 31 conwad-lab $((5*H+60)) '@codex review')$(cm 32 "$BOT" $((5*H)) 'You have reached your Codex usage limits for code reviews.')$(cm 33 conwad-lab $((2*H)) '@codex review')$(cm 34 "$BOT" $H '<!-- codex-review-receipt:v1 --> Codex Review: no major issues, usage limit rule and codex-pull-request-review-summary filter included.' | sed 's/,$//')]"
+# 4: usage limit, then a re-request Codex has not answered for 2 h → still codex-quota, never codex-retry
+put "repos/o/k/issues/4/comments?per_page=100" <<< "[$(cm 41 conwad-lab $((5*H+60)) '@codex review')$(cm 42 "$BOT" $((5*H)) 'You have reached your Codex usage limits for code reviews.')$(cm 43 conwad-lab $((2*H)) '@codex review' | sed 's/,$//')]"
+# 5: a fix task on an issue stopped by the quota → codex-quota, not codex-task
+put "repos/o/k/issues/5/comments?per_page=100" <<< "[$(cm 51 conwad-lab $((2*H)) '@codex fix M1')$(cm 52 "$BOT" $((2*H-30)) 'You have reached your Codex usage limits.' | sed 's/,$//')]"
+# 6: usage limit, then a re-request Codex answered with 👍 an hour ago → the quota is back (Codex M1 on #27)
+put "repos/o/k/issues/6/comments?per_page=100" <<< "[$(cm 61 conwad-lab $((5*H+60)) '@codex review')$(cm 62 "$BOT" $((5*H)) 'You have reached your Codex usage limits for code reviews.')$(cm 63 conwad-lab $((2*H)) '@codex review' | sed 's/,$//')]"
+put "repos/o/k/issues/comments/63/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\",\"created_at\":\"$(t $H)\"}]"
+# 7: an early request got its 👍 before the usage-limit reply to a later one → still codex-quota
+put "repos/o/k/issues/7/comments?per_page=100" <<< "[$(cm 71 conwad-lab $((9*H)) '@codex review')$(cm 72 conwad-lab $((5*H+60)) '@codex review')$(cm 73 "$BOT" $((5*H)) 'You have reached your Codex usage limits for code reviews.' | sed 's/,$//')]"
+put "repos/o/k/issues/comments/71/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\",\"created_at\":\"$(t $((8*H)))\"}]"
+# 8: as 6, but the 👍 carries no date: the request's own time (after the usage-limit reply) dates it
+put "repos/o/k/issues/8/comments?per_page=100" <<< "[$(cm 81 conwad-lab $((5*H+60)) '@codex review')$(cm 82 "$BOT" $((5*H)) 'You have reached your Codex usage limits for code reviews.')$(cm 83 conwad-lab $((2*H)) '@codex review' | sed 's/,$//')]"
+put "repos/o/k/issues/comments/83/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\"}]"
+# 9: usage limit 80 h ago, a retry got its 👍 1 h ago, then a new request got a usage-limit reply: a new streak (#27 r2 M1)
+put "repos/o/k/issues/9/comments?per_page=100" <<< "[$(cm 91 conwad-lab $((80*H+60)) '@codex review')$(cm 92 "$BOT" $((80*H)) 'You have reached your Codex usage limits for code reviews.')$(cm 93 conwad-lab $((2*H)) '@codex review')$(cm 94 conwad-lab 1200 '@codex review')$(cm 95 "$BOT" 600 'You have reached your Codex usage limits for code reviews.' | sed 's/,$//')]"
+put "repos/o/k/issues/comments/93/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\",\"created_at\":\"$(t $H)\"}]"
+run o/k
+check "quota: no pr-idle for a PR that waits on the quota (#27 r3 M1)" '! has "pr-idle	#2 " && has "pr-idle	#3 "'
+check "quota: a 👍 between two usage-limit replies starts a new streak (#27 r2 M1)" 'has "codex-quota	#9: Codex usage limit reached, last reply 10 min ago	$(t 600)	"'
+check "quota: a 👍 on a later request ends the streak (#27 M1)" '! has "#6:" && ! has "#8:"'
+check "quota: a 👍 older than the usage-limit reply does not" 'has "codex-quota	#7:"'
+check "quota: a usage-limit reply is codex-quota, exit 1" 'has "^o/k	codex-quota	#1: Codex usage limit reached" && [ "$(cat "$T/rc")" = 1 ]'
+check "quota: streak dated from its first reply"  'has "codex-quota	#2: Codex usage limit reached, last reply 5 h ago	$(t $((30*H)))	"'
+check "quota: a finished review ends the streak, a receipt naming the summary markers too (#27 ready review)"  '! has "#3:"'
+check "quota: wins over an unanswered re-request" 'has "codex-quota	#4:"'
+check "quota: a task stopped by the quota"        'has "codex-quota	#5:"'
+check "quota: no other codex kind on those"       '! has "codex-retry" && ! has "codex-silent" && ! has "codex-task"'
 
 # ---- more than 100 PRs (v0.8.4): pages are asked for by &page=N, never by following Link headers
 put repos/o/p <<< '{"default_branch":"main"}'

@@ -10,7 +10,7 @@ For private cloud-mode repos whose CI should not spend GitHub-hosted Actions min
 - **Its own macOS account.** The runner runs under a separate macOS user (`ci`) with no personal logins, keychains or browser sessions.
 - **Jobs in a Linux VM.** The runner runs inside an OrbStack Linux machine under `ci`, because service containers and `container:` jobs need Linux and Docker.
 - **Clean between jobs.** Each job starts from a clean workspace, and the cleanup hook (§ Register a repo, step 3) removes credential files, containers and volumes (named ones too) after it, so no secret a job used stays on the mini.
-- **Label `mini`.** Workflows pick the runner with `runs-on: ${{ fromJSON(vars.RUNS_ON || '["self-hosted","mini"]') }}` (`CLOUD.md` § Quota).
+- **Label `mini`.** Workflows pick the runner with `runs-on: ${{ fromJSON(vars.RUNS_ON || '["self-hosted","mini"]') }}` and keep the draft guard (`CLOUD.md` § Quota).
 - **No secret in a file, except the runner's own identity.** The registration token is typed on the mini once and is never written into a repo, the rulebook, a story or a chat. Jobs get secrets only from `secrets.*` as environment variables. The one secret that does stay on the mini is the runner's identity: registering creates a key pair whose private key the runner keeps in its folder (`.credentials`, `.credentials_rsaparams`, `.runner`) to authenticate to GitHub. It can only fetch jobs for that one repo and reads no repo secret outside a job. Keep it inside the runner's Linux machine, readable only by its user (`chmod 600 .credentials*`), never copy or back it up, and if the mini is lost or shared, remove the runner on GitHub (§ Remove a runner): that revokes the key.
 
 ## Set up (once per mini)
@@ -55,7 +55,9 @@ For private cloud-mode repos whose CI should not spend GitHub-hosted Actions min
 
 ## When it is offline
 
-Jobs on the `mini` label wait in the queue (GitHub fails them after 24 hours). The Builder reports it after **Runner offline after** and the human gets a decision card: **Vänta** or **Kör på GitHub-hosted** (`CLOUD.md` § Quota). For GitHub-hosted, set the repo variable `RUNS_ON` to `"ubuntu-latest"` (with the quotes: it is read as JSON) under Settings → Secrets and variables → Actions → Variables, and delete the variable again when the mini is back. Jobs already queued for `mini` keep waiting for it after the variable changes; the Builder cancels them and starts new runs (`CLOUD.md` § Quota, Runner offline).
+Jobs on the `mini` label wait in the queue (GitHub fails them after 24 hours). The Builder reports it after **Runner offline after** and the human gets a decision card: **Vänta** or **Kör på GitHub-hosted** (`CLOUD.md` § Quota). For GitHub-hosted, set the repo variable `RUNS_ON` to `"ubuntu-latest"` (with the quotes: it is read as JSON) under Settings → Secrets and variables → Actions → Variables, and delete the variable again when the mini is back. Jobs already queued for `mini` keep waiting for it after the variable changes.
+
+On **Kör på GitHub-hosted** (`CLOUD.md` § Quota, Runner offline; moved here unchanged in v0.8.6, binding as if it stood there): the human sets the repo variable `RUNS_ON` to `"ubuntu-latest"` (Operatör line), the Builder cancels the queued `mini` runs (`gh run cancel`, checking each reads `cancelled`) and restarts them by toggling the PR to draft and back to ready (answering the new Codex review), and after merge an Operatör line deletes `RUNS_ON`.
 
 ## Remove a runner
 

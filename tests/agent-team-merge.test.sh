@@ -24,11 +24,11 @@ case "$*" in
   "api --paginate repos/o/r/pulls/7/files --jq"*) printf '%s\n' .team/reviews/007-x.md .team/reviews/007-x.response.md src/a.js ;;
   "api repos/o/r/contents/.team/reviews/007-x.md?ref="*) [ -f "$FAKE/review-500" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }; base64 < "$FAKE/review.md" ;;
   "api repos/o/r/contents/.team/reviews/007-x.response.md?ref="*) printf 'verdict: approve\n' | base64 ;;
-  "api --paginate repos/o/r/issues/7/comments --jq"*) cat "$FAKE/comments" 2>/dev/null ;;
+  "api --paginate repos/o/r/issues/7/comments --jq"*) if [ -f "$FAKE/comments.json" ]; then jq -r "${*: -1}" "$FAKE/comments.json"; else cat "$FAKE/comments" 2>/dev/null; fi ;;
   "api --paginate repos/o/r/issues/7/reactions --jq"*) cat "$FAKE/pr-reactions" 2>/dev/null ;;
   "api --paginate repos/o/r/issues/comments/11/reactions --jq"*) cat "$FAKE/c11-reactions" 2>/dev/null ;;
   "api repos/o/r/git/ref/heads/feat --jq .object.sha") cat "$FAKE/branch-sha" ;;
-  "api --paginate repos/o/r/pulls/7/reviews --jq"*) : ;;
+  "api --paginate repos/o/r/pulls/7/reviews --jq"*) cat "$FAKE/reviews" 2>/dev/null ;;
   "api -X PUT repos/o/r/pulls/7/merge"*) [ -f "$FAKE/refuse" ] && { echo "Required status check is expected" >&2; exit 1; } ; echo '{"merged":true}' ;;
   *) : ;;
 esac
@@ -98,6 +98,60 @@ said "GitHub refused the merge: Required status check" && ! said "Merged by" && 
 
 setup "feat: x" false $S; AMW="deploy.yml" run "agent-team-merge: $S"
 said "actions/workflows/deploy.yml/dispatches -f ref=main" && ok "after-merge workflows dispatched on the base branch" || nok "after-merge dispatch"
+
+# v0.8.6: a usage-limit reply and Codex's status summary are not a review (wording from agent-team #24, #25)
+BOT='chatgpt-codex-connector[bot]'
+QUOTA='You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage).'
+SUMMARY='<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {"code_review":{"status":"failed"}} -->\nCodex Review Summary: Failed'
+cj() { jq -n --arg bot "$BOT" --arg q "$QUOTA" --arg s "$(printf "$SUMMARY")" "$1" > "$FAKE/comments.json"; }
+setup "feat: x" false $S; cj '[{id:11,user:{login:"conwad-lab"},body:"@codex review"},{id:12,user:{login:$bot},body:$s},{id:13,user:{login:$bot},body:$q},{id:14,user:{login:$bot},body:"You have reached your Codex usage limits."}]'; run "agent-team-merge: $S"
+! merged && said "no Codex comment, review or 👍" && [ "$(cat "$FAKE/rc")" = 1 ] && ok "only usage-limit replies and the status summary from Codex: refused" || nok "quota-only PR refused"
+
+setup "feat: x" false $S; cj '[{id:11,user:{login:"conwad-lab"},body:"@codex review"},{id:13,user:{login:$bot},body:$q}]'; echo "$BOT" > "$FAKE/reviews"; run "agent-team-merge: $S"
+merged && ok "usage-limit reply, then a Codex review: merges" || nok "quota then review"
+
+setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q},{id:15,user:{login:$bot},body:"<!-- codex-review-receipt:v1 -->\nCodex Review: no major issues in the usage limit rule."}]'; run "agent-team-merge: $S"
+merged && ok "usage-limit reply, then a review receipt comment (even one that says usage limit): merges" || nok "quota then receipt"
+
+setup "feat: x" false $S; cj '[{id:15,user:{login:$bot},body:"<!-- codex-review-receipt:v1 -->\n\nCodex Review: no major issues in the `codex-pull-request-review-summary` and `codex-review-state:` filter."}]'; run "agent-team-merge: $S"
+merged && ok "a receipt that names the summary markers still counts (Codex M2 on #27)" || nok "receipt naming the summary markers"
+
+setup "feat: x" false $S; cj '[{id:17,user:{login:$bot},body:"To use Codex here, [create an environment for this repo](https://chatgpt.com/codex/cloud/settings/environments)."},{id:18,user:{login:$bot},body:"I quote <!-- codex-review-receipt:v1 --> but did not review."}]'; run "agent-team-merge: $S"
+! merged && said "no Codex comment, review or 👍" && ok "a setup notice, or the marker quoted mid-comment, is no review: refused" || nok "setup notice"
+
+setup "feat: x" false $S; cj '[{id:19,user:{login:"someone"},body:"<!-- codex-review-receipt:v1 -->\nCodex Review: fine"}]'; run "agent-team-merge: $S"
+! merged && ok "a receipt marker in someone else's comment: refused" || nok "foreign receipt"
+
+setup "feat: x" false $S; cj '[{id:11,user:{login:"conwad-lab"},body:"@codex review"},{id:13,user:{login:$bot},body:$q}]'; echo "$BOT" > "$FAKE/c11-reactions"; run "agent-team-merge: $S"
+merged && ok "usage-limit reply, then a Codex 👍 on the request: merges" || nok "quota then 👍"
+
+setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q}]'; run "Approved by Conny on a decision card, 2026-11-19, head $S
+agent-team-merge: $S"
+merged && ok "quota-only PR, the human's yes on a decision card: merges (Codex r3 M2 on #27)" || nok "card route"
+
+setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q}]'; printf 'verdict: request-changes\n' > "$FAKE/review.md"; run "Approved by Conny on a decision card, 2026-11-19, head $S
+agent-team-merge: $S"
+! merged && said "no review file" && ok "card route still needs the approving review file" || nok "card route without review file"
+
+setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q}]'; run "The PR was not Approved by Conny on a decision card, 2026-11-19, head $S
+agent-team-merge: $S"
+! merged && ok "the card line counts only at the start of a line" || nok "card line mid-line"
+
+setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q}]'; run "Approved by Conny on a decision card, 2026-11-19, head ffffffffffffffffffffffffffffffffffffffff
+agent-team-merge: $S"
+! merged && said "no Codex comment, review or 👍" && ok "a card approval of another head opens nothing (Codex r4 M1 on #27)" || nok "card for another head"
+
+setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q}]'; run "Approved by <human> on a decision card, <date>, head 0123456
+Approved by Conny on a decision card, 2026-11-19, head 0123456 and more
+agent-team-merge: $S"
+! merged && ok "the format with placeholders, or trailing text after the head: opens nothing" || nok "card placeholders"
+
+setup "feat: x" false $S; cj '[{id:13,user:{login:$bot},body:$q}]'; run "Approved by Conny on a decision card, 2026-11-19, head 0123456789ab
+agent-team-merge: $S"
+merged && ok "a card approval naming the pinned head by a short sha: merges" || nok "card short sha"
+
+setup "feat: x" false $S; cj '[{id:16,user:{login:$bot},body:null}]'; run "agent-team-merge: $S"
+! merged && said "no Codex comment, review or 👍" && ok "a Codex comment with an empty body: refused for that reason (jq does not fail)" || nok "null body"
 
 grep -q 'github.event.comment.body }}' "$WF" && ! grep -qE 'run:.*\$\{\{' "$WF" && ok "comment body reaches the script only through env" || nok "body through env"
 grep -q 'actions/checkout' "$WF" && nok "checks out no code" || ok "checks out no code"
