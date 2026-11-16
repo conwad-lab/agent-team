@@ -14,6 +14,9 @@
 #   codex-retry   @codex review unanswered for an hour, not yet retried: the routine asks once more
 #   codex-silent  @codex review unanswered for an hour after a retry
 #   codex-task    any other @codex request (build, fix, plan attack) unanswered for an hour
+#   codex-quota   Codex's latest reply on an open PR or issue says its usage limit is reached (since =
+#                 the first such reply in a row). Instead of the other codex kinds there: the routine
+#                 re-asks once per run, no card before 72 h, no second story for 24 h (CLOUD.md [F4], [R7])
 #   blind         a read that failed twice; the watch cannot vouch for that repo
 # Exit 0 no stalls, 1 stalls, 2 any blind or the board could not be written. A 404 is blind
 # except for optional files. The board file is written every time.
@@ -35,8 +38,8 @@
 # plan on the default branch has `## Estimate` (templates/plan.md). Rounds = `## Codex round` headings
 # in the response file (templates/response.md), hours = PR opened → merged, built-by from its
 # `## Outcome`. Held = built by the planned builder within the estimated rounds (unknown without a numeric
-# codex-rounds). A missing response
-# file or Outcome shows `—`, never blind.
+# codex-rounds). Model = the plan's `model:` → the Outcome's `model:` (CLOUD.md [T2]). A missing response
+# file, Outcome or model shows `—`, never blind.
 
 set -uo pipefail
 BOARD=""; ESTIMATES=""; NOW_ISO=""; QUEUED_AFTER=30
@@ -46,7 +49,7 @@ while [ $# -gt 0 ]; do
     --estimates) ESTIMATES="$2"; shift 2 ;;
     --now) NOW_ISO="$2"; shift 2 ;;
     --queued-after) QUEUED_AFTER="$2"; shift 2 ;;
-    -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
     --) shift; break ;;
     -*) echo "watch: unknown option $1" >&2; exit 2 ;;
     *) break ;;
@@ -181,6 +184,9 @@ watch_repo() {
   # Answers: a Codex review or review receipt answers the oldest open review request; another
   # Codex comment answers the oldest open task, else the oldest review; a 👍 from Codex answers
   # its own request. Codex's summary comment (edited in place) is never an answer.
+  # A Codex comment saying its usage limit is reached answers like any comment (so nothing is left
+  # hanging when the quota is back) but starts or continues a quota streak; any later review, receipt
+  # or other Codex comment ends it. A streak still open → codex-quota, whatever else is unanswered.
   # Unanswered after an hour: any task → codex-task (never auto-retried); review requests in one
   # batch (within 10 min, e.g. the four angles) → codex-retry; a later batch is the retry, and
   # only when it too has waited an hour → codex-silent.
@@ -199,7 +205,8 @@ watch_repo() {
     pages "repos/$R/issues/$num/comments?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] |
         [(.created_at|fromdateiso8601),
          (if .user.login == $bot then (if (.body|test("codex-pull-request-review-summary|codex-review-state:")) then "-"
-                                        elif (.body|test("codex-review-receipt")) then "rout" else "out" end)
+                                        elif (.body|test("codex-review-receipt")) then "rout"
+                                        elif (.body|test("usage limit"; "i")) then "quota" else "out" end)
           elif (.user.login|endswith("[bot]")) then "-"
           elif (.body|test("^@codex( security)? review\\b";"m")) then "review"
           elif (.body|test("^@codex\\b";"m")) then "task" else "-" end),
@@ -209,11 +216,12 @@ watch_repo() {
           [((.submitted_at // "1970-01-01T00:00:00Z")|fromdateiso8601), "rout", .id] | @tsv' >> "$TMP/ev" || continue
     fi
     : > "$TMP/pending"
-    local t kind cid rpath
+    local t kind cid rpath qfirst="" qlast=""
     while IFS=$'\t' read -r t kind cid; do
       case "$kind" in
-        rout) answer "$TMP/pending" review task retry ;;
-        out) answer "$TMP/pending" task review retry ;;
+        rout) answer "$TMP/pending" review task retry; qfirst="" ;;
+        out) answer "$TMP/pending" task review retry; qfirst="" ;;
+        quota) answer "$TMP/pending" review task retry; [ -n "$qfirst" ] || qfirst="$t"; qlast="$t" ;;
         review|task)
           rpath="repos/$R/issues/comments/$cid/reactions"; [ "$cid" = issue ] && rpath="repos/$R/issues/$num/reactions"
           if api "$rpath" | jq -e --arg bot "$CODEX_BOT" 'any(.[]; .user.login == $bot and .content == "+1")' >/dev/null; then continue; fi
@@ -225,6 +233,10 @@ watch_repo() {
           printf '%s\t%s\n' "$t" "$kind" >> "$TMP/pending" ;;
       esac
     done < <(sort -n -k1,1 "$TMP/ev")
+    if [ -n "$qfirst" ]; then
+      stall "$R" codex-quota "#$num: Codex usage limit reached, last reply $(age "$qlast") ago" "$(iso "$qfirst")" "$url"
+      continue
+    fi
     local first=0 count=0 tasks=0 first_task=0 reviews=0 first_review=0 retried=0 last_retry=0
     while IFS=$'\t' read -r t kind; do
       [ -n "$t" ] || continue
@@ -325,7 +337,7 @@ section() { awk -v h="## $1" '$0 == h || index($0, h " ") == 1 {on=1; next} /^##
 
 # estimate_rows DEFAULT_BRANCH: one $EST row per story with a merged PR and a plan with `## Estimate`
 estimate_rows() {
-  local def="$1" id base story mpr plan est size risk erounds pbuilder resp rtext built arounds hours held
+  local def="$1" id base story mpr plan est size risk erounds pbuilder resp rtext built arounds hours held pmodel amodel model
   local num title pstate draft merged upd ref sha url opened
   while IFS=$'\t' read -r id base story; do
     [ -n "$story" ] || continue
@@ -338,19 +350,22 @@ estimate_rows() {
     size="$(printf '%s\n' "$est" | field size | awk '{print $1}')"; risk="$(printf '%s\n' "$est" | field risk | awk '{print $1}')"
     erounds="$(printf '%s\n' "$est" | field codex-rounds | awk '{print $1}')"
     pbuilder="$(printf '%s\n' "$est" | field builder | awk '{print $1}')"
+    pmodel="$(printf '%s\n' "$est" | field model | awk '{print $1}')"
     IFS=$'\t' read -r num title pstate draft merged upd ref sha url opened <<< "$mpr"
     resp="$(printf '%s\n' "$tree" | grep -E "^\.team/reviews/${id}-.*\.response\.md$" | head -1 || true)"
     rtext=""; [ -n "$resp" ] && rtext="$(content "$resp" "$def")"
     built="$(printf '%s\n' "$rtext" | section Outcome | field built-by | awk '{print $1}' | sed 's/->/→/')"
     arounds="$(printf '%s\n' "$rtext" | grep -c '^## Codex round ' || true)"
+    amodel="$(printf '%s\n' "$rtext" | section Outcome | field model | awk '{print $1}')"
+    if [ -z "$pmodel$amodel" ]; then model="—"; else model="${pmodel:-—} → ${amodel:-—}"; fi
     hours="$(awk -v a="$opened" -v b="$(jq -rn --arg t "$merged" '$t|fromdateiso8601')" 'BEGIN {printf "%.0f", (b - a) / 3600}')"
     if [ -z "$built" ]; then held="—"
     elif [ "$built" != "$pbuilder" ]; then held="no (builder)"
     elif ! [[ "$erounds" =~ ^[0-9]+$ ]]; then held="? (no codex-rounds)"
     elif [ "$arounds" -gt "$erounds" ]; then held="no (rounds)"
     else held=yes; fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s/%s\t%s\t%s\t%s\n' "$R" "$base" "${size:-—}" "${risk:-—}" "${pbuilder:-—}" "${built:-—}" \
-      "${erounds:-?}" "$arounds" "$hours" "$held" "$url" >> "$EST"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s/%s\t%s\t%s\t%s\t%s\n' "$R" "$base" "${size:-—}" "${risk:-—}" "${pbuilder:-—}" "${built:-—}" \
+      "${erounds:-?}" "$arounds" "$hours" "$held" "$url" "$model" >> "$EST"
   done < "$TMP/ids"
 }
 
@@ -379,10 +394,10 @@ if [ -n "$ESTIMATES" ]; then
     echo "Generated by \`bin/watch --estimates\` from GitHub; do not edit. Merged stories whose plan has \`## Estimate\`."
     if [ -s "$BLIND" ]; then echo; echo "**Blind:** $(cut -f1,2 "$BLIND" | tr '\t' ' ' | paste -sd ';' - | sed 's/;/; /g')"; fi
     echo
-    echo "| Repo | Story | Size | Risk | Planned | Built by | Codex rounds est/actual | Hours to merge | Held |"
-    echo "|---|---|---|---|---|---|---|---|---|"
-    sort -t$'\t' -k1,1 -k2,2 "$EST" | while IFS=$'\t' read -r repo base size risk planned built rounds hours held url; do
-      printf '| %s | [%s](%s) | %s | %s | %s | %s | %s | %s | %s |\n' "${repo#*/}" "$base" "$url" "$size" "$risk" "$planned" "$built" "$rounds" "$hours" "$held"
+    echo "| Repo | Story | Size | Risk | Planned | Built by | Codex rounds est/actual | Hours to merge | Held | Model planned → actual |"
+    echo "|---|---|---|---|---|---|---|---|---|---|"
+    sort -t$'\t' -k1,1 -k2,2 "$EST" | while IFS=$'\t' read -r repo base size risk planned built rounds hours held url model; do
+      printf '| %s | [%s](%s) | %s | %s | %s | %s | %s | %s | %s | %s |\n' "${repo#*/}" "$base" "$url" "$size" "$risk" "$planned" "$built" "$rounds" "$hours" "$held" "$model"
     done
     echo
     echo "| Size | Built by | Stories | Held | Median hours |"
