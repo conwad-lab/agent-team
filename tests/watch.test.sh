@@ -312,10 +312,10 @@ check "pages: past the cap is blind, not cut"   'has "^o/p	blind	cannot read rep
 put repos/o/z <<< '{"default_branch":"main"}'
 printf '%s\n' .team/backlog/006-parked-story.md | jq -R '{path: .}' | jq -s '{tree: .}' | put "repos/o/z/git/trees/main?recursive=1"
 { printf '['
-  for i in 1 2 3 4 5 6 7 8; do
+  for i in 1 2 3 4 5 6 7 8 9; do
     title="00$i: pr $i"
     printf '{"number":%s,"title":"%s","state":"open","draft":false,"merged_at":null,"updated_at":"%s","head":{"ref":"feat/00%s-pr","sha":"z%s"},"html_url":"https://github.com/o/z/pull/%s"}' "$i" "$title" "$(t $((30*H)))" "$i" "$i" "$i"
-    [ "$i" -lt 8 ] && printf ','
+    [ "$i" -lt 9 ] && printf ','
   done; printf ']'; } | put "repos/o/z/pulls?state=all&per_page=100"
 pc() { jq -n --arg u "$1" --arg t "$(t "$2")" --arg b "$3" --argjson id "${4:-1}" '{id:$id,user:{login:$u},created_at:$t,body:$b}'; }
 # 1: parked by the owner, date ahead, CRLF body as GitHub stores it → no stall, on the board
@@ -334,6 +334,8 @@ pc o $((20*H)) 'Parked until 2026-12-01: story waits' | jq -s . | put "repos/o/z
 { pc o $((20*H)) 'Card posted 2026-11-09T16:00Z: x, recommended Merga' 1; pc o $((10*H)) 'Parked until 2026-12-01: later' 2; } | jq -s . | put "repos/o/z/issues/7/comments?per_page=100"
 # 8: parked until today: holds through the end of the UTC day
 pc o $((20*H)) 'Parked until 2026-11-10: today' | jq -s . | put "repos/o/z/issues/8/comments?per_page=100"
+# 9: a date that does not exist (jq rolls it over to 12-01) parks nothing → stall (#28 Codex M1)
+pc o $((20*H)) 'Parked until 2026-11-31: typo' | jq -s . | put "repos/o/z/issues/9/comments?per_page=100"
 put "repos/o/z/branches?per_page=100" <<< '[{"name":"main","commit":{"sha":"m"}},{"name":"feat/020-inmain","commit":{"sha":"c20"}},{"name":"feat/021-ahead","commit":{"sha":"c21"}}]'
 put "repos/o/z/compare/main...feat/020-inmain" <<< '{"ahead_by":0,"behind_by":4}'
 put "repos/o/z/compare/main...feat/021-ahead" <<< '{"ahead_by":2}'
@@ -347,6 +349,7 @@ check "parked: a later card line wins → pr-idle"         'has "pr-idle	#4 "'
 check "parked: the agent account's line → no pr-idle"   '! has "pr-idle	#5 "'
 check "parked: a later park line wins over a card line"  '! has "pr-idle	#7 "'
 check "parked: holds through its own day"                '! has "pr-idle	#8 "'
+check "parked: a nonexistent date parks nothing (#28 M1)" 'has "pr-idle	#9 "'
 check "parked: board row → Coordinator"                  'row 006-parked-story | grep -q "| Coordinator (parked until 2026-12-01) |"'
 check "parked: board lists it with its reason"           'grep -qF "| z | #1 001: pr 1 | parked until 2026-12-01: no Actions minutes | Coordinator | [#1](https://github.com/o/z/pull/1) |" "$T/board.md"'
 check "parked: past or stranger lines not on the board"  '! grep -qF "#2 002" "$T/board.md" && ! grep -qF "#3 003" "$T/board.md"'

@@ -156,8 +156,9 @@ watch_repo() {
       "Card answered "*Vänta*) card=wait ;;
       "Parked until "*)
         last="${last#*$'\t'}"; since="${last:13:10}"
-        # through the end of that UTC day; a date jq cannot read parks nothing
-        until="$(jq -rn --arg d "$since" '($d + "T23:59:59Z") | fromdateiso8601' 2>/dev/null)"
+        # through the end of that UTC day; a date that is not a real calendar day (jq would roll
+        # 2026-11-31 over to 12-01) or that jq cannot read parks nothing
+        until="$(jq -rn --arg d "$since" '($d + "T23:59:59Z") | fromdateiso8601 | select(todateiso8601[0:10] == $d)' 2>/dev/null)"
         if [[ "$until" =~ ^[0-9]+$ ]] && [ "$NOW" -le "$until" ]; then
           card=parked
           printf '%s\t#%s %s\tparked until %s: %s\tCoordinator\t[#%s](%s)\n' "$R" "$num" "$title" "$since" "${last#*: }" "$num" "$url" >> "$PARKED"
