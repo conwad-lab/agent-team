@@ -1,6 +1,6 @@
 # Papercuts
 
-One line per step that failed or needed a workaround, appended by the Builder (or Codex as builder) in the same commit as the work. The Judge logs its own under `## Papercuts` in its review file instead. The weekly retro (`.claude/skills/agent-team/team/CLOUD.md` § Routines) reads them and proposes fixes under **Förslag**; only the routine changes the status. Its sources, over PRs merged or closed in the last four weeks: response files, Judge review files with their `## Papercuts`, escalations (open ones too, counted in the week raised), failed `@codex` tasks and reviews, this file (four weeks plus every `open` line) and `bin/watch --estimates`.
+One line per step that failed or needed a workaround, appended by the Builder (or Codex as builder) in the same commit as the work. The Judge logs its own under `## Papercuts` in its review file instead. The weekly retro (`.claude/skills/agent-team/team/CLOUD.md` § Routines) reads them and proposes fixes under **Förslag**; only the routine changes the status. Its sources, over PRs merged or closed in the last four weeks: response files, Judge review files with their `## Papercuts`, escalations (open ones too, counted in the week raised), failed `@codex` tasks and reviews, the product repo's `.team/PAPERCUTS.md`, not this template (four weeks plus every `open` line) and `bin/watch --estimates`.
 
 Format: `YYYY-MM-DD | role | what failed | workaround | status`, where status is `open`, `proposed <date of the Förslag row>`, `fixed <PR link>` or `dropped <date>`.
 
