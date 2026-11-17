@@ -82,11 +82,13 @@ One scheduled routine per project, daily. Its first run each week reads the **Si
 
 **Watch**, every run: `bin/watch --board <project folder>/BOARD.md <team repos>` writes the board and lists stalls, skipping PRs the Coordinator commented `Parked until YYYY-MM-DD: <reason>` until then. [R8] It re-requests a `codex-retry` review once and a `codex-quota` head once per run, no card before 72 hours; the other stalls, `blind` and exit 2 included, go on one card. [R7]
 
-**Weekly retro**, in that first run, over PRs merged or closed in the last four weeks: response files, Judge review files with their `## Papercuts`, escalations (open ones too, counted in the week raised), failed `@codex` tasks and reviews, `.team/PAPERCUTS.md` (four weeks plus every `open` line) and `bin/watch --estimates`. [R2]
+**Weekly retro**, in that first run, over the four weeks of sources `assets/team/PAPERCUTS.md` lists. [R2]
 - A pattern (the same failure, or the same kind of finding the Builder missed) seen twice, or once if it caused a revert or a wrong merge, gets one row: `Retro: <pattern> → <change> in <file> — <evidence links>`. An open row gets new links instead; evidence already linked from a Retro row never counts again. A card answered as recommended is a pattern too (`Retro: card that decided nothing → <rule>`), except **Human-only paths**. [R3]
 - **What can be removed?** At most one row per retro, `Retro: remove [ID] — incident not seen since <date>, <evidence>`, for a rule whose `WHY.md` incident has not come back and that no miss needed. [R4]
 - Retro rows never go to Kö. A rulebook change becomes a `Rulebook story.` for agent-team on the human's yes; the routine never edits the rulebook, `AGENTS.md` or a role file. [R5]
 - It appends one line under `## Retro` in `.team/PAPERCUTS.md` (format: `assets/team/PAPERCUTS.md`), counting only the week since the last retro. Papercuts behind a row move to `proposed`, then `fixed` or `dropped`. [R6]
+
+**Memory**, in that first run after the retro, follows `team/MEMORY-UPKEEP.md`. [R9]
 
 ## What reaches the human
 
