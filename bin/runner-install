@@ -1,0 +1,472 @@
+#!/usr/bin/env bash
+# runner-install: self-hosted GitHub Actions runners for the private team repos on this Mac (team/RUNNER.md § Install).
+#
+#   bash <(curl -fsSL https://raw.githubusercontent.com/conwad-lab/agent-team/main/bin/runner-install)
+#   bin/runner-install --status               machine, service and GitHub's view per runner
+#   bin/runner-install --uninstall [repo…]    remove the runner on GitHub (revokes its key) and delete its machine
+#
+# One isolated OrbStack Linux machine per runner. The registration token is fetched with the human's own `gh` login
+# and piped straight into the machine: it is never in a variable or an argument on the Mac, never printed, never
+# written to a file here. Running the line again updates the hook and missing tools and leaves an online runner
+# registered. Written for the bash 3.2 of macOS.
+set -euo pipefail
+
+usage() { echo "usage: runner-install [--status | --uninstall [repo…]]"; }
+MODE=install
+case "${1:-}" in
+  --status) MODE=status; shift ;;
+  --uninstall) MODE=uninstall; shift ;;
+  -h|--help) usage; exit 0 ;;
+  "") ;;
+  *) usage >&2; exit 2 ;;
+esac
+if [ "$MODE" != uninstall ] && [ $# -gt 0 ]; then usage >&2; exit 2; fi
+
+CONF="$HOME/.config/agent-team/runner.env"
+STATE="$HOME/.config/agent-team/runner.machines"   # one line per machine this installer made: machine repo runner-name owner
+RAW=https://raw.githubusercontent.com/conwad-lab/agent-team/main
+NEVER="agent-team tb-site"                         # public team repos: never a runner, even if listed
+MAX_PER_REPO=3
+say()  { printf '%s\n' "$*"; }
+warn() { printf '%s\n' "$*" >&2; }
+die()  { printf 'Stopp: %s\n' "$*" >&2; exit 1; }
+ask()  { local a=""; printf '%s [%s]: ' "$1" "$2" >&2; IFS= read -r a || true; printf '%s' "${a:-$2}"; }
+
+# ---- files of the rulebook: this checkout when run from one, else main on GitHub
+HERE=""
+case "$0" in /dev/fd/*|/proc/*|bash|-bash) ;; *) HERE="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd || true)" ;; esac
+asset() {
+  if [ -n "$HERE" ] && [ -f "$HERE/assets/runner/$1" ]; then cat "$HERE/assets/runner/$1"
+  else curl -fsSL "$RAW/assets/runner/$1"; fi
+}
+
+# ---- the machine side: every script goes in on stdin of `bash -s`, so orb only ever gets plain words as arguments.
+# Each script is one { … } group that bash reads whole before running it, and takes its own stdin from /dev/null,
+# so no command inside can swallow the rest of the script.
+in_machine() { orb -m "$1" bash -s; }
+params() { while [ $# -gt 1 ]; do printf '%s=%q\n' "$1" "$2"; shift 2; done; }
+
+svc_state() { in_machine "$1" <<'S'
+{
+exec </dev/null
+u="$(cat "$HOME/actions-runner/.service" 2>/dev/null || true)"
+if [ -n "$u" ]; then systemctl is-active "$u" 2>/dev/null || true; else echo none; fi
+}
+S
+}
+machine_state() { orb list 2>/dev/null </dev/null | awk -v m="$1" '$1 == m { print $2; f = 1 } END { if (!f) print "missing" }'; }
+machine_exists() { orb info "$1" >/dev/null 2>&1 </dev/null; }
+recorded() { [ -f "$STATE" ] && awk -v m="$1" '$1 == m { f = 1 } END { exit !f }' "$STATE"; }
+record() { mkdir -p "$(dirname "$STATE")"; recorded "$1" || printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >> "$STATE"; }
+unrecord() {
+  [ -f "$STATE" ] || return 0
+  awk -v m="$1" '$1 != m' "$STATE" > "$STATE.new" || true
+  mv "$STATE.new" "$STATE"
+}
+
+# runner_row REPO NAME -> "<id> <status> <busy>" as GitHub sees the runner, empty when it is not registered
+runner_row() {
+  gh api "repos/$OWNER/$1/actions/runners?per_page=100" \
+    --jq ".runners[] | select(.name == \"$2\") | \"\\(.id) \\(.status) \\(.busy)\""
+}
+wait_online() { # wait_online REPO NAME SECONDS
+  local left="$3" row
+  while :; do
+    row="$(runner_row "$1" "$2" 2>/dev/null || true)"
+    case "$row" in *" online "*) return 0 ;; esac
+    [ "$left" -gt 0 ] || return 1
+    sleep 5; left=$((left - 5))
+  done
+}
+
+load_conf() {
+  OWNER=""; HOST=""; REPOS=""; RUNNERS_PER_REPO=1; LABELS=mini; DISTRO=ubuntu:noble
+  # shellcheck disable=SC1090
+  [ -f "$CONF" ] && . "$CONF"
+  return 0
+}
+valid_name() { case "$1" in ""|*[!A-Za-z0-9._-]*|.*|-*) return 1 ;; esac; }
+count_for() { # runners for a repo: RUNNERS_<repo with - and . as _>, else RUNNERS_PER_REPO; 1..MAX_PER_REPO
+  local key n
+  valid_name "$1" || { printf 1; return 0; }
+  key="RUNNERS_$(printf '%s' "$1" | tr '.-' '__')"
+  eval "n=\"\${$key:-$RUNNERS_PER_REPO}\""
+  case "$n" in ""|*[!0-9]*) n=1 ;; esac
+  [ "$n" -ge 1 ] || n=1
+  [ "$n" -le "$MAX_PER_REPO" ] || n="$MAX_PER_REPO"
+  printf '%s' "$n"
+}
+machine_name() { # machine_name REPO INDEX
+  local base; base="runner-$(printf '%s' "$1" | tr 'A-Z' 'a-z' | tr '._' '\055\055')"
+  if [ "$2" = 1 ]; then printf '%s' "$base"; else printf '%s-%s' "$base" "$2"; fi
+}
+runner_name() { if [ "$2" = 1 ]; then printf '%s-%s' "$HOST" "$1"; else printf '%s-%s-%s' "$HOST" "$1" "$2"; fi; }
+
+# ================================================================== --status
+if [ "$MODE" = status ]; then
+  [ -f "$CONF" ] || die "ingen installation här ($CONF saknas)."
+  load_conf
+  printf '%-34s %-9s %-9s %s\n' RUNNER MASKIN TJÄNST GITHUB
+  for r in $REPOS; do
+    n="$(count_for "$r")"; i=1
+    while [ "$i" -le "$n" ]; do
+      m="$(machine_name "$r" "$i")"; name="$(runner_name "$r" "$i")"
+      ms="$(machine_state "$m")"; svc="-"
+      if [ "$ms" = running ]; then
+        svc="$(svc_state "$m" 2>/dev/null || true)"
+      fi
+      row="$(runner_row "$r" "$name" 2>/dev/null || true)"
+      if [ -n "$row" ]; then
+        gh_view="$(printf '%s' "$row" | awk '{ print $2 ($3 == "true" ? ", busy" : "") }')"
+      else gh_view="not registered"; fi
+      printf '%-34s %-9s %-9s %s\n' "$name" "$ms" "${svc:--}" "$gh_view"
+      i=$((i + 1))
+    done
+  done
+  exit 0
+fi
+
+# ================================================================== --uninstall
+if [ "$MODE" = uninstall ]; then
+  [ -s "$STATE" ] || { rm -f "$STATE"; die "inget att avinstallera ($STATE är tom eller saknas)."; }
+  command -v orb >/dev/null || die "orb saknas."
+  command -v gh >/dev/null || die "gh saknas."
+  if [ $# -gt 0 ]; then
+    for want in "$@"; do
+      awk -v r="$want" '$2 == r { f = 1 } END { exit !f }' "$STATE" || die "$want har ingen runner här (se --status)."
+    done
+  fi
+  rc=0
+  cp "$STATE" "$STATE.todo"
+  while read -r m r name owner <&3; do
+    [ -n "$m" ] || continue
+    if [ $# -gt 0 ]; then case " $* " in *" $r "*) ;; *) continue ;; esac; fi
+    OWNER="$owner"
+    row="$(runner_row "$r" "$name" 2>/dev/null || true)"
+    if [ -n "$row" ]; then
+      if gh api -X DELETE "repos/$owner/$r/actions/runners/${row%% *}" >/dev/null 2>&1; then
+        say "✓ $name borttagen på GitHub (nyckeln återkallad)"
+      else
+        warn "! $name kunde inte tas bort på GitHub (kör den ett jobb?). Ta bort den under $owner/$r → Settings → Actions → Runners."
+        rc=1
+      fi
+    else
+      say "· $name fanns inte på GitHub"
+    fi
+    if machine_exists "$m"; then
+      orb delete -f "$m" >/dev/null 2>&1 </dev/null || { warn "! maskinen $m kunde inte raderas (orb delete -f $m)."; rc=1; continue; }
+    fi
+    unrecord "$m"
+    say "✓ maskinen $m raderad"
+  done 3< "$STATE.todo"
+  rm -f "$STATE.todo"
+  if [ ! -s "$STATE" ]; then rm -f "$STATE" "$CONF"; say "Inga runners kvar på den här Macen; $CONF borttagen."; fi
+  exit "$rc"
+fi
+
+# ================================================================== install
+[ "$(uname -s)" = Darwin ] || die "det här är för macOS (värd-Macen)."
+if ! command -v orb >/dev/null; then
+  warn "OrbStack saknas. Installera det och slå på \"Start at login\" i appen, kör sedan raden igen:"
+  warn "  brew install --cask orbstack"
+  exit 1
+fi
+for c in gh jq curl; do command -v "$c" >/dev/null || die "$c saknas (installera det och kör raden igen)."; done
+LOGIN="$(gh api user --jq .login 2>/dev/null)" || die "gh är inte inloggat. Kör \`gh auth login\` och sedan raden igen."
+say "✓ gh inloggat som $LOGIN"
+
+# ---- config: Enter keeps the value in brackets
+load_conf
+EXAMPLE="$(asset runner.env.example)" || die "kunde inte läsa runner.env.example."
+ex() { printf '%s\n' "$EXAMPLE" | sed -n "s/^$1=//p" | head -1 | sed -e 's/^"//' -e 's/"$//'; }
+DEF_HOST="$HOST"
+if [ -z "$DEF_HOST" ]; then
+  DEF_HOST="$( (command -v scutil >/dev/null && scutil --get LocalHostName 2>/dev/null) | tr 'A-Z' 'a-z' || true)"
+fi
+OWNER="$(ask 'GitHub-konto som äger repona' "${OWNER:-$LOGIN}")"
+HOST="$(ask 'Värdnamn i runnerns namn' "${DEF_HOST:-$(ex HOST)}")"
+REPOS="$(ask 'Privata repon som ska få en runner' "${REPOS:-$(ex REPOS)}")"
+valid_name "$OWNER" || die "ogiltigt kontonamn: $OWNER"
+case "$HOST" in ""|*[!a-z0-9-]*|-*) die "värdnamnet får bara ha a–z, 0–9 och bindestreck: $HOST" ;; esac
+[ -n "$REPOS" ] || die "inga repon angivna."
+for r in $REPOS; do valid_name "$r" || die "ogiltigt reponamn: $r (ange namnet utan ägare)"; done
+case "$LABELS" in *[!A-Za-z0-9_,-]*|"") die "ogiltig LABELS i $CONF: $LABELS" ;; esac
+case "$DISTRO" in *[!A-Za-z0-9:._-]*|"") die "ogiltig DISTRO i $CONF: $DISTRO" ;; esac
+
+mkdir -p "$(dirname "$CONF")"
+esc() { printf '%s' "$1" | sed -e 's/[#&\\]/\\&/g'; }
+{
+  printf '%s\n' "$EXAMPLE" | sed -e "s#^OWNER=.*#OWNER=$(esc "$OWNER")#" -e "s#^HOST=.*#HOST=$(esc "$HOST")#" \
+    -e "s#^REPOS=.*#REPOS=\"$(esc "$REPOS")\"#" -e "s#^RUNNERS_PER_REPO=.*#RUNNERS_PER_REPO=$RUNNERS_PER_REPO#" \
+    -e "s#^LABELS=.*#LABELS=$(esc "$LABELS")#" -e "s#^DISTRO=.*#DISTRO=$(esc "$DISTRO")#"
+  [ -f "$CONF" ] && grep -E '^RUNNERS_[A-Za-z0-9_]+=[0-9]+$' "$CONF" | grep -v '^RUNNERS_PER_REPO=' || true
+} > "$CONF.new"
+mv "$CONF.new" "$CONF"; chmod 600 "$CONF"
+load_conf
+say "✓ $CONF"
+
+HOOK_B64="$(asset cleanup.sh | base64 | tr -d '\n')"
+[ -n "$HOOK_B64" ] || die "kunde inte läsa cleanup.sh."
+
+# ---- the runner release: version and GitHub's published SHA-256, read once and only when a machine needs it
+REL_V=""; REL_ARM64=""; REL_X64=""
+release() {
+  [ -z "$REL_V" ] || return 0
+  local rel
+  rel="$(gh api repos/actions/runner/releases/latest --jq '.tag_name, .body')" || { warn "kunde inte läsa actions/runner-releasen."; return 1; }
+  REL_V="$(printf '%s\n' "$rel" | head -1 | sed 's/^v//')"
+  case "$REL_V" in ""|*[!0-9.]*) warn "oväntad runner-version: $REL_V"; REL_V=""; return 1 ;; esac
+  rel_sha() {
+    printf '%s\n' "$rel" | grep -F "actions-runner-linux-$1-$REL_V.tar.gz" | sed 's/<!--[^>]*-->//g' \
+      | grep -oE '[0-9a-f]{64}' | head -1
+  }
+  REL_ARM64="$(rel_sha arm64 || true)"; REL_X64="$(rel_sha x64 || true)"
+  if [ "${#REL_ARM64}" != 64 ] || [ "${#REL_X64}" != 64 ]; then
+    warn "hittade inte GitHubs SHA-256 för runner $REL_V i releasen; installerar inte utan den."; REL_V=""; return 1
+  fi
+}
+
+check_repo() { # private, owned by OWNER, and the human is admin there
+  local r="$1" info private owner admin
+  case " $NEVER " in *" $r "*) warn "✗ $r: publikt team-repo, får aldrig en runner (team/RUNNER.md § Rules)."; return 1 ;; esac
+  info="$(gh api "repos/$OWNER/$r" --jq '[(.private | tostring), .owner.login, (.permissions.admin // false | tostring)] | join(" ")' 2>/dev/null)" \
+    || { warn "✗ $r: kunde inte läsa $OWNER/$r med gh."; return 1; }
+  private="${info%% *}"; owner="${info#* }"; admin="${owner#* }"; owner="${owner%% *}"
+  [ "$private" = true ] || { warn "✗ $r: repot är inte privat. En runner på ett publikt repo låter vem som helst köra kod här."; return 1; }
+  [ "$owner" = "$OWNER" ] || { warn "✗ $r: ägs av $owner, inte $OWNER."; return 1; }
+  [ "$admin" = true ] || { warn "✗ $r: $LOGIN är inte admin på repot."; return 1; }
+}
+
+check_isolated() { # nothing of the Mac or of another machine may be visible from inside
+  in_machine "$1" <<'S'
+{
+exec </dev/null
+bad=""
+for p in /mnt/mac /Users /Volumes; do
+  if [ -e "$p" ] && [ -n "$(ls -A "$p" 2>/dev/null)" ]; then bad="$bad $p"; fi
+done
+if [ -d /mnt/machines ]; then
+  for e in $(ls -A /mnt/machines 2>/dev/null); do
+    [ "$e" = "$(hostname)" ] || bad="$bad /mnt/machines/$e"
+  done
+fi
+if command -v mac >/dev/null 2>&1 && timeout 10 mac true >/dev/null 2>&1; then bad="$bad mac-command"; fi
+if [ -n "$bad" ]; then echo "not isolated:$bad" >&2; exit 1; fi
+}
+S
+}
+
+toolset() { # what the PR workflows assume from ubuntu-latest; installs only what is missing
+  in_machine "$1" <<'S'
+{
+set -eu
+exec </dev/null
+export DEBIAN_FRONTEND=noninteractive
+sudo -n true || { echo "no passwordless sudo in the machine" >&2; exit 1; }
+sudo apt-get update -qq
+sudo apt-get install -y -qq git curl jq zip unzip python3 python3-venv build-essential ca-certificates >/dev/null
+if ! command -v gh >/dev/null 2>&1; then
+  sudo mkdir -p -m 755 /etc/apt/keyrings
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+  sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq gh >/dev/null
+fi
+if ! command -v docker >/dev/null 2>&1; then
+  curl -fsSL https://get.docker.com | sudo sh >/dev/null 2>&1
+fi
+sudo usermod -aG docker "$(id -un)"
+sudo docker run --rm hello-world >/dev/null
+}
+S
+}
+
+runner_software() { # download once, check against GitHub's published SHA-256, unpack
+  release || return 1
+  { params V "$REL_V" SHA_ARM64 "$REL_ARM64" SHA_X64 "$REL_X64"; cat <<'S'
+{
+set -eu
+exec </dev/null
+d="$HOME/actions-runner"
+if [ -x "$d/config.sh" ]; then exit 0; fi
+case "$(uname -m)" in
+  aarch64|arm64) a=arm64; s="$SHA_ARM64" ;;
+  x86_64) a=x64; s="$SHA_X64" ;;
+  *) echo "unsupported CPU: $(uname -m)" >&2; exit 1 ;;
+esac
+f="actions-runner-linux-$a-$V.tar.gz"
+tmp="$(mktemp -d)"
+curl -fsSL -o "$tmp/$f" "https://github.com/actions/runner/releases/download/v$V/$f"
+if ! (cd "$tmp" && echo "$s  $f" | sha256sum -c - >/dev/null 2>&1); then
+  echo "checksum mismatch for $f: not installed" >&2; rm -rf "$tmp"; exit 1
+fi
+mkdir -p "$d"
+tar xzf "$tmp/$f" -C "$d"
+rm -rf "$tmp"
+cd "$d"
+sudo ./bin/installdependencies.sh >/dev/null
+}
+S
+  } | in_machine "$1"
+}
+
+has_config() { in_machine "$1" <<'S'
+{
+exec </dev/null
+[ -f "$HOME/actions-runner/.runner" ]
+}
+S
+}
+
+wipe_config() { in_machine "$1" <<'S'
+{
+exec </dev/null
+cd "$HOME/actions-runner" || exit 0
+if [ -f .service ]; then sudo ./svc.sh stop >/dev/null 2>&1; sudo ./svc.sh uninstall >/dev/null 2>&1; fi
+rm -f .runner .credentials .credentials_rsaparams .service
+}
+S
+}
+
+# register REPO MACHINE NAME: the token goes from gh's stdout through the pipe to `read` inside the machine.
+# The script group is read whole first, so the line `read` gets is the one gh prints after it.
+register() {
+  { params URL "https://github.com/$OWNER/$1" NAME "$3" LABELS "$LABELS,$HOST"; cat <<'S'
+{
+set -eu
+T=""
+IFS= read -r T || true
+exec </dev/null
+case "$T" in ""|null|*[!A-Za-z0-9_-]*) echo "no registration token arrived" >&2; exit 3 ;; esac
+cd "$HOME/actions-runner"
+rc=0
+out="$(./config.sh --unattended --replace --url "$URL" --token "$T" --name "$NAME" --labels "$LABELS" --work _work 2>&1)" || rc=$?
+if [ "$rc" != 0 ]; then printf '%s\n' "${out//"$T"/***}" | tail -n 15 >&2; fi
+unset T
+chmod 600 .credentials* 2>/dev/null || true
+exit "$rc"
+}
+S
+    gh api -X POST "repos/$OWNER/$1/actions/runners/registration-token" --jq .token
+  } | in_machine "$2"
+}
+
+# hook_and_service MACHINE START BUSY: write the cleanup hook and its two .env lines; START=1 installs and starts the service
+hook_and_service() {
+  { params HOOK_B64 "$HOOK_B64" START "$2" BUSY "$3"; cat <<'S'
+{
+set -eu
+exec </dev/null
+d="$HOME/actions-runner"
+cd "$d"
+printf '%s' "$HOOK_B64" | base64 -d > cleanup.sh.new
+chmod 755 cleanup.sh.new
+mv cleanup.sh.new cleanup.sh
+touch .env
+changed=0
+for k in ACTIONS_RUNNER_HOOK_JOB_STARTED ACTIONS_RUNNER_HOOK_JOB_COMPLETED; do
+  if ! grep -qx "$k=$d/cleanup.sh" .env; then
+    { grep -v "^$k=" .env || true; echo "$k=$d/cleanup.sh"; } > .env.new
+    mv .env.new .env
+    changed=1
+  fi
+done
+if [ "$START" = 1 ]; then
+  [ -f .service ] || sudo ./svc.sh install "$(id -un)" >/dev/null
+  if [ "$changed" = 1 ]; then sudo ./svc.sh stop >/dev/null 2>&1 || true; fi
+  sudo ./svc.sh start >/dev/null
+elif [ "$changed" = 1 ]; then
+  if [ "$BUSY" = true ]; then
+    echo "hook lines added to .env; the runner is busy, run the install line again when it is idle" >&2
+  else
+    sudo ./svc.sh stop >/dev/null 2>&1 || true
+    sudo ./svc.sh start >/dev/null
+  fi
+fi
+}
+S
+  } | in_machine "$1"
+}
+
+install_one() { # install_one REPO MACHINE NAME
+  local r="$1" m="$2" name="$3" row status busy
+  say "— $name (maskin $m)"
+  if machine_exists "$m"; then
+    recorded "$m" || { warn "✗ maskinen $m finns redan men skapades inte av den här installern. Radera den (orb delete $m) eller byt namn."; return 1; }
+    orb start "$m" >/dev/null 2>&1 </dev/null || true
+  else
+    orb create --isolated --isolate-network "$DISTRO" "$m" >/dev/null </dev/null || { warn "✗ kunde inte skapa maskinen $m."; return 1; }
+    record "$m" "$r" "$name" "$OWNER"
+    say "  ✓ isolerad maskin skapad"
+  fi
+  if ! check_isolated "$m"; then
+    warn "✗ $m är inte isolerad från Macen. Maskinen raderas och ingen runner registreras."
+    orb delete -f "$m" >/dev/null 2>&1 </dev/null || warn "! kunde inte radera $m (orb delete -f $m)."
+    unrecord "$m"
+    return 1
+  fi
+  say "  ✓ isolerad: inga Mac-filer, inga andra maskiner"
+  toolset "$m" || { warn "✗ verktygen kunde inte installeras i $m."; return 1; }
+  say "  ✓ verktyg (git, gh, Docker m.fl.)"
+
+  row="$(runner_row "$r" "$name")" || { warn "✗ kunde inte läsa runners för $OWNER/$r (kräver gh-inloggning med repo-scope: gh auth refresh -s repo)."; return 1; }
+  status="$(printf '%s' "$row" | awk '{ print $2 }')"; busy="$(printf '%s' "$row" | awk '{ print $3 }')"
+  if [ "$status" = online ]; then
+    hook_and_service "$m" 0 "${busy:-false}" || { warn "✗ kunde inte uppdatera hooken i $m."; return 1; }
+    say "  ✓ redan online på GitHub: ingen ny registrering, hooken uppdaterad"
+    return 0
+  fi
+
+  runner_software "$m" || { warn "✗ runnern kunde inte hämtas och kontrolleras i $m."; return 1; }
+  say "  ✓ runner hämtad och kontrollerad mot GitHubs SHA-256"
+  if has_config "$m"; then
+    if hook_and_service "$m" 1 false && wait_online "$r" "$name" 30; then
+      say "  ✓ tjänsten startad igen, online på GitHub utan ny registrering"
+      return 0
+    fi
+    wipe_config "$m" || true
+  fi
+  register "$r" "$m" "$name" || { warn "✗ registreringen misslyckades för $name (token hämtas med gh: kräver admin på repot och repo-scope, \`gh auth refresh -s repo\`; en GH_TOKEN i miljön används i stället för din inloggning)."; return 1; }
+  say "  ✓ registrerad (token gick direkt in i maskinen, visades aldrig)"
+  hook_and_service "$m" 1 false || { warn "✗ tjänsten kunde inte startas i $m."; return 1; }
+  if wait_online "$r" "$name" 60; then say "  ✓ online på GitHub"
+  else warn "✗ $name blev inte online inom en minut. Kör raden med --status om en stund."; return 1; fi
+}
+
+offer_switch() { # only after every runner of the repo is online
+  local r="$1" old a
+  if ! old="$(gh api "repos/$OWNER/$r/actions/variables/RUNS_ON" --jq .value 2>/dev/null)" || [ -z "$old" ] || [ "$old" = null ]; then
+    say "  RUNS_ON är inte satt i $r: jobb med runs-on-uttrycket väljer redan runnern."
+    return 0
+  fi
+  say "  RUNS_ON i $r är nu: $old"
+  a="$(ask "  Radera RUNS_ON så att jobben går till runnern? (y/N)" N)"
+  case "$a" in
+    y|Y|j|J)
+      gh api -X DELETE "repos/$OWNER/$r/actions/variables/RUNS_ON" >/dev/null || { warn "! kunde inte radera RUNS_ON i $r."; return 1; }
+      say "  ✓ RUNS_ON raderad. Sätt tillbaka med: gh variable set RUNS_ON -R $OWNER/$r --body '$old'" ;;
+    *) say "  RUNS_ON lämnad orörd. Radera senare med: gh variable delete RUNS_ON -R $OWNER/$r" ;;
+  esac
+}
+
+failed=""
+for r in $REPOS; do
+  say ""
+  say "== $OWNER/$r"
+  if ! check_repo "$r"; then failed="$failed $r"; continue; fi
+  n="$(count_for "$r")"; i=1; good=1
+  while [ "$i" -le "$n" ]; do
+    install_one "$r" "$(machine_name "$r" "$i")" "$(runner_name "$r" "$i")" || { good=0; break; }
+    i=$((i + 1))
+  done
+  if [ "$good" = 1 ]; then offer_switch "$r" || failed="$failed $r"; else failed="$failed $r"; fi
+done
+
+say ""
+if [ -n "$failed" ]; then
+  warn "Inte klart för:$failed. Rätta det som står ovan och kör raden igen; övriga repon är orörda av felet."
+  exit 1
+fi
+say "Klart. Se läget med samma rad följd av --status. Ta bort: --uninstall [repo…] (team/RUNNER.md)."
