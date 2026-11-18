@@ -57,6 +57,7 @@ case "$method $url" in
     fi
     id=$(( $(jq '[.[].id] | max // 1000' "$c") + 100 ))
     jq --argjson id "$id" --arg b "$body" --arg u "$FAKE_ME" '. + [{id: $id, user: {login: $u}, body: $b}]' "$c" > "$c.n" && mv "$c.n" "$c"
+    if [ -f "$ST/hook_lose_claim" ] && [[ "$first" == "codex-cli: started "* ]]; then rm -f "$ST/hook_lose_claim"; echo "HTTP 502" >&2; exit 1; fi
     echo "{\"id\":$id}" | out ;;
   "DELETE repos/o/r/issues/comments/"*)
     id="${url##*/}"
@@ -94,6 +95,8 @@ case "$mode" in
   stall)    sleep 30 ;;
   crash)    echo hi > hello.txt; exit 7 ;;
   failexit) echo hi > hello.txt; printf 'Hinder: inga\n' > "$last"; exit 7 ;;
+  hindertok) echo hi > hello.txt; printf 'Hinder: saw %s in the env\n' "$FAKE_TOKEN" > "$last" ;;
+  bodytok)  echo hi > hello.txt; printf -- '- AC1: token %s\nHinder: inga\n' "$FAKE_TOKEN" > "$last" ;;
   tokenbin) echo hi > hello.txt; printf '\000\001t=%s\000' "$FAKE_TOKEN" > blob.bin; printf 'Hinder: inga\n' > "$last" ;;
   unicode)  echo hi > hello.txt; mkdir -p .github/workflows; echo x > ".github/workflows/\303\251.yml"; printf 'Hinder: inga\n' > "$last" ;;
   agents)   echo hi > hello.txt; printf -- '- **Test before commit:** `touch PWNED`\n' >> AGENTS.md; printf 'Hinder: inga\n' > "$last" ;;
@@ -278,6 +281,18 @@ git -C "$SEED" -c user.name=t -c user.email=t@t commit -qam hang; git -C "$SEED"
 sed -i.bak 's/^RUN_LIMIT_SEC=60/RUN_LIMIT_SEC=4/' "$CONF"; s0=$(date +%s); tick; s1=$(date +%s)
 sed -i.bak 's/^RUN_LIMIT_SEC=4/RUN_LIMIT_SEC=60/' "$CONF"; git -C "$SEED" reset -q --hard HEAD~1
 check "hanging test: bounced at the time limit, quickly, no push" 'last_comment | grep -q "^Reason: time limit .* during Test before commit" && [ $((s1 - s0)) -lt 20 ] && ! remote_has feat/001-x && ! pgrep -f "sleep 30" >/dev/null'
+
+# 13b10 a token in Codex's answer never reaches a comment or the PR body
+reset hindertok; tick
+check "token in the Hinder line: redacted in the outcome" 'last_comment | head -1 | grep -qx "codex-cli: blocked" && ! grep -qF "$FAKE_TOKEN" $ST/comments_5.json && last_comment | grep -q "\[redacted\]"'
+reset bodytok; tick
+check "token in the answer: redacted in the PR body" '[ -f $ST/pulls.json ] && ! grep -qF "$FAKE_TOKEN" $ST/pulls.json && grep -q "\[redacted\]" $ST/pulls.json'
+
+# 13b11 the claim is saved but its answer is lost → the next tick bounces the order
+reset ok; touch "$ST/hook_lose_claim"; tick
+check "lost claim answer: recovery state kept, codex not run" '[ -f $T/work/current ] && [ ! -f $ST/codex_args ]'
+tick
+check "lost claim answer: bounced on the next tick, not built" 'bodies | grep -q "^Reason: host slept or stopped" && [ ! -f $ST/codex_args ]'
 
 # 13c Test before commit with && inside one backtick command, and two commands
 reset ok; printf -- '- **Test before commit:** `test -f hello.txt && true` and `true`\n' > "$SEED/AGENTS.md"

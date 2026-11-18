@@ -82,9 +82,13 @@ gitc() {
   GH_TOKEN="$TOKEN" git -c credential.helper= \
     -c 'credential.helper=!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f' "$@"
 }
+redact() { # redact TEXT: the token and anything shaped like a GitHub token never leave the host in a comment or PR
+  local t="${1//"$TOKEN"/[redacted]}"
+  printf '%s' "$t" | sed -E 's/github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{30,}/[redacted]/g'
+}
 post() { # post REPO ISSUE BODY -> prints the new comment id
   [ "$DRY" = 1 ] && { log "dry-run: would comment on $1#$2: $(printf '%s' "$3" | head -1)"; echo 0; return 0; }
-  ghx api "repos/$1/issues/$2/comments" -X POST -f body="$3" --jq .id
+  ghx api "repos/$1/issues/$2/comments" -X POST -f body="$(redact "$3")" --jq .id
 }
 comments() { ghx api --paginate "repos/$1/issues/$2/comments?per_page=100" | jq -s 'add // []'; }
 has_label() { ghx api "repos/$1/issues/$2" | jq -e --arg l "$LABEL" '.state == "open" and ([.labels[].name] | index($l)) != null' >/dev/null; }
@@ -206,9 +210,10 @@ $SIGN"
 bounce() { OUTCOME=bounced; REASON="$1"; finish; }
 
 # ---- claim, then re-read: an earlier claim on the same order or a removed label wins
-CLAIM_ID="$(post "$REPO" "$ISSUE" "codex-cli: started $RUN_ID on $HOST for $ORDER_ID")"
-# recovery state first: if anything below dies, the next tick posts a bounced outcome for this order
+# recovery state first: if the claim's answer is lost or anything below dies, the next tick posts a bounced outcome
 printf '%s %s %s %s\n' "$REPO" "$ISSUE" "$RUN_ID" "$ORDER_ID" > "$CURRENT"
+CLAIM_ID="$(post "$REPO" "$ISSUE" "codex-cli: started $RUN_ID on $HOST for $ORDER_ID")" \
+  || { log "claim on $REPO#$ISSUE got no answer; the next tick bounces it"; exit 1; }
 withdraw() {
   log "withdrawing claim $CLAIM_ID on $REPO#$ISSUE: $1"
   # a claim that cannot be deleted stays covered by CURRENT, so the next tick bounces it
@@ -308,7 +313,7 @@ git -C "$WT" add -A
 if ! git -C "$WT" diff --cached --quiet; then
   if [ "$KIND" = build ]; then msg="$PR_TITLE"; else msg="$(printf '%s' "${BRANCH#feat/}" | cut -d- -f1): fix from Codex CLI order $ORDER_ID"; fi
   git -C "$WT" -c user.name="Codex CLI ($HOST)" -c user.email="codex-cli@$HOST.invalid" \
-    commit --quiet -m "$msg" -m "Built by Codex CLI ($MODEL) on $HOST from $REPO#$ISSUE comment $ORDER_ID. $HINDER"
+    commit --quiet -m "$msg" -m "Built by Codex CLI ($MODEL) on $HOST from $REPO#$ISSUE comment $ORDER_ID. $(redact "$HINDER")"
 fi
 HEAD_NOW="$(git -C "$WT" rev-parse HEAD)"
 [ "$HEAD_NOW" != "$START_SHA" ] || { [ "$BLOCKED" = 1 ] && { OUTCOME=blocked; finish; }; bounce "no changes"; }
@@ -382,7 +387,8 @@ OWNER="${REPO%%/*}"
 PR_URL="$(ghx api "repos/$REPO/pulls?head=$OWNER:$BRANCH&state=open" --jq '.[0].html_url // empty')"
 if [ -z "$PR_URL" ]; then
   if [ "$KIND" = fix ]; then bounce "pushed $HEAD_SHA, but no open PR from $BRANCH"; fi
-  jq -n --arg t "$PR_TITLE" --arg h "$BRANCH" --arg b "$DEF" --rawfile m "$LAST" \
+  redact "$(cat "$LAST")" > "$LAST.redacted"
+  jq -n --arg t "$PR_TITLE" --arg h "$BRANCH" --arg b "$DEF" --rawfile m "$LAST.redacted" \
      --arg f "Built by Codex CLI ($MODEL) on $HOST from the work order $GIT_BASE/$REPO/issues/$ISSUE#issuecomment-$ORDER_ID. The Builder thread owns this PR (team/CODEX-CLI.md).
 
 $SIGN" \
