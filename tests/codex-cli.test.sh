@@ -214,11 +214,15 @@ check "stall: bounced as stalled" 'last_comment | grep -q "^Reason: stalled"'
 check "stall: nothing pushed" '! remote_has feat/001-x'
 
 # 10 a started run with no outcome (host slept) → bounced on the next tick
-reset ok; mkdir -p "$T/work"; echo "o/r 5 old-run" > "$T/work/current"
+reset ok; mkdir -p "$T/work/repos" "$T/work/wt"; echo "o/r 5 old-run" > "$T/work/current"
+git clone -q "$REMOTE/o/r.git" "$T/work/repos/o_r"
+git -C "$T/work/repos/o_r" worktree add -q -b cli/old-run "$T/work/wt/old-run" origin/main
+echo half > "$T/work/wt/old-run/half.txt"
 jq '. + [{id: 1002, user: {login: "conwad-lab"}, body: "codex-cli: started old-run on testmac for 1001"}]' "$ST/comments_5.json" > "$T/c.json" && mv "$T/c.json" "$ST/comments_5.json"
 tick
 check "slept: old run marked bounced" 'bodies | grep -q "^Reason: host slept or stopped (run old-run on testmac never finished)"'
 check "slept: the order is not run again by itself" '[ ! -f $ST/codex_args ]'
+check "slept: the old worktree and its branch are removed" '[ ! -e $T/work/wt/old-run ] && ! git -C $T/work/repos/o_r rev-parse --verify --quiet refs/heads/cli/old-run >/dev/null && ! git -C $T/work/repos/o_r worktree list | grep -q old-run'
 
 # 11 ENABLED=0 → no API call at all
 reset ok; sed -i.bak 's/^ENABLED=1/ENABLED=0/' "$CONF"; : > "$ST/calls"; tick

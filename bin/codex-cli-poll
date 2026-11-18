@@ -121,6 +121,17 @@ $SIGN"
     fi
     printf '%s\t%s\t%s\tbounced: host slept\t-\n' "$(date -u +%Y-%m-%dT%H:%MZ)" "$c_repo" "$c_issue" >> "$RUNS_LOG"
   fi
+  # remove the interrupted run's worktree and its cli/<run> branch, as finish() would have
+  case "${c_run:-}" in
+    *[!A-Za-z0-9-]*|"") ;;
+    *) c_clone="$WORK_DIR/repos/$(printf '%s' "${c_repo:-}" | tr '/' '_')"
+       if [ -d "$c_clone/.git" ] || [ -f "$c_clone/HEAD" ]; then
+         git -C "$c_clone" worktree remove --force "$WORK_DIR/wt/$c_run" >/dev/null 2>&1 || true
+         git -C "$c_clone" worktree prune >/dev/null 2>&1 || true
+         git -C "$c_clone" branch -D "cli/$c_run" >/dev/null 2>&1 || true
+       fi
+       rm -rf "$WORK_DIR/wt/$c_run" "$WORK_DIR/wt/$c_run".* ;;
+  esac
   rm -f "$CURRENT"
 fi
 
