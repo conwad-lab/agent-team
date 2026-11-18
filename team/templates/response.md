@@ -8,6 +8,6 @@
 
 ## Outcome
 <!-- Filled before the Judge request (CLOUD.md [B8]). bin/watch --estimates counts the Codex rounds above and the hours from PR to merge itself. -->
-built-by: codex | claude | codex->claude
+built-by: codex | codex-cli | claude | codex->claude | codex-cli->claude
 model: <the model id the Builder thread ran, e.g. claude-opus-5-5>
 missed: <one line on what the plan's Estimate missed, or nothing>

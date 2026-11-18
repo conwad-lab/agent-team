@@ -18,6 +18,7 @@ merge: human
 # mode: local (four clones, bin/wait-for) or cloud (Claude Code Projects + Codex on GitHub, see team/CLOUD.md)
 mode: local
 # cloud only: who builds when a plan's ## Estimate names no builder (each plan names its own, CLOUD.md [T2]). codex = Codex from an @codex task on the story's issue (needs a Codex environment for the repo);
+# codex-cli = a work order the host Mac's poller runs with Codex CLI (team/CODEX-CLI.md; @codex takes over while it sleeps);
 # claude = the Builder thread. A fresh repo has no Codex environment yet, so this starts as claude (SETUP.md § One-time setup per repo).
 builder: claude
 # cloud only: where CI runs. github = GitHub-hosted minutes; mini = the self-hosted runner on the Mac mini (private repos only, team/RUNNER.md).
