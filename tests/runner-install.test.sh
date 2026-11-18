@@ -44,9 +44,11 @@ case "$method $url" in
     jq -n --arg s "$sha" '{tag_name: "v2.999.0", body: ("## SHA-256 Checksums\n- actions-runner-linux-x64-2.999.0.tar.gz <!-- BEGIN SHA linux-x64 -->" + $s + "<!-- END SHA linux-x64 -->\n- actions-runner-linux-arm64-2.999.0.tar.gz <!-- BEGIN SHA linux-arm64 -->" + $s + "<!-- END SHA linux-arm64 -->\n")}' | out ;;
   "GET repos/"*"/actions/runners?"*) jq '{runners: .}' "$rf" | out ;;
   "POST repos/"*"/actions/runners/registration-token")
+    [ -z "${GH_DEBUG:-}${DEBUG:-}" ] || echo "* debug: {\"token\":\"$FAKE_TOKEN\"}" >&2
     if [ -f "$ST/hook_no_token" ]; then echo '{"message":"Resource not accessible"}' | out; echo "gh: HTTP 403" >&2; exit 1; fi
     echo "{\"token\":\"$FAKE_TOKEN\"}" | out ;;
   "DELETE repos/"*"/actions/runners/"*)
+    if [ -f "$ST/hook_delete_fails" ]; then echo "gh: HTTP 422" >&2; exit 1; fi
     id="${url##*/}"; jq --argjson id "$id" 'map(select(.id != $id))' "$rf" > "$rf.n" && mv "$rf.n" "$rf" ;;
   "GET repos/"*"/actions/variables/RUNS_ON")
     if [ -f "$ST/var_$repo" ]; then jq -n --arg v "$(cat "$ST/var_$repo")" '{name: "RUNS_ON", value: $v}' | out
@@ -67,7 +69,9 @@ case "$1" in
   info)   [ -d "$M/$2" ] ;;
   start)  [ -d "$M/$2" ] ;;
   list)   echo "NAME STATE DISTRO VERSION ARCH"; for d in "$M"/*/; do [ -d "$d" ] && echo "$(basename "$d") running ubuntu noble arm64"; done ;;
-  delete) for a in "$@"; do name="$a"; done; echo "$*" >> "$ST/orb_calls"; rm -rf "${M:?}/$name" ;;
+  delete) for a in "$@"; do name="$a"; done; echo "$*" >> "$ST/orb_calls"
+          [ -f "$ST/hook_orb_delete_fails" ] && exit 1
+          rm -rf "${M:?}/$name" ;;
   -m)     m="$2"; shift 2
           [ "$*" = "bash -s" ] || { echo "fake orb: expected 'bash -s', got: $*" >&2; exit 1; }
           [ -d "$M/$m" ] || { echo "fake orb: no machine $m" >&2; exit 1; }
@@ -163,7 +167,7 @@ RUNS=0
 run() { # run "<stdin lines>" [args…] -> exit code in $RC, output in $OUT/last (and kept for the token scan)
   RUNS=$((RUNS+1))
   local input="$1"; shift
-  printf '%b' "$input" | HOME="$T/home" PATH="$T/bin:$PATH" bash "$SKILL/bin/runner-install" "$@" > "$OUT/run$RUNS" 2>&1
+  printf '%b' "$input" | GH_DEBUG=api DEBUG=1 HOME="$T/home" PATH="$T/bin:$PATH" bash "$SKILL/bin/runner-install" "$@" > "$OUT/run$RUNS" 2>&1
   RC=$?
   cp "$OUT/run$RUNS" "$OUT/last"
 }
@@ -234,6 +238,17 @@ jq 'map(.status = "offline")' "$ST/runners_dignami-aos.json" > "$ST/x" && mv "$S
 run '\n\n\n'
 check "offline configured runner comes back without a new token" '[ "$RC" = 0 ] && grep -q "utan ny registrering" "$OUT/last" && [ "$(calls registration-token "$ST/gh_calls")" = "$before_tok" ]'
 
+# ---- Codex M1: a hook line missing while the runner is busy is not done until the service has restarted
+AR="$M/runner-dignami-aos/actions-runner"
+grep -v JOB_STARTED "$AR/.env" > "$AR/.env.x" && mv "$AR/.env.x" "$AR/.env"
+jq 'map(.busy = true)' "$ST/runners_dignami-aos.json" > "$ST/x" && mv "$ST/x" "$ST/runners_dignami-aos.json"
+: > "$ST/svc_calls"
+run '\n\n\n'
+check "busy runner with a missing hook line: not reported as done, no restart under the job" '[ "$RC" != 0 ] && grep -q "inte laddad av tjänsten" "$OUT/last" && ! grep -q "svc st" "$ST/svc_calls" && [ -f "$AR/.restart-pending" ]'
+jq 'map(.busy = false)' "$ST/runners_dignami-aos.json" > "$ST/x" && mv "$ST/x" "$ST/runners_dignami-aos.json"
+run '\n\n\n'
+check "idle re-run restarts the service so it loads the hook" '[ "$RC" = 0 ] && grep -q "svc stop" "$ST/svc_calls" && grep -q "svc start" "$ST/svc_calls" && [ ! -f "$AR/.restart-pending" ] && [ "$(grep -c "^ACTIONS_RUNNER_HOOK_JOB_" "$AR/.env")" = 2 ]'
+
 # ---- a machine the installer did not make is never used
 mkdir -p "$M/runner-mondmodel"
 run 'conwad-lab\ntesthost\nmondmodel\n'
@@ -246,6 +261,20 @@ run 'conwad-lab\ntesthost\ndignami-aos mondmodel\n'
 check "two runners: two isolated machines" '[ "$RC" = 0 ] && [ -d "$M/runner-mondmodel" ] && [ -d "$M/runner-mondmodel-2" ]'
 check "two runners: both online under their own names" '[ "$(jq -r "[.[] | select(.status == \"online\") | .name] | sort | join(\" \")" "$ST/runners_mondmodel.json")" = "testhost-mondmodel testhost-mondmodel-2" ]'
 check "per-repo override survives the rewrite of the config" 'grep -q "^RUNNERS_mondmodel=2$" "$CONF"'
+
+# ---- Codex S1: a registered machine that stops being isolated is deleted AND its runner revoked on GitHub
+touch "$ST/hook_not_isolated" "$ST/hook_orb_delete_fails"
+run 'conwad-lab\ntesthost\nmondmodel\n'
+check "isolation lost, machine not deletable: state line kept for --uninstall" '[ "$RC" != 0 ] && grep -q "^runner-mondmodel " "$STATE"'
+rm -f "$ST/hook_orb_delete_fails"; touch "$ST/hook_delete_fails"
+run 'conwad-lab\ntesthost\nmondmodel\n'
+check "isolation lost, runner not removable: state line kept" '[ "$RC" != 0 ] && [ ! -d "$M/runner-mondmodel" ] && grep -q "^runner-mondmodel " "$STATE"'
+rm -f "$ST/hook_delete_fails"
+run 'conwad-lab\ntesthost\nmondmodel\n'
+check "isolation lost on a registered runner: runner removed on GitHub, then the state line" '[ "$RC" != 0 ] && [ "$(jq -r "[.[].name] | join(\" \")" "$ST/runners_mondmodel.json")" = "" ] && ! grep -q "mondmodel" "$STATE"'
+rm -f "$ST/hook_not_isolated"
+run 'conwad-lab\ntesthost\ndignami-aos mondmodel\n'
+check "after the fault is gone both runners install again" '[ "$RC" = 0 ] && [ -d "$M/runner-mondmodel-2" ]'
 
 # ---- --status
 run '' --status
@@ -263,6 +292,7 @@ check "--uninstall without names removes the rest and the config" '[ "$RC" = 0 ]
 
 # ---- (b) the token: used (config.sh got it) but in no output and no file on the Mac side or in any machine
 check "token reached config.sh more than once" '[ "$(grep -c -- "--token $FAKE_TOKEN" "$ST/secret/config_calls")" -ge 3 ]'
+check "runs had GH_DEBUG=api and DEBUG set (Codex M2): the installer unsets them" 'grep -q "^unset GH_DEBUG DEBUG$" "$SKILL/bin/runner-install"'
 check "token in no stdout or stderr of any run" '! grep -rq "$FAKE_TOKEN" "$OUT"'
 check "token in no file under HOME or the machines" '! grep -rq "$FAKE_TOKEN" "$T/home" "$M"'
 

@@ -10,6 +10,8 @@
 # written to a file here. Running the line again updates the hook and missing tools and leaves an online runner
 # registered. Written for the bash 3.2 of macOS.
 set -euo pipefail
+# gh prints HTTP traffic, the registration token's response included, on stderr when these are set
+unset GH_DEBUG DEBUG
 
 usage() { echo "usage: runner-install [--status | --uninstall [repo…]]"; }
 MODE=install
@@ -373,17 +375,21 @@ for k in ACTIONS_RUNNER_HOOK_JOB_STARTED ACTIONS_RUNNER_HOOK_JOB_COMPLETED; do
     changed=1
   fi
 done
+# the service reads .env only when it starts: a change is pending until a restart has happened
+if [ "$changed" = 1 ]; then touch .restart-pending; fi
 if [ "$START" = 1 ]; then
   [ -f .service ] || sudo ./svc.sh install "$(id -un)" >/dev/null
-  if [ "$changed" = 1 ]; then sudo ./svc.sh stop >/dev/null 2>&1 || true; fi
+  if [ -f .restart-pending ]; then sudo ./svc.sh stop >/dev/null 2>&1 || true; fi
   sudo ./svc.sh start >/dev/null
-elif [ "$changed" = 1 ]; then
+  rm -f .restart-pending
+elif [ -f .restart-pending ]; then
   if [ "$BUSY" = true ]; then
-    echo "hook lines added to .env; the runner is busy, run the install line again when it is idle" >&2
-  else
-    sudo ./svc.sh stop >/dev/null 2>&1 || true
-    sudo ./svc.sh start >/dev/null
+    echo "the cleanup hook is in .env but the running service has not loaded it, and the runner is busy" >&2
+    exit 5
   fi
+  sudo ./svc.sh stop >/dev/null 2>&1 || true
+  sudo ./svc.sh start >/dev/null
+  rm -f .restart-pending
 fi
 }
 S
@@ -403,7 +409,17 @@ install_one() { # install_one REPO MACHINE NAME
   fi
   if ! check_isolated "$m"; then
     warn "✗ $m är inte isolerad från Macen. Maskinen raderas och ingen runner registreras."
-    orb delete -f "$m" >/dev/null 2>&1 </dev/null || warn "! kunde inte radera $m (orb delete -f $m)."
+    # the state line stays until both the machine and any runner already registered from it are gone
+    if ! orb delete -f "$m" >/dev/null 2>&1 </dev/null; then
+      warn "! kunde inte radera $m. Kör: orb delete -f $m, och sedan raden med --uninstall $r."
+      return 1
+    fi
+    row="$(runner_row "$r" "$name" 2>/dev/null)" || { warn "! kunde inte läsa om $name är registrerad på GitHub. Kör raden med --uninstall $r."; return 1; }
+    if [ -n "$row" ]; then
+      gh api -X DELETE "repos/$OWNER/$r/actions/runners/${row%% *}" >/dev/null 2>&1 \
+        || { warn "! $name kunde inte tas bort på GitHub. Kör raden med --uninstall $r."; return 1; }
+      warn "  $name borttagen på GitHub (nyckeln återkallad)."
+    fi
     unrecord "$m"
     return 1
   fi
@@ -414,7 +430,7 @@ install_one() { # install_one REPO MACHINE NAME
   row="$(runner_row "$r" "$name")" || { warn "✗ kunde inte läsa runners för $OWNER/$r (kräver gh-inloggning med repo-scope: gh auth refresh -s repo)."; return 1; }
   status="$(printf '%s' "$row" | awk '{ print $2 }')"; busy="$(printf '%s' "$row" | awk '{ print $3 }')"
   if [ "$status" = online ]; then
-    hook_and_service "$m" 0 "${busy:-false}" || { warn "✗ kunde inte uppdatera hooken i $m."; return 1; }
+    hook_and_service "$m" 0 "${busy:-false}" || { warn "✗ hooken i $m är inte laddad av tjänsten än (kör runnern ett jobb, kör raden igen när den är ledig; tills dess är repot inte klart)."; return 1; }
     say "  ✓ redan online på GitHub: ingen ny registrering, hooken uppdaterad"
     return 0
   fi
@@ -458,7 +474,7 @@ for r in $REPOS; do
   if ! check_repo "$r"; then failed="$failed $r"; continue; fi
   n="$(count_for "$r")"; i=1; good=1
   while [ "$i" -le "$n" ]; do
-    install_one "$r" "$(machine_name "$r" "$i")" "$(runner_name "$r" "$i")" || { good=0; break; }
+    install_one "$r" "$(machine_name "$r" "$i")" "$(runner_name "$r" "$i")" || good=0   # go on: every machine of the repo gets its isolation check
     i=$((i + 1))
   done
   if [ "$good" = 1 ]; then offer_switch "$r" || failed="$failed $r"; else failed="$failed $r"; fi
