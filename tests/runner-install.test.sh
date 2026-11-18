@@ -42,7 +42,7 @@ case "$method $url" in
   "GET repos/actions/runner/releases/latest")
     sha="$(cat "$ST/release_sha")"
     jq -n --arg s "$sha" '{tag_name: "v2.999.0", body: ("## SHA-256 Checksums\n- actions-runner-linux-x64-2.999.0.tar.gz <!-- BEGIN SHA linux-x64 -->" + $s + "<!-- END SHA linux-x64 -->\n- actions-runner-linux-arm64-2.999.0.tar.gz <!-- BEGIN SHA linux-arm64 -->" + $s + "<!-- END SHA linux-arm64 -->\n")}' | out ;;
-  "GET repos/"*"/actions/runners?"*) jq '{runners: .}' "$rf" | out ;;
+  "GET repos/"*"/actions/runners?"*) if [ -f "$ST/hook_list_fails" ]; then echo "gh: HTTP 502" >&2; exit 1; fi; jq '{runners: .}' "$rf" | out ;;
   "POST repos/"*"/actions/runners/registration-token")
     [ -z "${GH_DEBUG:-}${DEBUG:-}" ] || echo "* debug: {\"token\":\"$FAKE_TOKEN\"}" >&2
     if [ -f "$ST/hook_no_token" ]; then echo '{"message":"Resource not accessible"}' | out; echo "gh: HTTP 403" >&2; exit 1; fi
@@ -285,6 +285,18 @@ run '' --uninstall dignami-aos
 check "--uninstall calls the remove-runner API" '[ "$RC" = 0 ] && grep -q "^DELETE repos/conwad-lab/dignami-aos/actions/runners/[0-9][0-9]*$" "$ST/gh_calls" && [ "$(jq length "$ST/runners_dignami-aos.json")" = 0 ]'
 check "--uninstall deletes the machine" 'grep -q "^delete -f runner-dignami-aos$" "$ST/orb_calls" && [ ! -d "$M/runner-dignami-aos" ]'
 check "--uninstall leaves the other repo alone" '[ -d "$M/runner-mondmodel" ] && [ -f "$CONF" ] && ! grep -q dignami-aos "$STATE"'
+# ---- Codex S2: a runner GitHub would not remove keeps its state line, so --uninstall can be run again
+touch "$ST/hook_delete_fails"
+run '' --uninstall mondmodel
+check "--uninstall with a failing remove API: non-zero, state lines kept" '[ "$RC" != 0 ] && [ "$(grep -c " mondmodel " "$STATE")" = 2 ] && [ "$(jq length "$ST/runners_mondmodel.json")" = 2 ]'
+rm -f "$ST/hook_delete_fails"; touch "$ST/hook_list_fails"
+run '' --uninstall mondmodel
+check "--uninstall with a failing runner lookup: state lines kept" '[ "$RC" != 0 ] && [ "$(grep -c " mondmodel " "$STATE")" = 2 ]'
+rm -f "$ST/hook_list_fails"
+run '' --uninstall mondmodel
+check "--uninstall again removes both runners and their state lines" '[ "$RC" = 0 ] && [ "$(jq length "$ST/runners_mondmodel.json")" = 0 ] && [ ! -f "$STATE" ]'
+repo_json unghud-site true conwad-lab
+run 'conwad-lab\ntesthost\nunghud-site\n'
 run '' --uninstall nope
 check "--uninstall of an unknown repo refuses" '[ "$RC" != 0 ]'
 run '' --uninstall

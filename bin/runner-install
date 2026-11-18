@@ -144,22 +144,27 @@ if [ "$MODE" = uninstall ]; then
     [ -n "$m" ] || continue
     if [ $# -gt 0 ]; then case " $* " in *" $r "*) ;; *) continue ;; esac; fi
     OWNER="$owner"
-    row="$(runner_row "$r" "$name" 2>/dev/null || true)"
+    # the machine first (that stops the runner, so GitHub lets it go), then the runner; the state line stays
+    # until GitHub has confirmed the runner gone, so a later --uninstall can try again
+    if machine_exists "$m"; then
+      orb delete -f "$m" >/dev/null 2>&1 </dev/null || { warn "! maskinen $m kunde inte raderas (orb delete -f $m). Kör --uninstall igen efteråt."; rc=1; continue; }
+      say "✓ maskinen $m raderad"
+    fi
+    if ! row="$(runner_row "$r" "$name" 2>/dev/null)"; then
+      warn "! kunde inte läsa om $name finns kvar på GitHub. Kör --uninstall igen."
+      rc=1; continue
+    fi
     if [ -n "$row" ]; then
       if gh api -X DELETE "repos/$owner/$r/actions/runners/${row%% *}" >/dev/null 2>&1; then
         say "✓ $name borttagen på GitHub (nyckeln återkallad)"
       else
-        warn "! $name kunde inte tas bort på GitHub (kör den ett jobb?). Ta bort den under $owner/$r → Settings → Actions → Runners."
-        rc=1
+        warn "! $name kunde inte tas bort på GitHub. Kör --uninstall igen, eller ta bort den under $owner/$r → Settings → Actions → Runners."
+        rc=1; continue
       fi
     else
       say "· $name fanns inte på GitHub"
     fi
-    if machine_exists "$m"; then
-      orb delete -f "$m" >/dev/null 2>&1 </dev/null || { warn "! maskinen $m kunde inte raderas (orb delete -f $m)."; rc=1; continue; }
-    fi
     unrecord "$m"
-    say "✓ maskinen $m raderad"
   done 3< "$STATE.todo"
   rm -f "$STATE.todo"
   if [ ! -s "$STATE" ]; then rm -f "$STATE" "$CONF"; say "Inga runners kvar på den här Macen; $CONF borttagen."; fi
