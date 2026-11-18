@@ -77,6 +77,8 @@ fi
 TOKEN="$(security find-generic-password -s "$KEYCHAIN_ITEM" -w 2>/dev/null || true)"
 [ -n "$TOKEN" ] || { log "no token in the Keychain item $KEYCHAIN_ITEM (run bin/codex-cli-install)"; exit 2; }
 ghx() { GH_TOKEN="$TOKEN" gh "$@"; }
+# every token variable gh and git read: never passed to Codex or to Test before commit
+NO_GH_TOKENS="-u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN"
 gitc() {
   # shellcheck disable=SC2016
   GH_TOKEN="$TOKEN" git -c credential.helper= \
@@ -285,7 +287,7 @@ $ORDER_BODY
 set -m   # own process group: the time limit and stall watch stop Codex and everything it started
 (
   cd "$WT"
-  printf '%s\n' "$PROMPT" | exec env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN \
+  printf '%s\n' "$PROMPT" | exec env $NO_GH_TOKENS \
     codex exec -m "$MODEL" -s workspace-write -o "$LAST" -
 ) > "$OUT" 2>&1 &
 CPID=$!
@@ -341,7 +343,7 @@ if [ "$BLOCKED" = 0 ]; then
   else
     # own process group, so the run's deadline can stop the test and everything it started
     set -m
-    (cd "$WT" && exec env -u GH_TOKEN -u GITHUB_TOKEN bash -c "$TBC") > "$OUT.test" 2>&1 &
+    (cd "$WT" && exec env $NO_GH_TOKENS bash -c "$TBC") > "$OUT.test" 2>&1 &
     TPID=$!
     set +m
     while kill -0 "$TPID" 2>/dev/null; do

@@ -114,7 +114,7 @@ REMOTE="$T/remote"; mkdir -p "$REMOTE/o"
 git init -q --bare -b main "$REMOTE/o/r.git"
 SEED="$T/seed"; git init -q -b main "$SEED"
 mkdir -p "$SEED/.team/plans"
-printf -- '- **Test before commit:** `test -f hello.txt` <!-- the gate -->\n' > "$SEED/AGENTS.md"
+printf -- '- **Test before commit:** `test -f hello.txt` and `test -z "${GH_ENTERPRISE_TOKEN:-}${GITHUB_ENTERPRISE_TOKEN:-}${GH_TOKEN:-}${GITHUB_TOKEN:-}"` <!-- the gate -->\n' > "$SEED/AGENTS.md"
 printf '# Plan\n\n## Files\n- `hello.txt` — new\n- `.github/workflows/ci.yml` — the job\n\n## Steps\n1. x\n' > "$SEED/.team/plans/001-x.md"
 git -C "$SEED" add -A && git -C "$SEED" -c user.name=t -c user.email=t@t commit -qm seed
 git -C "$SEED" push -q "$REMOTE/o/r.git" main
@@ -156,16 +156,16 @@ bodies() { jq -r '.[].body' "$ST/comments_5.json"; }
 remote_has() { git --git-dir="$REMOTE/o/r.git" rev-parse --verify --quiet "refs/heads/$1" >/dev/null; }
 
 # 1 order from an allowed author → claimed, run, pushed, draft PR, outcome done
-reset ok; tick
+reset ok; GH_TOKEN=t1 GITHUB_TOKEN=t2 GH_ENTERPRISE_TOKEN=t3 GITHUB_ENTERPRISE_TOKEN=t4 tick
 check "done: rc 0" '[ "$(cat $T/rc)" = 0 ]'
 check "done: claim posted for the order" 'bodies | grep -q "^codex-cli: started .* on testmac for 1001$"'
 check "done: outcome comment" 'last_comment | head -1 | grep -qx "codex-cli: done"'
 check "done: PR link, Hinder and signature" 'last_comment | grep -q "pull/77 (draft), head [0-9a-f]\{40\}" && last_comment | grep -qx "Hinder: inga" && last_comment | grep -qx "— Coder (Codex CLI, testmac) on behalf of Conny"'
-check "done: Test before commit green, comment stripped" 'last_comment | grep -qF "Test before commit: green (\`test -f hello.txt\`)"'
+check "done: Test before commit green, comment stripped, no token variables" 'last_comment | grep -qF "Test before commit: green (\`test -f hello.txt && test -z" && ! last_comment | grep -q "the gate"'
 check "done: branch pushed with hello.txt" 'git --git-dir="$REMOTE/o/r.git" show feat/001-x:hello.txt | grep -qx hi'
 check "done: draft PR with title, head, base and Codex's answer" 'jq -e ".[0] | .draft == true and .title == \"001: say hello\" and .head == \"feat/001-x\" and .base == \"main\" and (.body | contains(\"AC1: hello.txt written\"))" $ST/pulls.json >/dev/null'
 check "done: codex got model, sandbox and the order on stdin" 'grep -q -- "exec -m gpt-6-astra -s workspace-write -o .* -$" $ST/codex_args && grep -q "^PR title: 001: say hello$" $ST/prompt'
-check "done: no GitHub token in codex env" '! grep -v "^FAKE_TOKEN=" $ST/codex_env | grep -qF "$FAKE_TOKEN" && ! grep -q "^GH_TOKEN=" $ST/codex_env'
+check "done: no GitHub token in codex env" '! grep -v "^FAKE_TOKEN=" $ST/codex_env | grep -qF "$FAKE_TOKEN" && ! grep -Eq "^(GH_|GITHUB_)(ENTERPRISE_)?TOKEN=" $ST/codex_env'
 check "done: every gh call carried the token" '! grep -q NO-TOKEN $ST/calls'
 check "done: worktree removed, run logged, no current file" '[ -z "$(ls -A $T/work/wt 2>/dev/null)" ] && grep -q "done" $T/work/runs.log && [ ! -f $T/work/current ] && [ ! -d $T/work/.lock ]'
 check "done: token never in logs or output" '! grep -rqF "$FAKE_TOKEN" $T/work $T/out $T/err'
@@ -236,7 +236,7 @@ check "test red: nothing pushed" '! remote_has feat/001-x'
 
 # 13 Codex changing AGENTS.md cannot change the command the poller runs
 reset agents; tick
-check "Test before commit is read from main, not from Codex's diff" '[ ! -e $T/work/wt/PWNED ] && ! find $T/work -name PWNED | grep -q . && last_comment | grep -qF "green (\`test -f hello.txt\`)"'
+check "Test before commit is read from main, not from Codex's diff" '[ ! -e $T/work/wt/PWNED ] && ! find $T/work -name PWNED | grep -q . && last_comment | grep -qF "green (\`test -f hello.txt && test -z"'
 
 # 13b Codex exits without a last message → bounced, cleaned up, not "host slept" next tick
 reset crash; tick
