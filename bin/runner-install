@@ -402,10 +402,16 @@ S
 }
 
 install_one() { # install_one REPO MACHINE NAME
-  local r="$1" m="$2" name="$3" row status busy
+  local r="$1" m="$2" name="$3" row status busy was
   say "— $name (maskin $m)"
   if machine_exists "$m"; then
     recorded "$m" || { warn "✗ maskinen $m finns redan men skapades inte av den här installern. Radera den (orb delete $m) eller byt namn."; return 1; }
+    # the machine holds the identity it was registered with: a new host name or account never reuses it
+    was="$(awk -v m="$m" '$1 == m { print $3 " " $4 }' "$STATE")"
+    if [ "$was" != "$name $OWNER" ]; then
+      warn "✗ maskinen $m är registrerad som ${was% *} (konto ${was#* }), inte $name. Kör raden med --uninstall $r först och sedan igen."
+      return 1
+    fi
     orb start "$m" >/dev/null 2>&1 </dev/null || true
   else
     orb create --isolated --isolate-network "$DISTRO" "$m" >/dev/null </dev/null || { warn "✗ kunde inte skapa maskinen $m."; return 1; }

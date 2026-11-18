@@ -249,6 +249,13 @@ jq 'map(.busy = false)' "$ST/runners_dignami-aos.json" > "$ST/x" && mv "$ST/x" "
 run '\n\n\n'
 check "idle re-run restarts the service so it loads the hook" '[ "$RC" = 0 ] && grep -q "svc stop" "$ST/svc_calls" && grep -q "svc start" "$ST/svc_calls" && [ ! -f "$AR/.restart-pending" ] && [ "$(grep -c "^ACTIONS_RUNNER_HOOK_JOB_" "$AR/.env")" = 2 ]'
 
+# ---- Codex S3: a changed host name never reuses a machine registered under the old name
+touch "$ST/hook_not_isolated"
+run 'conwad-lab\nnewhost\ndignami-aos\n'
+check "new HOST on an existing machine is refused: machine, runner and state line untouched" '[ "$RC" != 0 ] && grep -q "registrerad som testhost-dignami-aos" "$OUT/last" && [ -d "$M/runner-dignami-aos" ] && grep -q "^runner-dignami-aos dignami-aos testhost-dignami-aos conwad-lab$" "$STATE" && [ "$(jq -r ".[0].name" "$ST/runners_dignami-aos.json")" = testhost-dignami-aos ]'
+rm -f "$ST/hook_not_isolated"
+run 'conwad-lab\ntesthost\ndignami-aos\n'
+
 # ---- a machine the installer did not make is never used
 mkdir -p "$M/runner-mondmodel"
 run 'conwad-lab\ntesthost\nmondmodel\n'
