@@ -103,10 +103,11 @@ fi
 
 # ---- a run this host started and never finished (the Mac slept or the job stopped): mark it bounced
 if [ "$DRY" = 0 ] && [ -f "$CURRENT" ]; then
-  read -r c_repo c_issue c_run < "$CURRENT" || true
+  read -r c_repo c_issue c_run c_order < "$CURRENT" || true
   if [ -n "${c_repo:-}" ] && [ -n "${c_issue:-}" ]; then
     post "$c_repo" "$c_issue" "codex-cli: bounced
 Reason: host slept or stopped (run ${c_run:-?} on $HOST never finished)
+Run: ${c_run:-?}, order ${c_order:-?}
 Hinder: —
 
 $SIGN" >/dev/null || true
@@ -129,7 +130,7 @@ order_of() {
     | sort_by(.id)
     | ([.[] | select((first_line | test("^codex-cli: (build|fix)$")) and ((.user.login | ascii_downcase) as $u | $ok | index($u)) != null)] | last) as $o
     | if $o == null then empty
-      elif any(.[]; .id > $o.id and (first_line | test("^codex-cli: (started|done|blocked|bounced)"))) then empty
+      elif any(.[]; .id > $o.id and (first_line | test("^codex-cli: started .* for " + ($o.id | tostring) + "$"))) then empty
       else $o end'
 }
 
@@ -198,14 +199,20 @@ bounce() { OUTCOME=bounced; REASON="$1"; finish; }
 
 # ---- claim, then re-read: an earlier claim on the same order or a removed label wins
 CLAIM_ID="$(post "$REPO" "$ISSUE" "codex-cli: started $RUN_ID on $HOST for $ORDER_ID")"
-first_claim="$(comments "$REPO" "$ISSUE" | jq -r --arg o "$ORDER_ID" '
-  [.[] | select((.body // "" | split("\n")[0] | gsub("\r"; "")) | test("^codex-cli: started .* for " + $o + "$"))] | sort_by(.id) | .[0].id // empty')"
-if [ "$first_claim" != "$CLAIM_ID" ] || ! has_label "$REPO" "$ISSUE"; then
-  log "withdrawing claim $CLAIM_ID on $REPO#$ISSUE (earlier claim $first_claim, or label gone)"
-  ghx api "repos/$REPO/issues/comments/$CLAIM_ID" -X DELETE >/dev/null 2>&1 || true
+# recovery state first: if anything below dies, the next tick posts a bounced outcome for this order
+printf '%s %s %s %s\n' "$REPO" "$ISSUE" "$RUN_ID" "$ORDER_ID" > "$CURRENT"
+withdraw() {
+  log "withdrawing claim $CLAIM_ID on $REPO#$ISSUE: $1"
+  # a claim that cannot be deleted stays covered by CURRENT, so the next tick bounces it
+  ghx api "repos/$REPO/issues/comments/$CLAIM_ID" -X DELETE >/dev/null 2>&1 && rm -f "$CURRENT"
   exit 0
-fi
-printf '%s %s %s\n' "$REPO" "$ISSUE" "$RUN_ID" > "$CURRENT"
+}
+cm="$(comments "$REPO" "$ISSUE")" || withdraw "could not re-read the issue"
+first_claim="$(printf '%s' "$cm" | jq -r --arg o "$ORDER_ID" '
+  [.[] | select((.body // "" | split("\n")[0] | gsub("\r"; "")) | test("^codex-cli: started .* for " + $o + "$"))] | sort_by(.id) | .[0].id // empty')" \
+  || withdraw "could not read the claims"
+[ "$first_claim" = "$CLAIM_ID" ] || withdraw "earlier claim $first_claim"
+has_label "$REPO" "$ISSUE" || withdraw "label gone or GitHub unreachable"
 # from here every unexpected error still ends in an outcome comment and a clean worktree
 trap 'bounce "poller error (line $LINENO)"' ERR
 
@@ -278,6 +285,7 @@ if ! [[ "$hl" =~ ^Hinder:\ .+ ]]; then
   TAIL="$(tail -n 30 "$OUT" 2>/dev/null || true)"
   bounce "no Hinder line$( [ "$CRC" = 0 ] || echo ", codex exited $CRC")"
 fi
+if [ "$CRC" != 0 ]; then HINDER="$hl"; TAIL="$(tail -n 30 "$OUT" 2>/dev/null || true)"; bounce "codex exited $CRC"; fi
 HINDER="$hl"
 BLOCKED=1
 case "$(printf '%s' "$hl" | tr 'A-Z' 'a-z')" in "hinder: inga"|"hinder: inga."|"hinder: none"|"hinder: none.") BLOCKED=0 ;; esac

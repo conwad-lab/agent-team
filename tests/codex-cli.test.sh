@@ -40,7 +40,9 @@ case "$method $url" in
     for f in "$ST"/issue_*.json; do [ -f "$f" ] && jq -c 'select(.state=="open" and ([.labels[].name]|index("codex-cli")))' "$f"; done \
       | jq -s '{items: map({repository_url: "https://api.github.com/repos/o/r", number})}' | out ;;
   "GET repos/o/r") echo '{"default_branch":"main"}' | out ;;
-  "GET repos/o/r/issues/"*"/comments"*) cat "$ST/comments_$(num).json" | out ;;
+  "GET repos/o/r/issues/"*"/comments"*)
+    if [ -f "$ST/hook_fail_reread" ] && grep -q "codex-cli: started" "$ST/comments_$(num).json"; then echo "HTTP 502" >&2; exit 1; fi
+    cat "$ST/comments_$(num).json" | out ;;
   "POST repos/o/r/issues/"*"/comments")
     i="$(num)"; c="$ST/comments_$i.json"
     first="$(printf '%s\n' "$body" | head -1)"
@@ -89,6 +91,7 @@ case "$mode" in
   red)      echo bye > other.txt; printf 'Hinder: inga\n' > "$last" ;;
   stall)    sleep 30 ;;
   crash)    echo hi > hello.txt; exit 7 ;;
+  failexit) echo hi > hello.txt; printf 'Hinder: inga\n' > "$last"; exit 7 ;;
   agents)   echo hi > hello.txt; printf -- '- **Test before commit:** `touch PWNED`\n' >> AGENTS.md; printf 'Hinder: inga\n' > "$last" ;;
 esac
 C
@@ -228,6 +231,22 @@ check "Test before commit is read from main, not from Codex's diff" '[ ! -e $T/w
 reset crash; tick
 check "crash: bounced with no Hinder line and the exit code" 'last_comment | grep -q "^Reason: no Hinder line, codex exited 7"'
 check "crash: worktree removed, no current file" '[ -z "$(ls -A $T/work/wt 2>/dev/null)" ] && [ ! -f $T/work/current ]'
+
+# 13b2 Codex exits non-zero after writing a Hinder line → bounced, nothing pushed
+reset failexit; tick
+check "non-zero exit with Hinder: bounced, no push" 'last_comment | grep -q "^Reason: codex exited 7" && ! remote_has feat/001-x'
+
+# 13b3 re-reading the issue after the claim fails → claim withdrawn, no recovery state left, codex not run
+reset ok; touch "$ST/hook_fail_reread"; tick
+check "re-read fails: claim deleted, no current file, codex not run" '! bodies | grep -q "codex-cli: started" && [ ! -f $T/work/current ] && [ ! -f $ST/codex_args ]'
+
+# 13b4 a late outcome for an old order does not hide a newer order
+reset ok
+jq --arg b "$ORDER" '. + [{id: 1100, user: {login: "conwad-lab"}, body: "codex-cli: started r1 on testmac for 1001"},
+  {id: 1200, user: {login: "conwad-lab"}, body: $b},
+  {id: 1300, user: {login: "conwad-lab"}, body: "codex-cli: done\nRun: r1, 3 min, gpt-6-astra, order 1001"}]' "$ST/comments_5.json" > "$T/c.json" && mv "$T/c.json" "$ST/comments_5.json"
+tick
+check "newer order still taken after a late outcome for an old order" 'bodies | grep -q "^codex-cli: started .* for 1200$"'
 
 # 13c Test before commit with && inside one backtick command, and two commands
 reset ok; printf -- '- **Test before commit:** `test -f hello.txt && true` and `true`\n' > "$SEED/AGENTS.md"
