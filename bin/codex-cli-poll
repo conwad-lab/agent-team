@@ -357,6 +357,12 @@ if [ "$BLOCKED" = 0 ]; then
     done
     if wait "$TPID"; then TEST_RESULT="green (\`$TBC\`)"
     else TEST_RESULT="red (\`$TBC\`)"; TAIL="$(tail -n 30 "$OUT.test")"; TAIL="${TAIL:-(no output)}"; bounce "test red"; fi
+    # the test passed on the tree it ran on; if it rewrote tracked files, that is not the commit we would push
+    if ! git -C "$WT" diff --quiet HEAD --; then
+      TEST_RESULT="green but it changed tracked files (\`$TBC\`)"
+      TAIL="$(git -C "$WT" diff --name-only HEAD -- | head -n 20)"
+      bounce "Test before commit changed tracked files; the pushed commit would differ from the tested tree"
+    fi
   fi
 fi
 

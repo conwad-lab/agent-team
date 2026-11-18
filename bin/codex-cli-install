@@ -65,7 +65,9 @@ codex login status 2>&1 | grep -qi chatgpt || die "Codex är inte inloggat med C
 say "✓ codex $(codex --version 2>/dev/null | head -1), inloggad med ChatGPT"
 
 # ---- old local Codex loops (the pre-cloud Coder loop posts as the human, signed "Coder (Codex)")
-old="$(pgrep -fl 'codex|bin/(coder|wait-for|po-wait|reviewer|architect)' 2>/dev/null | grep -v -e codex-cli-poll -e codex-cli-install -e "^$$ " || true)"
+# only the old loop's own signature: Conny's interactive codex, the Codex app and the IDE extension are left alone
+OLD_LOOPS='bin/(coder|wait-for|po-wait|reviewer|architect)([[:space:]]|$)|You are the Coder'
+old="$(pgrep -fl "$OLD_LOOPS" 2>/dev/null | grep -v -e codex-cli-poll -e codex-cli-install -e "^$$ " || true)"
 if [ -n "$old" ]; then
   say "Gamla lokala Codex-loopar körs:"; say "$old"
   if [ "$(ask 'Stoppa dem nu? (j/n)' j)" = j ]; then
@@ -102,8 +104,9 @@ if [ -d "$WORK_DIR/agent-team/.git" ]; then git -C "$WORK_DIR/agent-team" pull -
 else git clone --quiet --depth 1 "$RULEBOOK" "$WORK_DIR/agent-team"; fi
 SRC="$WORK_DIR/agent-team"
 
-sed -e "s#^HOST=.*#HOST=$HOST#" -e "s#^WORK_DIR=.*#WORK_DIR=\"$WORK_DIR\"#" \
-    -e "s#^REPOS=.*#REPOS=\"$REPOS\"#" -e "s#^ALLOW=.*#ALLOW=\"$ALLOW\"#" \
+esc() { printf '%s' "$1" | sed -e 's/[#&\\]/\\&/g'; }   # a typed value may hold # or & (sed's delimiter and match)
+sed -e "s#^HOST=.*#HOST=$(esc "$HOST")#" -e "s#^WORK_DIR=.*#WORK_DIR=\"$(esc "$WORK_DIR")\"#" \
+    -e "s#^REPOS=.*#REPOS=\"$(esc "$REPOS")\"#" -e "s#^ALLOW=.*#ALLOW=\"$(esc "$ALLOW")\"#" \
     -e "s#^KEYCHAIN_ITEM=.*#KEYCHAIN_ITEM=$ITEM#" "$SRC/assets/codex-cli/codex-cli.env.example" > "$CONF"
 chmod 600 "$CONF"
 say "✓ $CONF"

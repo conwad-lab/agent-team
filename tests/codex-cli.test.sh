@@ -234,6 +234,13 @@ reset red; tick
 check "test red: bounced with the last lines" 'last_comment | grep -q "^Reason: test red" && last_comment | grep -q "<summary>Last 30 lines</summary>"'
 check "test red: nothing pushed" '! remote_has feat/001-x'
 
+# 12b Test before commit rewrites a tracked file → bounced, the untested commit is not pushed
+reset ok; rm -rf "$T/fmt"; git clone -q "$REMOTE/o/r.git" "$T/fmt"
+printf -- '- **Test before commit:** `test -f hello.txt && echo formatted > hello.txt`\n' > "$T/fmt/AGENTS.md"
+git -C "$T/fmt" -c user.name=t -c user.email=t@t commit -qam "fmt gate" && git -C "$T/fmt" push -q origin main
+tick
+check "test rewrites files: bounced, nothing pushed" 'last_comment | grep -q "^Reason: Test before commit changed tracked files" && last_comment | grep -q "hello.txt" && ! remote_has feat/001-x'
+
 # 13 Codex changing AGENTS.md cannot change the command the poller runs
 reset agents; tick
 check "Test before commit is read from main, not from Codex's diff" '[ ! -e $T/work/wt/PWNED ] && ! find $T/work -name PWNED | grep -q . && last_comment | grep -qF "green (\`test -f hello.txt && test -z"'
@@ -319,6 +326,12 @@ PATH="$T/bin:$PATH" bash "$SKILL/bin/codex-cli-install" --dry-run > "$T/inst" 2>
 check "installer dry-run: rc 0" '[ "$irc" = 0 ]'
 check "installer dry-run: plist with label, interval and poller" 'grep -q "<string>se.agent-team.codex-cli</string>" $T/inst && grep -q "<integer>300</integer>" $T/inst && grep -q "codex-cli-poll</string>" $T/inst'
 check "installer dry-run: wrote nothing" '[ ! -e $T/home/Library ] && [ ! -e $T/home/.config/agent-team ]'
+
+# installer: the old-loop match leaves Conny's own Codex alone; typed values with # or & survive the config sed
+eval "$(grep -m1 '^OLD_LOOPS=' "$SKILL/bin/codex-cli-install")"
+eval "$(grep -m1 '^esc()' "$SKILL/bin/codex-cli-install")"
+check "installer: old loops matched, own Codex not" 'printf "%s\n" "bash /Users/c/x/bin/coder" "bash /Users/c/x/bin/wait-for 30" "codex exec You are the Coder" | grep -Ecq "$OLD_LOOPS" && [ "$(printf "%s\n" "bash /Users/c/x/bin/coder" "bash /Users/c/x/bin/wait-for 30" "codex exec You are the Coder" | grep -Ec "$OLD_LOOPS")" = 3 ] && ! printf "%s\n" "codex" "/Applications/Codex.app/Contents/Resources/codex app-server" "node /Users/c/.vscode/extensions/openai.chatgpt/bin/codex" "codex resume" | grep -Eq "$OLD_LOOPS"'
+check "installer: # and & in a typed value survive the config sed" '[ "$(echo "HOST=x" | sed -e "s#^HOST=.*#HOST=$(esc "a#b&c\\d")#")" = "HOST=a#b&c\\d" ]'
 
 echo
 [ "$fail" = 0 ] && echo "all $n passed" || echo "FAILED"
