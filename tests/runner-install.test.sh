@@ -252,7 +252,7 @@ check "idle re-run restarts the service so it loads the hook" '[ "$RC" = 0 ] && 
 # ---- Codex S3: a changed host name never reuses a machine registered under the old name
 touch "$ST/hook_not_isolated"
 run 'conwad-lab\nnewhost\ndignami-aos\n'
-check "new HOST on an existing machine is refused: machine, runner and state line untouched" '[ "$RC" != 0 ] && grep -q "registrerad som testhost-dignami-aos" "$OUT/last" && [ -d "$M/runner-dignami-aos" ] && grep -q "^runner-dignami-aos dignami-aos testhost-dignami-aos conwad-lab$" "$STATE" && [ "$(jq -r ".[0].name" "$ST/runners_dignami-aos.json")" = testhost-dignami-aos ]'
+check "new HOST on an existing machine is refused: machine, runner and state line untouched" '[ "$RC" != 0 ] && grep -q "hör redan till en annan runner (repo, namn, konto: dignami-aos testhost-dignami-aos conwad-lab)" "$OUT/last" && [ -d "$M/runner-dignami-aos" ] && grep -q "^runner-dignami-aos dignami-aos testhost-dignami-aos conwad-lab$" "$STATE" && [ "$(jq -r ".[0].name" "$ST/runners_dignami-aos.json")" = testhost-dignami-aos ]'
 rm -f "$ST/hook_not_isolated"
 run 'conwad-lab\ntesthost\ndignami-aos\n'
 
@@ -282,6 +282,13 @@ check "isolation lost on a registered runner: runner removed on GitHub, then the
 rm -f "$ST/hook_not_isolated"
 run 'conwad-lab\ntesthost\ndignami-aos mondmodel\n'
 check "after the fault is gone both runners install again" '[ "$RC" = 0 ] && [ -d "$M/runner-mondmodel-2" ]'
+
+# ---- Codex round 5: mondmodel's second machine and a repo named mondmodel-2 share a machine name
+repo_json mondmodel-2 true conwad-lab
+tokc="$(calls registration-token "$ST/gh_calls")"
+run 'conwad-lab\ntesthost\ndignami-aos mondmodel mondmodel-2\n'
+check "a repo whose machine name collides with another repo's runner is refused, the runner untouched" '[ "$RC" != 0 ] && grep -q "hör redan till en annan runner (repo, namn, konto: mondmodel " "$OUT/last" && [ "$(calls registration-token "$ST/gh_calls")" = "$tokc" ] && grep -q "^runner-mondmodel-2 mondmodel testhost-mondmodel-2 conwad-lab$" "$STATE" && [ "$(jq length "$ST/runners_mondmodel.json")" = 2 ]'
+run 'conwad-lab\ntesthost\ndignami-aos mondmodel\n'
 
 # ---- --status
 run '' --status

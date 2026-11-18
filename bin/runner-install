@@ -406,10 +406,10 @@ install_one() { # install_one REPO MACHINE NAME
   say "— $name (maskin $m)"
   if machine_exists "$m"; then
     recorded "$m" || { warn "✗ maskinen $m finns redan men skapades inte av den här installern. Radera den (orb delete $m) eller byt namn."; return 1; }
-    # the machine holds the identity it was registered with: a new host name or account never reuses it
-    was="$(awk -v m="$m" '$1 == m { print $3 " " $4 }' "$STATE")"
-    if [ "$was" != "$name $OWNER" ]; then
-      warn "✗ maskinen $m är registrerad som ${was% *} (konto ${was#* }), inte $name. Kör raden med --uninstall $r först och sedan igen."
+    # the machine holds the identity it was registered with: another repo, host name or account never reuses it
+    was="$(awk -v m="$m" '$1 == m { print $2 " " $3 " " $4 }' "$STATE")"
+    if [ "$was" != "$r $name $OWNER" ]; then
+      warn "✗ maskinen $m hör redan till en annan runner (repo, namn, konto: $was), inte $r $name $OWNER. Avinstallera den först (--uninstall ${was%% *}), eller byt så att två repon inte ger samma maskinnamn."
       return 1
     fi
     orb start "$m" >/dev/null 2>&1 </dev/null || true
