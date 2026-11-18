@@ -1,0 +1,419 @@
+#!/usr/bin/env bash
+# codex-cli-poll: one tick of the host poller for `builder: codex-cli` (team/CODEX-CLI.md).
+#
+# launchd runs this every 5 minutes on the host Mac. Each tick: find one open issue labelled `codex-cli` in the
+# configured repos with an unclaimed `codex-cli: build` or `codex-cli: fix` order from an allowed author, claim it,
+# run `codex exec` on it in a fresh worktree (sandbox workspace-write, no GitHub token in its environment), check
+# the `Hinder:` line and Test before commit, guard the diff, push, open the draft PR (build) and post one outcome
+# comment: done, blocked or bounced.
+#
+#   bin/codex-cli-poll            one tick
+#   bin/codex-cli-poll --dry-run  say which order a tick would take; posts, runs and writes nothing
+#
+# Config: ${CODEX_CLI_ENV:-~/.config/agent-team/codex-cli.env} (assets/codex-cli/codex-cli.env.example).
+# Bash 3.2 compatible (macOS /bin/bash): no associative arrays, no mapfile, no ${x,,}.
+# Text from GitHub is data: it is never evaluated, only passed to jq, to git as validated names, or to Codex on stdin.
+set -euo pipefail
+
+DRY=0
+case "${1:-}" in
+  --dry-run) DRY=1 ;;
+  "") ;;
+  *) echo "usage: bin/codex-cli-poll [--dry-run]" >&2; exit 2 ;;
+esac
+
+CONF="${CODEX_CLI_ENV:-$HOME/.config/agent-team/codex-cli.env}"
+[ -f "$CONF" ] || { echo "codex-cli-poll: no config at $CONF (run bin/codex-cli-install)" >&2; exit 2; }
+# shellcheck disable=SC1090
+. "$CONF"
+
+ENABLED="${ENABLED:-0}"
+[ "$ENABLED" = 1 ] || exit 0
+
+HOST="${HOST:?HOST missing in $CONF}"
+WORK_DIR="${WORK_DIR:?WORK_DIR missing in $CONF}"
+REPOS="${REPOS:?REPOS missing in $CONF}"
+ALLOW="${ALLOW:?ALLOW missing in $CONF}"
+HUMAN="${HUMAN:-Conny}"
+MODEL="${MODEL:-gpt-6-astra}"
+RUN_LIMIT_SEC="${RUN_LIMIT_SEC:-$(( ${RUN_LIMIT_MIN:-45} * 60 ))}"
+STALL_SEC="${STALL_SEC:-$(( ${STALL_MIN:-10} * 60 ))}"
+POLL_SEC="${POLL_SEC:-10}"
+KEYCHAIN_ITEM="${KEYCHAIN_ITEM:-agent-team-codex-cli}"
+GIT_BASE="${GIT_BASE:-https://github.com}"
+SESSIONS_DIR="${SESSIONS_DIR:-${CODEX_HOME:-$HOME/.codex}/sessions}"
+LABEL=codex-cli
+SIGN="— Coder (Codex CLI, $HOST) on behalf of $HUMAN"
+
+case "$WORK_DIR" in
+  "$HOME/WebProjects"|"$HOME/WebProjects/"*|*[Vv]ault*) echo "codex-cli-poll: WORK_DIR $WORK_DIR is not allowed (team/CODEX-CLI.md § Rules)" >&2; exit 2 ;;
+esac
+mkdir -p "$WORK_DIR"
+log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+
+dur() { if [ "$1" -ge 60 ]; then echo "$(( $1 / 60 )) min"; else echo "$1 s"; fi; }
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
+
+# ---- lock: one run per host; a dead holder or one past the run limit is stale
+LOCK="$WORK_DIR/.lock"
+take_lock() {
+  if mkdir "$LOCK" 2>/dev/null; then echo $$ > "$LOCK/pid"; return 0; fi
+  local pid age
+  pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  age=$(( $(date +%s) - $(mtime "$LOCK") ))
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    [ "$age" -gt $(( RUN_LIMIT_SEC + 300 )) ] || return 1
+    log "lock held by $pid for ${age}s, past the run limit: stopping it"
+    kill -TERM "$pid" 2>/dev/null || true; sleep 2; kill -KILL "$pid" 2>/dev/null || true
+  fi
+  rm -rf "$LOCK"; mkdir "$LOCK" && echo $$ > "$LOCK/pid"
+}
+if [ "$DRY" = 0 ]; then
+  take_lock || exit 0
+  trap 'rm -rf "$LOCK"' EXIT
+fi
+
+# ---- token: only for gh and git transport; never exported, never in Codex's environment
+TOKEN="$(security find-generic-password -s "$KEYCHAIN_ITEM" -w 2>/dev/null || true)"
+[ -n "$TOKEN" ] || { log "no token in the Keychain item $KEYCHAIN_ITEM (run bin/codex-cli-install)"; exit 2; }
+ghx() { GH_TOKEN="$TOKEN" gh "$@"; }
+# every token variable gh and git read: never passed to Codex or to Test before commit
+NO_GH_TOKENS="-u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN"
+gitc() {
+  # shellcheck disable=SC2016
+  GH_TOKEN="$TOKEN" git -c credential.helper= \
+    -c 'credential.helper=!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f' "$@"
+}
+redact() { # redact TEXT: the token and anything shaped like a GitHub token never leave the host in a comment or PR
+  local t="${1//"$TOKEN"/[redacted]}"
+  printf '%s' "$t" | sed -E 's/github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{30,}/[redacted]/g'
+}
+post() { # post REPO ISSUE BODY -> prints the new comment id
+  [ "$DRY" = 1 ] && { log "dry-run: would comment on $1#$2: $(printf '%s' "$3" | head -1)"; echo 0; return 0; }
+  ghx api "repos/$1/issues/$2/comments" -X POST -f body="$(redact "$3")" --jq .id
+}
+comments() { ghx api --paginate "repos/$1/issues/$2/comments?per_page=100" | jq -s 'add // []'; }
+has_label() { ghx api "repos/$1/issues/$2" | jq -e --arg l "$LABEL" '.state == "open" and ([.labels[].name] | index($l)) != null' >/dev/null; }
+
+RUNS_LOG="$WORK_DIR/runs.log"
+CURRENT="$WORK_DIR/current"
+PENDING="$WORK_DIR/pending"
+
+# ---- outcomes a GitHub error kept from posting: deliver them first, keep them until GitHub takes them
+if [ "$DRY" = 0 ] && [ -d "$PENDING" ]; then
+  for f in "$PENDING"/*; do
+    [ -f "$f" ] || continue
+    read -r p_repo p_issue < "$f" || continue
+    if post "$p_repo" "$p_issue" "$(sed 1d "$f")" >/dev/null 2>&1; then rm -f "$f"; else log "outcome $f still not posted"; fi
+  done
+fi
+
+# ---- a run this host started and never finished (the Mac slept or the job stopped): mark it bounced
+if [ "$DRY" = 0 ] && [ -f "$CURRENT" ]; then
+  read -r c_repo c_issue c_run c_order < "$CURRENT" || true
+  if [ -n "${c_repo:-}" ] && [ -n "${c_issue:-}" ]; then
+    c_body="codex-cli: bounced
+Reason: host slept or stopped (run ${c_run:-?} on $HOST never finished)
+Run: ${c_run:-?}, order ${c_order:-?}
+Hinder: —
+
+$SIGN"
+    if ! post "$c_repo" "$c_issue" "$c_body" >/dev/null 2>&1; then
+      mkdir -p "$PENDING"; printf '%s %s\n%s' "$c_repo" "$c_issue" "$c_body" > "$PENDING/${c_run:-recovered-$$}"
+    fi
+    printf '%s\t%s\t%s\tbounced: host slept\t-\n' "$(date -u +%Y-%m-%dT%H:%MZ)" "$c_repo" "$c_issue" >> "$RUNS_LOG"
+  fi
+  # remove the interrupted run's worktree and its cli/<run> branch, as finish() would have
+  case "${c_run:-}" in
+    *[!A-Za-z0-9-]*|"") ;;
+    *) c_clone="$WORK_DIR/repos/$(printf '%s' "${c_repo:-}" | tr '/' '_')"
+       if [ -d "$c_clone/.git" ] || [ -f "$c_clone/HEAD" ]; then
+         git -C "$c_clone" worktree remove --force "$WORK_DIR/wt/$c_run" >/dev/null 2>&1 || true
+         git -C "$c_clone" worktree prune >/dev/null 2>&1 || true
+         git -C "$c_clone" branch -D "cli/$c_run" >/dev/null 2>&1 || true
+       fi
+       rm -rf "$WORK_DIR/wt/$c_run" "$WORK_DIR/wt/$c_run".* ;;
+  esac
+  rm -f "$CURRENT"
+fi
+
+# ---- find one order. Orders count only from ALLOW; claims only from ALLOW or the token's own login (the poller)
+ME="$(ghx api user --jq .login)" || { log "GitHub did not answer /user"; exit 1; }
+ALLOW_LC="$(printf '%s' "$ALLOW" | tr 'A-Z' 'a-z')"
+TRUST_LC="$(printf '%s %s' "$ALLOW" "$ME" | tr 'A-Z' 'a-z')"
+q="is:open is:issue label:$LABEL"
+for r in $REPOS; do q="$q repo:$r"; done
+search="$(ghx api "search/issues?q=$(jq -rn --arg q "$q" '$q|@uri')&sort=created&order=asc&per_page=50")"
+
+# order_of COMMENTS_JSON -> the pending order comment as JSON, or nothing
+order_of() {
+  jq -c --arg allow "$ALLOW_LC" --arg trust "$TRUST_LC" '
+    def first_line: (.body // "" | split("\n")[0] | gsub("\r"; "") | gsub("\\s+$"; ""));
+    ($allow | split(" ") | map(select(. != ""))) as $ok
+    | ($trust | split(" ") | map(select(. != ""))) as $tr
+    | sort_by(.id)
+    | ([.[] | select((first_line | test("^codex-cli: (build|fix)$")) and ((.user.login | ascii_downcase) as $u | $ok | index($u)) != null)] | last) as $o
+    | if $o == null then empty
+      elif any(.[]; .id > $o.id and ((.user.login | ascii_downcase) as $u | $tr | index($u)) != null
+                    and (first_line | test("^codex-cli: started .* for " + ($o.id | tostring) + "$"))) then empty
+      else $o end'
+}
+
+REPO=""; ISSUE=""; ORDER=""
+while IFS=$'\t' read -r s_repo s_num; do
+  [ -n "$s_repo" ] || continue
+  ok=0; for r in $REPOS; do [ "$r" = "$s_repo" ] && ok=1; done
+  [ "$ok" = 1 ] || continue
+  o="$(comments "$s_repo" "$s_num" | order_of)"
+  if [ -n "$o" ]; then REPO="$s_repo"; ISSUE="$s_num"; ORDER="$o"; break; fi
+done < <(printf '%s' "$search" | jq -r '.items[]? | [(.repository_url | sub("^.*/repos/"; "")), (.number|tostring)] | @tsv')
+
+[ -n "$REPO" ] || { [ "$DRY" = 1 ] && log "dry-run: no pending order"; exit 0; }
+ORDER_ID="$(printf '%s' "$ORDER" | jq -r .id)"
+ORDER_BODY="$(printf '%s' "$ORDER" | jq -r '.body | gsub("\r"; "")')"
+KIND="$(printf '%s\n' "$ORDER_BODY" | head -1 | sed -E 's/^codex-cli: ([a-z]+).*/\1/')"
+field() { printf '%s\n' "$ORDER_BODY" | sed -n -E "s/^$1:[[:space:]]*(.*[^[:space:]])[[:space:]]*\$/\\1/p" | head -1; }
+BRANCH="$(field Branch)"; PLAN="$(field Plan)"; PR_TITLE="$(field 'PR title')"
+if [ "$DRY" = 1 ]; then log "dry-run: would take $KIND order $ORDER_ID on $REPO#$ISSUE (branch $BRANCH)"; exit 0; fi
+
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+START=$(date +%s)
+OUTCOME=""; REASON=""; HINDER="—"; PR_URL=""; HEAD_SHA=""; TEST_RESULT="not run"; TAIL=""
+WT=""; CLONE=""
+
+finish() { # post the outcome comment, log the run, clean up
+  local mins=$(( ($(date +%s) - START + 59) / 60 )) body
+  body="codex-cli: $OUTCOME"
+  [ -n "$REASON" ] && body="$body
+Reason: $REASON"
+  [ -n "$PR_URL" ] && body="$body
+PR: $PR_URL (draft), head $HEAD_SHA"
+  [ -z "$PR_URL" ] && [ -n "$HEAD_SHA" ] && body="$body
+Branch: $BRANCH pushed, head $HEAD_SHA"
+  body="$body
+Test before commit: $TEST_RESULT
+$HINDER
+Run: $RUN_ID, $mins min, $MODEL, order $ORDER_ID"
+  [ -n "$TAIL" ] && body="$body
+
+<details><summary>Last 30 lines</summary>
+
+\`\`\`
+$TAIL
+\`\`\`
+</details>"
+  body="$body
+
+$SIGN"
+  trap - ERR
+  if ! post "$REPO" "$ISSUE" "$body" >/dev/null 2>&1; then
+    log "could not post the outcome on $REPO#$ISSUE; kept in $PENDING for the next tick"
+    mkdir -p "$PENDING"; printf '%s %s\n%s' "$REPO" "$ISSUE" "$body" > "$PENDING/$RUN_ID"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%MZ)" "$REPO" "$ISSUE" "$OUTCOME${REASON:+: $REASON}" "$mins" "$WORK_DIR/logs/$RUN_ID.*" >> "$RUNS_LOG"
+  rm -f "$WORK_DIR/wt/$RUN_ID.mark" "$WORK_DIR/wt/$RUN_ID.diff" "$WORK_DIR/wt/$RUN_ID.pr.json"
+  if [ -n "$WT" ] && [ -n "$CLONE" ]; then
+    git -C "$CLONE" worktree remove --force "$WT" 2>/dev/null || rm -rf "$WT"
+    git -C "$CLONE" worktree prune 2>/dev/null || true
+    git -C "$CLONE" branch -D "cli/$RUN_ID" >/dev/null 2>&1 || true
+  fi
+  rm -f "$CURRENT"
+  exit 0
+}
+bounce() { OUTCOME=bounced; REASON="$1"; finish; }
+
+# ---- claim, then re-read: an earlier claim on the same order or a removed label wins
+# recovery state first: if the claim's answer is lost or anything below dies, the next tick posts a bounced outcome
+printf '%s %s %s %s\n' "$REPO" "$ISSUE" "$RUN_ID" "$ORDER_ID" > "$CURRENT"
+CLAIM_ID="$(post "$REPO" "$ISSUE" "codex-cli: started $RUN_ID on $HOST for $ORDER_ID")" \
+  || { log "claim on $REPO#$ISSUE got no answer; the next tick bounces it"; exit 1; }
+withdraw() {
+  log "withdrawing claim $CLAIM_ID on $REPO#$ISSUE: $1"
+  # a claim that cannot be deleted stays covered by CURRENT, so the next tick bounces it
+  ghx api "repos/$REPO/issues/comments/$CLAIM_ID" -X DELETE >/dev/null 2>&1 && rm -f "$CURRENT"
+  exit 0
+}
+cm="$(comments "$REPO" "$ISSUE")" || withdraw "could not re-read the issue"
+first_claim="$(printf '%s' "$cm" | jq -r --arg o "$ORDER_ID" --arg trust "$TRUST_LC" '
+  ($trust | split(" ") | map(select(. != ""))) as $tr
+  | [.[] | select(((.user.login | ascii_downcase) as $u | $tr | index($u)) != null
+                  and ((.body // "" | split("\n")[0] | gsub("\r"; "")) | test("^codex-cli: started .* for " + $o + "$")))]
+  | sort_by(.id) | .[0].id // empty')" \
+  || withdraw "could not read the claims"
+[ "$first_claim" = "$CLAIM_ID" ] || withdraw "earlier claim $first_claim"
+has_label "$REPO" "$ISSUE" || withdraw "label gone or GitHub unreachable"
+# from here every unexpected error still ends in an outcome comment and a clean worktree
+trap 'bounce "poller error (line $LINENO)"' ERR
+
+# ---- validate the order's names before git sees them
+[[ "$KIND" =~ ^(build|fix)$ ]] || bounce "order kind '$KIND'"
+[[ "$BRANCH" =~ ^feat/[0-9]{3}-[a-z0-9][a-z0-9-]*$ ]] || bounce "order has no valid 'Branch: feat/NNN-slug' line"
+if [ -n "$PLAN" ]; then
+  { [[ "$PLAN" =~ ^[A-Za-z0-9._/-]+$ ]] && [[ "$PLAN" != *..* ]]; } || bounce "order's Plan path is not a plain repo path"
+fi
+[ "$KIND" = fix ] || [ -n "$PR_TITLE" ] || bounce "build order has no 'PR title:' line"
+
+# ---- worktree in the poller's own clone
+CLONE="$WORK_DIR/repos/$(printf '%s' "$REPO" | tr '/' '_')"
+if [ ! -d "$CLONE/.git" ]; then
+  mkdir -p "$WORK_DIR/repos"
+  gitc clone --quiet "$GIT_BASE/$REPO.git" "$CLONE" || bounce "clone failed"
+fi
+gitc -C "$CLONE" fetch --quiet --prune origin || bounce "fetch failed"
+DEF="$(ghx api "repos/$REPO" --jq .default_branch)"
+REMOTE_HAS_BRANCH=0
+git -C "$CLONE" rev-parse --verify --quiet "refs/remotes/origin/$BRANCH" >/dev/null && REMOTE_HAS_BRANCH=1
+if [ "$KIND" = fix ] && [ "$REMOTE_HAS_BRANCH" = 0 ]; then bounce "fix order names $BRANCH, which is not on GitHub"; fi
+BASE_REF="origin/$DEF"; [ "$REMOTE_HAS_BRANCH" = 1 ] && BASE_REF="origin/$BRANCH"
+WT="$WORK_DIR/wt/$RUN_ID"
+mkdir -p "$WORK_DIR/wt"
+git -C "$CLONE" worktree add --quiet -b "cli/$RUN_ID" "$WT" "$BASE_REF" || bounce "worktree failed"
+gitc -C "$WT" submodule update --init --quiet --depth 1 >/dev/null 2>&1 || true
+START_SHA="$(git -C "$WT" rev-parse HEAD)"
+
+# ---- run Codex: sandboxed to the worktree, no network, no token; time limit and stall watch
+mkdir -p "$WORK_DIR/logs"
+LAST="$WORK_DIR/logs/$RUN_ID.last.md"; OUT="$WORK_DIR/logs/$RUN_ID.out"; MARK="$WORK_DIR/wt/$RUN_ID.mark"
+: > "$MARK"
+PROMPT="You are the Coder for this repository, started headless by the agent-team host poller (team/CODEX-CLI.md in the agent-team rulebook). Follow the work order below exactly; it was written by the Builder.
+- Work only inside this directory. Do not commit, push or open a pull request: the poller does that when you finish.
+- Do not touch .github/, .claude/, .codex/ or .gitmodules unless the order's May touch lists them.
+- A step that needs a design choice, a file outside May touch, network access or anything the order does not settle: stop and list it under Hinder.
+- End your final message with exactly one last line: 'Hinder: inga' or 'Hinder: <short list>'.
+
+--- WORK ORDER (GitHub $REPO#$ISSUE, comment $ORDER_ID) ---
+$ORDER_BODY
+--- END WORK ORDER ---"
+set -m   # own process group: the time limit and stall watch stop Codex and everything it started
+(
+  cd "$WT"
+  printf '%s\n' "$PROMPT" | exec env $NO_GH_TOKENS \
+    codex exec -m "$MODEL" -s workspace-write -o "$LAST" -
+) > "$OUT" 2>&1 &
+CPID=$!
+set +m
+last_size=-1; last_change=$(date +%s); KILLED=""
+while kill -0 "$CPID" 2>/dev/null; do
+  sleep "$POLL_SEC"
+  now=$(date +%s)
+  size="$( { find "$SESSIONS_DIR" -type f -newer "$MARK" -exec cat {} + 2>/dev/null || true; } | wc -c | tr -d ' ')"
+  if [ "$size" != "$last_size" ]; then last_size="$size"; last_change=$now; fi
+  if [ $(( now - START )) -ge "$RUN_LIMIT_SEC" ]; then KILLED="time limit ($(dur "$RUN_LIMIT_SEC"))"
+  elif [ $(( now - last_change )) -ge "$STALL_SEC" ]; then KILLED="stalled (no session output for $(dur "$STALL_SEC"))"; fi
+  if [ -n "$KILLED" ]; then
+    kill -TERM -- "-$CPID" 2>/dev/null || true
+    sleep 2; kill -KILL -- "-$CPID" 2>/dev/null || true
+    break
+  fi
+done
+wait "$CPID" 2>/dev/null && CRC=0 || CRC=$?
+[ -z "$KILLED" ] || { TAIL="$(tail -n 30 "$OUT" 2>/dev/null || true)"; bounce "$KILLED"; }
+
+# ---- Hinder line: the last non-empty line of Codex's last message
+hl=""
+[ -r "$LAST" ] && hl="$(tr -d '\r' < "$LAST" | sed -e 's/[[:space:]]*$//' | awk 'NF {l=$0} END {print l}')"
+if ! [[ "$hl" =~ ^Hinder:\ .+ ]]; then
+  TAIL="$(tail -n 30 "$OUT" 2>/dev/null || true)"
+  bounce "no Hinder line$( [ "$CRC" = 0 ] || echo ", codex exited $CRC")"
+fi
+if [ "$CRC" != 0 ]; then HINDER="$hl"; TAIL="$(tail -n 30 "$OUT" 2>/dev/null || true)"; bounce "codex exited $CRC"; fi
+HINDER="$hl"
+BLOCKED=1
+case "$(printf '%s' "$hl" | tr 'A-Z' 'a-z')" in "hinder: inga"|"hinder: inga."|"hinder: none"|"hinder: none.") BLOCKED=0 ;; esac
+
+# ---- commit what Codex wrote (Codex cannot: the worktree's git dir is outside its sandbox)
+git -C "$WT" add -A
+if ! git -C "$WT" diff --cached --quiet; then
+  if [ "$KIND" = build ]; then msg="$PR_TITLE"; else msg="$(printf '%s' "${BRANCH#feat/}" | cut -d- -f1): fix from Codex CLI order $ORDER_ID"; fi
+  git -C "$WT" -c user.name="Codex CLI ($HOST)" -c user.email="codex-cli@$HOST.invalid" \
+    commit --quiet -m "$msg" -m "Built by Codex CLI ($MODEL) on $HOST from $REPO#$ISSUE comment $ORDER_ID. $(redact "$HINDER")"
+fi
+HEAD_NOW="$(git -C "$WT" rev-parse HEAD)"
+[ "$HEAD_NOW" != "$START_SHA" ] || { [ "$BLOCKED" = 1 ] && { OUTCOME=blocked; finish; }; bounce "no changes"; }
+
+# ---- Test before commit, read from the default branch (never from Codex's diff), run outside the sandbox without the token
+TBC="$(git -C "$CLONE" show "origin/$DEF:AGENTS.md" 2>/dev/null | grep -m1 -F '**Test before commit:**' | sed -e 's/.*\*\*Test before commit:\*\*//' -e 's/<!--.*-->//g' || true)"
+if printf '%s' "$TBC" | grep -q '`'; then
+  TBC="$(printf '%s' "$TBC" | grep -o '`[^`]*`' | tr -d '`' | awk 'NF { printf "%s%s", (n++ ? " && " : ""), $0 }')"
+else
+  TBC="$(printf '%s' "$TBC" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+fi
+if [ "$BLOCKED" = 0 ]; then
+  if [ -z "$TBC" ]; then TEST_RESULT="not named in AGENTS.md (the Builder runs it)"
+  else
+    # own process group, so the run's deadline can stop the test and everything it started
+    set -m
+    (cd "$WT" && exec env $NO_GH_TOKENS bash -c "$TBC") > "$OUT.test" 2>&1 &
+    TPID=$!
+    set +m
+    while kill -0 "$TPID" 2>/dev/null; do
+      if [ $(( $(date +%s) - START )) -ge "$RUN_LIMIT_SEC" ]; then
+        kill -TERM -- "-$TPID" 2>/dev/null || true; sleep 2; kill -KILL -- "-$TPID" 2>/dev/null || true
+        wait "$TPID" 2>/dev/null || true
+        TEST_RESULT="stopped at the time limit (\`$TBC\`)"; TAIL="$(tail -n 30 "$OUT.test")"
+        bounce "time limit ($(dur "$RUN_LIMIT_SEC")) during Test before commit"
+      fi
+      sleep "$POLL_SEC"
+    done
+    if wait "$TPID"; then TEST_RESULT="green (\`$TBC\`)"
+    else TEST_RESULT="red (\`$TBC\`)"; TAIL="$(tail -n 30 "$OUT.test")"; TAIL="${TAIL:-(no output)}"; bounce "test red"; fi
+    # the test passed on the tree it ran on; if it rewrote tracked files, that is not the commit we would push
+    if ! git -C "$WT" diff --quiet HEAD --; then
+      TEST_RESULT="green but it changed tracked files (\`$TBC\`)"
+      TAIL="$(git -C "$WT" diff --name-only HEAD -- | head -n 20)"
+      bounce "Test before commit changed tracked files; the pushed commit would differ from the tested tree"
+    fi
+  fi
+fi
+
+# ---- push guard: the token, or a wall file the plan does not list, never leaves the host
+PUSH_BASE="origin/$DEF"; [ "$REMOTE_HAS_BRANCH" = 1 ] && PUSH_BASE="origin/$BRANCH"
+DIFF="$WORK_DIR/wt/$RUN_ID.diff"
+# --text: binary files are scanned as bytes too, not shown as "Binary files differ"
+git -C "$WT" log -p --text --no-ext-diff --no-textconv "$PUSH_BASE..HEAD" > "$DIFF"
+if grep -aqF -f <(printf '%s\n' "$TOKEN") "$DIFF" || grep -aqE 'github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{30,}' "$DIFF"; then
+  bounce "guard: the diff contains a GitHub token"
+fi
+ALLOWED=""
+if [ -n "$PLAN" ]; then
+  ALLOWED="$(git -C "$CLONE" show "origin/$DEF:$PLAN" 2>/dev/null \
+    | awk '/^## Files/ {on=1; next} /^## / {on=0} on' | grep -o '`[^`]*`' | tr -d '`' || true)"
+fi
+listed() { # listed PATH: the plan's Files names it, or a folder above it
+  local a
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    a="${a%/\*\*}"; a="${a%/}"
+    [ "$1" = "$a" ] || [ "${1#"$a"/}" != "$1" ] && return 0
+  done <<< "$ALLOWED"
+  return 1
+}
+while IFS= read -r -d '' p; do
+  case "$p" in
+    .github/*|.claude/settings.json|.claude/settings.local.json|.claude/skills/agent-team|.claude/skills/agent-team/*|.codex/*|.gitmodules)
+      listed "$p" || bounce "guard: $p is a wall file the plan's Files do not list" ;;
+  esac
+done < <(git -C "$WT" diff -z --no-renames --name-only "$PUSH_BASE...HEAD")
+
+# ---- the fallback may have taken over while Codex ran
+has_label "$REPO" "$ISSUE" || bounce "label removed while running (the Builder took over)"
+
+gitc -C "$WT" push --quiet origin "HEAD:refs/heads/$BRANCH" || bounce "push failed (no force-push; the branch moved?)"
+HEAD_SHA="$HEAD_NOW"
+[ "$BLOCKED" = 1 ] && { OUTCOME=blocked; finish; }
+
+OWNER="${REPO%%/*}"
+PR_URL="$(ghx api "repos/$REPO/pulls?head=$OWNER:$BRANCH&state=open" --jq '.[0].html_url // empty')"
+if [ -z "$PR_URL" ]; then
+  if [ "$KIND" = fix ]; then bounce "pushed $HEAD_SHA, but no open PR from $BRANCH"; fi
+  redact "$(cat "$LAST")" > "$LAST.redacted"
+  jq -n --arg t "$PR_TITLE" --arg h "$BRANCH" --arg b "$DEF" --rawfile m "$LAST.redacted" \
+     --arg f "Built by Codex CLI ($MODEL) on $HOST from the work order $GIT_BASE/$REPO/issues/$ISSUE#issuecomment-$ORDER_ID. The Builder thread owns this PR (team/CODEX-CLI.md).
+
+$SIGN" \
+     '{title: $t, head: $h, base: $b, draft: true, body: ($m + "\n\n---\n" + $f)}' > "$WORK_DIR/wt/$RUN_ID.pr.json"
+  PR_URL="$(ghx api "repos/$REPO/pulls" -X POST --input "$WORK_DIR/wt/$RUN_ID.pr.json" --jq .html_url)" \
+    || bounce "pushed $HEAD_SHA, but opening the PR failed"
+fi
+OUTCOME=done
+finish
