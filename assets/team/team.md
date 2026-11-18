@@ -21,7 +21,7 @@ mode: local
 # codex-cli = a work order the host Mac's poller runs with Codex CLI (team/CODEX-CLI.md; @codex takes over while it sleeps);
 # claude = the Builder thread. A fresh repo has no Codex environment yet, so this starts as claude (SETUP.md § One-time setup per repo).
 builder: claude
-# cloud only: where CI runs. github = GitHub-hosted minutes; mini = the self-hosted runner on the Mac mini (private repos only, team/RUNNER.md).
+# cloud only: where CI runs. github = GitHub-hosted minutes; mini = the self-hosted runner on the host Mac (private repos only, team/RUNNER.md).
 runner: github
 # cloud only: the GitHub login the agents act as (CLOUD.md § Walls); none = the human's login, signed "on behalf of".
 agent-account: none
