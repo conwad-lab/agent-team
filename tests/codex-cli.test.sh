@@ -44,6 +44,7 @@ case "$method $url" in
   "POST repos/o/r/issues/"*"/comments")
     i="$(num)"; c="$ST/comments_$i.json"
     first="$(printf '%s\n' "$body" | head -1)"
+    if [ -f "$ST/hook_fail_outcome" ] && [ "$first" = "codex-cli: done" ]; then rm -f "$ST/hook_fail_outcome"; echo "HTTP 503" >&2; exit 1; fi
     if [ -f "$ST/hook_race" ] && [[ "$first" == "codex-cli: started "* ]]; then
       jq --arg b "codex-cli: started other-run on mini for ${first##* for }" '. + [{id: 1500, user: {login: "conwad-lab"}, body: $b}]' "$c" > "$c.n" && mv "$c.n" "$c"
     fi
@@ -87,6 +88,7 @@ case "$mode" in
   listed)   echo hi > hello.txt; mkdir -p .github/workflows; echo x > .github/workflows/ci.yml; printf 'Hinder: inga\n' > "$last" ;;
   red)      echo bye > other.txt; printf 'Hinder: inga\n' > "$last" ;;
   stall)    sleep 30 ;;
+  crash)    echo hi > hello.txt; exit 7 ;;
   agents)   echo hi > hello.txt; printf -- '- **Test before commit:** `touch PWNED`\n' >> AGENTS.md; printf 'Hinder: inga\n' > "$last" ;;
 esac
 C
@@ -221,6 +223,23 @@ check "test red: nothing pushed" '! remote_has feat/001-x'
 # 13 Codex changing AGENTS.md cannot change the command the poller runs
 reset agents; tick
 check "Test before commit is read from main, not from Codex's diff" '[ ! -e $T/work/wt/PWNED ] && ! find $T/work -name PWNED | grep -q . && last_comment | grep -qF "green (\`test -f hello.txt\`)"'
+
+# 13b Codex exits without a last message → bounced, cleaned up, not "host slept" next tick
+reset crash; tick
+check "crash: bounced with no Hinder line and the exit code" 'last_comment | grep -q "^Reason: no Hinder line, codex exited 7"'
+check "crash: worktree removed, no current file" '[ -z "$(ls -A $T/work/wt 2>/dev/null)" ] && [ ! -f $T/work/current ]'
+
+# 13c Test before commit with && inside one backtick command, and two commands
+reset ok; printf -- '- **Test before commit:** `test -f hello.txt && true` and `true`\n' > "$SEED/AGENTS.md"
+git -C "$SEED" -c user.name=t -c user.email=t@t commit -qam tbc; git -C "$SEED" push -q -f "$REMOTE/o/r.git" main; tick
+check "Test before commit keeps && inside a command" 'last_comment | grep -q "green (.test -f hello.txt && true && true.)"'
+git -C "$SEED" reset -q --hard HEAD~1
+
+# 13d the outcome post fails once → kept and posted on the next tick
+reset ok; touch "$ST/hook_fail_outcome"; tick
+check "outcome kept when GitHub refuses it" '! bodies | grep -qx "codex-cli: done" && ls $T/work/pending/* >/dev/null 2>&1'
+tick
+check "outcome posted on the next tick, pending emptied" 'bodies | grep -qx "codex-cli: done" && [ -z "$(ls -A $T/work/pending)" ] && ! bodies | grep -q "host slept"'
 
 # 14 dry run posts nothing
 reset ok; tick --dry-run

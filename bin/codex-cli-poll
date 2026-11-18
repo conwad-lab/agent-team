@@ -90,6 +90,16 @@ has_label() { ghx api "repos/$1/issues/$2" | jq -e --arg l "$LABEL" '.state == "
 
 RUNS_LOG="$WORK_DIR/runs.log"
 CURRENT="$WORK_DIR/current"
+PENDING="$WORK_DIR/pending"
+
+# ---- outcomes a GitHub error kept from posting: deliver them first, keep them until GitHub takes them
+if [ "$DRY" = 0 ] && [ -d "$PENDING" ]; then
+  for f in "$PENDING"/*; do
+    [ -f "$f" ] || continue
+    read -r p_repo p_issue < "$f" || continue
+    if post "$p_repo" "$p_issue" "$(sed 1d "$f")" >/dev/null 2>&1; then rm -f "$f"; else log "outcome $f still not posted"; fi
+  done
+fi
 
 # ---- a run this host started and never finished (the Mac slept or the job stopped): mark it bounced
 if [ "$DRY" = 0 ] && [ -f "$CURRENT" ]; then
@@ -169,7 +179,11 @@ $TAIL
   body="$body
 
 $SIGN"
-  post "$REPO" "$ISSUE" "$body" >/dev/null || log "could not post the outcome on $REPO#$ISSUE"
+  trap - ERR
+  if ! post "$REPO" "$ISSUE" "$body" >/dev/null 2>&1; then
+    log "could not post the outcome on $REPO#$ISSUE; kept in $PENDING for the next tick"
+    mkdir -p "$PENDING"; printf '%s %s\n%s' "$REPO" "$ISSUE" "$body" > "$PENDING/$RUN_ID"
+  fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%MZ)" "$REPO" "$ISSUE" "$OUTCOME${REASON:+: $REASON}" "$mins" "$WORK_DIR/logs/$RUN_ID.*" >> "$RUNS_LOG"
   rm -f "$WORK_DIR/wt/$RUN_ID.mark" "$WORK_DIR/wt/$RUN_ID.diff" "$WORK_DIR/wt/$RUN_ID.pr.json"
   if [ -n "$WT" ] && [ -n "$CLONE" ]; then
@@ -192,6 +206,8 @@ if [ "$first_claim" != "$CLAIM_ID" ] || ! has_label "$REPO" "$ISSUE"; then
   exit 0
 fi
 printf '%s %s %s\n' "$REPO" "$ISSUE" "$RUN_ID" > "$CURRENT"
+# from here every unexpected error still ends in an outcome comment and a clean worktree
+trap 'bounce "poller error (line $LINENO)"' ERR
 
 # ---- validate the order's names before git sees them
 [[ "$KIND" =~ ^(build|fix)$ ]] || bounce "order kind '$KIND'"
@@ -256,7 +272,8 @@ wait "$CPID" 2>/dev/null && CRC=0 || CRC=$?
 [ -z "$KILLED" ] || { TAIL="$(tail -n 30 "$OUT" 2>/dev/null || true)"; bounce "$KILLED"; }
 
 # ---- Hinder line: the last non-empty line of Codex's last message
-hl="$(tr -d '\r' < "$LAST" 2>/dev/null | sed -e 's/[[:space:]]*$//' | awk 'NF {l=$0} END {print l}')"
+hl=""
+[ -r "$LAST" ] && hl="$(tr -d '\r' < "$LAST" | sed -e 's/[[:space:]]*$//' | awk 'NF {l=$0} END {print l}')"
 if ! [[ "$hl" =~ ^Hinder:\ .+ ]]; then
   TAIL="$(tail -n 30 "$OUT" 2>/dev/null || true)"
   bounce "no Hinder line$( [ "$CRC" = 0 ] || echo ", codex exited $CRC")"
@@ -278,7 +295,7 @@ HEAD_NOW="$(git -C "$WT" rev-parse HEAD)"
 # ---- Test before commit, read from the default branch (never from Codex's diff), run outside the sandbox without the token
 TBC="$(git -C "$CLONE" show "origin/$DEF:AGENTS.md" 2>/dev/null | grep -m1 -F '**Test before commit:**' | sed -e 's/.*\*\*Test before commit:\*\*//' -e 's/<!--.*-->//g' || true)"
 if printf '%s' "$TBC" | grep -q '`'; then
-  TBC="$(printf '%s' "$TBC" | grep -o '`[^`]*`' | tr -d '`' | awk 'NF' | paste -sd '&' - | sed 's/&/ \&\& /g')"
+  TBC="$(printf '%s' "$TBC" | grep -o '`[^`]*`' | tr -d '`' | awk 'NF { printf "%s%s", (n++ ? " && " : ""), $0 }')"
 else
   TBC="$(printf '%s' "$TBC" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 fi
