@@ -39,6 +39,7 @@ case "$method $url" in
   "GET search/issues"*)
     for f in "$ST"/issue_*.json; do [ -f "$f" ] && jq -c 'select(.state=="open" and ([.labels[].name]|index("codex-cli")))' "$f"; done \
       | jq -s '{items: map({repository_url: "https://api.github.com/repos/o/r", number})}' | out ;;
+  "GET user") echo "{\"login\":\"$FAKE_ME\"}" | out ;;
   "GET repos/o/r") echo '{"default_branch":"main"}' | out ;;
   "GET repos/o/r/issues/"*"/comments"*)
     if [ -f "$ST/hook_fail_reread" ] && grep -q "codex-cli: started" "$ST/comments_$(num).json"; then echo "HTTP 502" >&2; exit 1; fi
@@ -47,6 +48,7 @@ case "$method $url" in
     i="$(num)"; c="$ST/comments_$i.json"
     first="$(printf '%s\n' "$body" | head -1)"
     if [ -f "$ST/hook_fail_outcome" ] && [ "$first" = "codex-cli: done" ]; then rm -f "$ST/hook_fail_outcome"; echo "HTTP 503" >&2; exit 1; fi
+    if [ -f "$ST/hook_fail_bounce" ] && [ "$first" = "codex-cli: bounced" ]; then rm -f "$ST/hook_fail_bounce"; echo "HTTP 503" >&2; exit 1; fi
     if [ -f "$ST/hook_race" ] && [[ "$first" == "codex-cli: started "* ]]; then
       jq --arg b "codex-cli: started other-run on mini for ${first##* for }" '. + [{id: 1500, user: {login: "conwad-lab"}, body: $b}]' "$c" > "$c.n" && mv "$c.n" "$c"
     fi
@@ -92,6 +94,8 @@ case "$mode" in
   stall)    sleep 30 ;;
   crash)    echo hi > hello.txt; exit 7 ;;
   failexit) echo hi > hello.txt; printf 'Hinder: inga\n' > "$last"; exit 7 ;;
+  tokenbin) echo hi > hello.txt; printf '\000\001t=%s\000' "$FAKE_TOKEN" > blob.bin; printf 'Hinder: inga\n' > "$last" ;;
+  unicode)  echo hi > hello.txt; mkdir -p .github/workflows; echo x > ".github/workflows/\303\251.yml"; printf 'Hinder: inga\n' > "$last" ;;
   agents)   echo hi > hello.txt; printf -- '- **Test before commit:** `touch PWNED`\n' >> AGENTS.md; printf 'Hinder: inga\n' > "$last" ;;
 esac
 C
@@ -247,6 +251,33 @@ jq --arg b "$ORDER" '. + [{id: 1100, user: {login: "conwad-lab"}, body: "codex-c
   {id: 1300, user: {login: "conwad-lab"}, body: "codex-cli: done\nRun: r1, 3 min, gpt-6-astra, order 1001"}]' "$ST/comments_5.json" > "$T/c.json" && mv "$T/c.json" "$ST/comments_5.json"
 tick
 check "newer order still taken after a late outcome for an old order" 'bodies | grep -q "^codex-cli: started .* for 1200$"'
+
+# 13b5 the token inside a binary file → guard
+reset tokenbin; tick
+check "binary token: guard, no push" 'last_comment | grep -q "^Reason: guard: the diff contains a GitHub token" && ! remote_has feat/001-x'
+
+# 13b6 a wall file with a non-ASCII name → guard
+reset unicode; tick
+check "non-ASCII wall path: guard, no push" 'last_comment | grep -q "^Reason: guard: .github/workflows/" && ! remote_has feat/001-x'
+
+# 13b7 a forged claim by someone outside ALLOW does not suppress the order
+reset ok
+jq '. + [{id: 1050, user: {login: "someone-else"}, body: "codex-cli: started spoof on fake for 1001"}]' "$ST/comments_5.json" > "$T/c.json" && mv "$T/c.json" "$ST/comments_5.json"
+tick
+check "forged claim ignored: order built" 'last_comment | head -1 | grep -qx "codex-cli: done"'
+
+# 13b8 the host-slept outcome is kept when GitHub refuses it
+reset ok; mkdir -p "$T/work"; echo "o/r 5 old-run 1001" > "$T/work/current"; touch "$ST/hook_fail_bounce"
+jq '. + [{id: 1002, user: {login: "conwad-lab"}, body: "codex-cli: started old-run on testmac for 1001"}]' "$ST/comments_5.json" > "$T/c.json" && mv "$T/c.json" "$ST/comments_5.json"
+tick; tick
+check "slept outcome retried on the next tick" 'bodies | grep -q "^Reason: host slept or stopped (run old-run" && [ -z "$(ls -A $T/work/pending 2>/dev/null)" ]'
+
+# 13b9 a hanging Test before commit is stopped at the run limit
+reset ok; printf -- '- **Test before commit:** `sleep 30`\n' > "$SEED/AGENTS.md"
+git -C "$SEED" -c user.name=t -c user.email=t@t commit -qam hang; git -C "$SEED" push -q -f "$REMOTE/o/r.git" main
+sed -i.bak 's/^RUN_LIMIT_SEC=60/RUN_LIMIT_SEC=4/' "$CONF"; s0=$(date +%s); tick; s1=$(date +%s)
+sed -i.bak 's/^RUN_LIMIT_SEC=4/RUN_LIMIT_SEC=60/' "$CONF"; git -C "$SEED" reset -q --hard HEAD~1
+check "hanging test: bounced at the time limit, quickly, no push" 'last_comment | grep -q "^Reason: time limit .* during Test before commit" && [ $((s1 - s0)) -lt 20 ] && ! remote_has feat/001-x && ! pgrep -f "sleep 30" >/dev/null'
 
 # 13c Test before commit with && inside one backtick command, and two commands
 reset ok; printf -- '- **Test before commit:** `test -f hello.txt && true` and `true`\n' > "$SEED/AGENTS.md"

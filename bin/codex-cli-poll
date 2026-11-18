@@ -51,6 +51,7 @@ esac
 mkdir -p "$WORK_DIR"
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
+dur() { if [ "$1" -ge 60 ]; then echo "$(( $1 / 60 )) min"; else echo "$1 s"; fi; }
 mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
 
 # ---- lock: one run per host; a dead holder or one past the run limit is stale
@@ -105,32 +106,39 @@ fi
 if [ "$DRY" = 0 ] && [ -f "$CURRENT" ]; then
   read -r c_repo c_issue c_run c_order < "$CURRENT" || true
   if [ -n "${c_repo:-}" ] && [ -n "${c_issue:-}" ]; then
-    post "$c_repo" "$c_issue" "codex-cli: bounced
+    c_body="codex-cli: bounced
 Reason: host slept or stopped (run ${c_run:-?} on $HOST never finished)
 Run: ${c_run:-?}, order ${c_order:-?}
 Hinder: —
 
-$SIGN" >/dev/null || true
+$SIGN"
+    if ! post "$c_repo" "$c_issue" "$c_body" >/dev/null 2>&1; then
+      mkdir -p "$PENDING"; printf '%s %s\n%s' "$c_repo" "$c_issue" "$c_body" > "$PENDING/${c_run:-recovered-$$}"
+    fi
     printf '%s\t%s\t%s\tbounced: host slept\t-\n' "$(date -u +%Y-%m-%dT%H:%MZ)" "$c_repo" "$c_issue" >> "$RUNS_LOG"
   fi
   rm -f "$CURRENT"
 fi
 
-# ---- find one order
+# ---- find one order. Orders count only from ALLOW; claims only from ALLOW or the token's own login (the poller)
+ME="$(ghx api user --jq .login)" || { log "GitHub did not answer /user"; exit 1; }
 ALLOW_LC="$(printf '%s' "$ALLOW" | tr 'A-Z' 'a-z')"
+TRUST_LC="$(printf '%s %s' "$ALLOW" "$ME" | tr 'A-Z' 'a-z')"
 q="is:open is:issue label:$LABEL"
 for r in $REPOS; do q="$q repo:$r"; done
 search="$(ghx api "search/issues?q=$(jq -rn --arg q "$q" '$q|@uri')&sort=created&order=asc&per_page=50")"
 
 # order_of COMMENTS_JSON -> the pending order comment as JSON, or nothing
 order_of() {
-  jq -c --arg allow "$ALLOW_LC" '
+  jq -c --arg allow "$ALLOW_LC" --arg trust "$TRUST_LC" '
     def first_line: (.body // "" | split("\n")[0] | gsub("\r"; "") | gsub("\\s+$"; ""));
     ($allow | split(" ") | map(select(. != ""))) as $ok
+    | ($trust | split(" ") | map(select(. != ""))) as $tr
     | sort_by(.id)
     | ([.[] | select((first_line | test("^codex-cli: (build|fix)$")) and ((.user.login | ascii_downcase) as $u | $ok | index($u)) != null)] | last) as $o
     | if $o == null then empty
-      elif any(.[]; .id > $o.id and (first_line | test("^codex-cli: started .* for " + ($o.id | tostring) + "$"))) then empty
+      elif any(.[]; .id > $o.id and ((.user.login | ascii_downcase) as $u | $tr | index($u)) != null
+                    and (first_line | test("^codex-cli: started .* for " + ($o.id | tostring) + "$"))) then empty
       else $o end'
 }
 
@@ -208,8 +216,11 @@ withdraw() {
   exit 0
 }
 cm="$(comments "$REPO" "$ISSUE")" || withdraw "could not re-read the issue"
-first_claim="$(printf '%s' "$cm" | jq -r --arg o "$ORDER_ID" '
-  [.[] | select((.body // "" | split("\n")[0] | gsub("\r"; "")) | test("^codex-cli: started .* for " + $o + "$"))] | sort_by(.id) | .[0].id // empty')" \
+first_claim="$(printf '%s' "$cm" | jq -r --arg o "$ORDER_ID" --arg trust "$TRUST_LC" '
+  ($trust | split(" ") | map(select(. != ""))) as $tr
+  | [.[] | select(((.user.login | ascii_downcase) as $u | $tr | index($u)) != null
+                  and ((.body // "" | split("\n")[0] | gsub("\r"; "")) | test("^codex-cli: started .* for " + $o + "$")))]
+  | sort_by(.id) | .[0].id // empty')" \
   || withdraw "could not read the claims"
 [ "$first_claim" = "$CLAIM_ID" ] || withdraw "earlier claim $first_claim"
 has_label "$REPO" "$ISSUE" || withdraw "label gone or GitHub unreachable"
@@ -255,23 +266,25 @@ PROMPT="You are the Coder for this repository, started headless by the agent-tea
 --- WORK ORDER (GitHub $REPO#$ISSUE, comment $ORDER_ID) ---
 $ORDER_BODY
 --- END WORK ORDER ---"
+set -m   # own process group: the time limit and stall watch stop Codex and everything it started
 (
   cd "$WT"
   printf '%s\n' "$PROMPT" | exec env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN \
     codex exec -m "$MODEL" -s workspace-write -o "$LAST" -
 ) > "$OUT" 2>&1 &
 CPID=$!
+set +m
 last_size=-1; last_change=$(date +%s); KILLED=""
 while kill -0 "$CPID" 2>/dev/null; do
   sleep "$POLL_SEC"
   now=$(date +%s)
   size="$( { find "$SESSIONS_DIR" -type f -newer "$MARK" -exec cat {} + 2>/dev/null || true; } | wc -c | tr -d ' ')"
   if [ "$size" != "$last_size" ]; then last_size="$size"; last_change=$now; fi
-  if [ $(( now - START )) -ge "$RUN_LIMIT_SEC" ]; then KILLED="time limit ($(( RUN_LIMIT_SEC / 60 )) min)"
-  elif [ $(( now - last_change )) -ge "$STALL_SEC" ]; then KILLED="stalled (no session output for $(( STALL_SEC / 60 )) min)"; fi
+  if [ $(( now - START )) -ge "$RUN_LIMIT_SEC" ]; then KILLED="time limit ($(dur "$RUN_LIMIT_SEC"))"
+  elif [ $(( now - last_change )) -ge "$STALL_SEC" ]; then KILLED="stalled (no session output for $(dur "$STALL_SEC"))"; fi
   if [ -n "$KILLED" ]; then
-    pkill -TERM -P "$CPID" 2>/dev/null || true; kill -TERM "$CPID" 2>/dev/null || true
-    sleep 2; pkill -KILL -P "$CPID" 2>/dev/null || true; kill -KILL "$CPID" 2>/dev/null || true
+    kill -TERM -- "-$CPID" 2>/dev/null || true
+    sleep 2; kill -KILL -- "-$CPID" 2>/dev/null || true
     break
   fi
 done
@@ -309,15 +322,32 @@ else
 fi
 if [ "$BLOCKED" = 0 ]; then
   if [ -z "$TBC" ]; then TEST_RESULT="not named in AGENTS.md (the Builder runs it)"
-  elif (cd "$WT" && env -u GH_TOKEN -u GITHUB_TOKEN bash -c "$TBC") > "$OUT.test" 2>&1; then TEST_RESULT="green (\`$TBC\`)"
-  else TEST_RESULT="red (\`$TBC\`)"; TAIL="$(tail -n 30 "$OUT.test")"; TAIL="${TAIL:-(no output)}"; bounce "test red"; fi
+  else
+    # own process group, so the run's deadline can stop the test and everything it started
+    set -m
+    (cd "$WT" && exec env -u GH_TOKEN -u GITHUB_TOKEN bash -c "$TBC") > "$OUT.test" 2>&1 &
+    TPID=$!
+    set +m
+    while kill -0 "$TPID" 2>/dev/null; do
+      if [ $(( $(date +%s) - START )) -ge "$RUN_LIMIT_SEC" ]; then
+        kill -TERM -- "-$TPID" 2>/dev/null || true; sleep 2; kill -KILL -- "-$TPID" 2>/dev/null || true
+        wait "$TPID" 2>/dev/null || true
+        TEST_RESULT="stopped at the time limit (\`$TBC\`)"; TAIL="$(tail -n 30 "$OUT.test")"
+        bounce "time limit ($(dur "$RUN_LIMIT_SEC")) during Test before commit"
+      fi
+      sleep "$POLL_SEC"
+    done
+    if wait "$TPID"; then TEST_RESULT="green (\`$TBC\`)"
+    else TEST_RESULT="red (\`$TBC\`)"; TAIL="$(tail -n 30 "$OUT.test")"; TAIL="${TAIL:-(no output)}"; bounce "test red"; fi
+  fi
 fi
 
 # ---- push guard: the token, or a wall file the plan does not list, never leaves the host
 PUSH_BASE="origin/$DEF"; [ "$REMOTE_HAS_BRANCH" = 1 ] && PUSH_BASE="origin/$BRANCH"
 DIFF="$WORK_DIR/wt/$RUN_ID.diff"
-git -C "$WT" log -p "$PUSH_BASE..HEAD" > "$DIFF"
-if grep -qF -f <(printf '%s\n' "$TOKEN") "$DIFF" || grep -qE 'github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{30,}' "$DIFF"; then
+# --text: binary files are scanned as bytes too, not shown as "Binary files differ"
+git -C "$WT" log -p --text --no-ext-diff --no-textconv "$PUSH_BASE..HEAD" > "$DIFF"
+if grep -aqF -f <(printf '%s\n' "$TOKEN") "$DIFF" || grep -aqE 'github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{30,}' "$DIFF"; then
   bounce "guard: the diff contains a GitHub token"
 fi
 ALLOWED=""
@@ -334,12 +364,12 @@ listed() { # listed PATH: the plan's Files names it, or a folder above it
   done <<< "$ALLOWED"
   return 1
 }
-while IFS= read -r p; do
+while IFS= read -r -d '' p; do
   case "$p" in
     .github/*|.claude/settings.json|.claude/settings.local.json|.claude/skills/agent-team|.claude/skills/agent-team/*|.codex/*|.gitmodules)
       listed "$p" || bounce "guard: $p is a wall file the plan's Files do not list" ;;
   esac
-done < <(git -C "$WT" diff --no-renames --name-only "$PUSH_BASE...HEAD")
+done < <(git -C "$WT" diff -z --no-renames --name-only "$PUSH_BASE...HEAD")
 
 # ---- the fallback may have taken over while Codex ran
 has_label "$REPO" "$ISSUE" || bounce "label removed while running (the Builder took over)"
