@@ -85,6 +85,15 @@ cat > "$T/bin/uname" <<'U'
 if [ "${1:-}" = -s ]; then echo Darwin; else exec /usr/bin/uname "$@"; fi
 U
 printf '#!/bin/sh\nexit 0\n' > "$T/bin/sleep"
+# fake df: the free KB of every path is in $ST/df_free_kb (50 GB when the file is missing, nothing when it is empty)
+cat > "$T/bin/df" <<'D'
+#!/bin/sh
+echo "$*" >> "$ST/df_calls"
+kb=52428800; [ -f "$ST/df_free_kb" ] && kb="$(cat "$ST/df_free_kb")"
+[ -n "$kb" ] || { echo "df: cannot read" >&2; exit 1; }
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "/dev/disk3s5 482797652 100000000 $kb 21% /System/Volumes/Data"
+D
 
 # ---------------------------------------------------------------- inside the machine
 cat > "$T/mbin/sudo" <<'S'
@@ -108,7 +117,12 @@ cat > "$T/mbin/tar" <<'X'
 d=""; prev=""
 for a in "$@"; do [ "$prev" = -C ] && d="$a"; prev="$a"; done
 mkdir -p "$d/bin"
-printf '#!/bin/sh\nexit 0\n' > "$d/bin/installdependencies.sh"
+cat > "$d/bin/installdependencies.sh" <<'DEP'
+#!/bin/sh
+echo "E: Unable to locate package libicu72" >&2
+if [ -f "$ST/hook_deps_fail" ]; then echo "deps exploded" >&2; exit 1; fi
+exit 0
+DEP
 cat > "$d/config.sh" <<'CFG'
 #!/usr/bin/env bash
 # fake config.sh: its argv (with the token) is logged outside every directory the token test scans
@@ -129,7 +143,7 @@ cat > "$d/svc.sh" <<'SVC'
 #!/usr/bin/env bash
 echo "$(basename "$HOME") svc $*" >> "$ST/svc_calls"
 case "$1" in
-  install) echo "actions.runner.fake.service" > .service ;;
+  install) echo "Created symlink /etc/systemd/system/fake.service" >&2; echo "actions.runner.fake.service" > .service ;;
   uninstall) rm -f .service ;;
   start)
     [ -f "$ST/hook_stay_offline" ] && exit 0
@@ -183,6 +197,17 @@ check "foreign owner refused" 'grep -q "theirs: ägs av someone-else" "$OUT/last
 check "no machine created for refused repos" '[ ! -f "$ST/orb_calls" ] && [ -z "$(ls -A "$M")" ]'
 check "no registration token asked for refused repos" '[ "$(calls registration-token "$ST/gh_calls")" = 0 ]'
 
+# ---- v0.8.12: too little free disk on the Mac stops before orb create
+echo 2097152 > "$ST/df_free_kb"
+run 'conwad-lab\ntesthost\nunghud-site\n'
+check "low disk: non-zero, free and needed GB named" '[ "$RC" != 0 ] && grep -q "bara 2.0 GB ledigt på Macens disk, en ny maskin kräver minst 5 GB" "$OUT/last"'
+check "low disk: no orb create, no state line, no token" '[ ! -f "$ST/orb_calls" ] && [ -z "$(ls -A "$M")" ] && ! grep -q unghud-site "$STATE" 2>/dev/null && [ "$(calls registration-token "$ST/gh_calls")" = 0 ]'
+check "low disk: the Mac volume of HOME is what is measured" 'grep -q -- "-Pk $T/home$" "$ST/df_calls"'
+: > "$ST/df_free_kb"
+run 'conwad-lab\ntesthost\npub\n' --status
+check "--status with an unreadable df still answers" '[ "$RC" = 0 ] && grep -q "kunde inte läsas" "$OUT/last"'
+rm -f "$ST/df_free_kb"
+
 # ---- (g) a machine that can reach the Mac is deleted and never registered
 touch "$ST/hook_not_isolated"
 run 'conwad-lab\ntesthost\nunghud-site\n'
@@ -211,12 +236,14 @@ check "uninstall of a never-registered machine deletes it" '[ "$RC" = 0 ] && [ !
 echo '"ubuntu-latest"' > "$ST/var_dignami-aos"
 run 'conwad-lab\ntesthost\ndignami-aos\n\n'
 check "fresh install exits 0" '[ "$RC" = 0 ]'
+check "quiet by default: no libicu or systemd lines from the tools" '! grep -q "Unable to locate package\|Created symlink" "$OUT/last" && grep -q "svc install" "$ST/svc_calls"'
 check "machine created isolated with isolated network" 'grep -q "^create --isolated --isolate-network ubuntu:noble runner-dignami-aos$" "$ST/orb_calls"'
 check "config.sh got the token, name, labels and repo URL" 'grep -q -- "--url https://github.com/conwad-lab/dignami-aos --token $FAKE_TOKEN --name testhost-dignami-aos --labels mini,testhost" "$ST/secret/config_calls"'
 check "runner is online on (fake) GitHub" '[ "$(jq -r ".[0].status" "$ST/runners_dignami-aos.json")" = online ]'
 check "cleanup hook installed unchanged" 'cmp -s "$SKILL/assets/runner/cleanup.sh" "$M/runner-dignami-aos/actions-runner/cleanup.sh" && [ -x "$M/runner-dignami-aos/actions-runner/cleanup.sh" ]'
 check "both hook lines in .env" '[ "$(grep -c "^ACTIONS_RUNNER_HOOK_JOB_\(STARTED\|COMPLETED\)=$M/runner-dignami-aos/actions-runner/cleanup.sh$" "$M/runner-dignami-aos/actions-runner/.env")" = 2 ]'
 check "service installed and started" 'grep -q "runner-dignami-aos svc install" "$ST/svc_calls" && grep -q "runner-dignami-aos svc start" "$ST/svc_calls"'
+check "MIN_FREE_GB written to the config" 'grep -q "^MIN_FREE_GB=5$" "$CONF"'
 check "config written, mode 600" '[ "$(stat -c %a "$CONF" 2>/dev/null || stat -f %Lp "$CONF")" = 600 ] && grep -q "^HOST=testhost$" "$CONF" && grep -q "^REPOS=\"dignami-aos\"$" "$CONF"'
 check "machine recorded in the state file" 'grep -q "^runner-dignami-aos dignami-aos testhost-dignami-aos conwad-lab$" "$STATE"'
 # ---- (f) RUNS_ON kept on Enter
@@ -264,7 +291,12 @@ rm -rf "$M/runner-mondmodel"
 
 # ---- two runners for one repo: two machines, two names, never a shared machine
 printf 'RUNNERS_mondmodel=2\n' >> "$CONF"
+echo 1048576 > "$ST/df_free_kb"   # 1 GB free: existing machines are still updated, new ones are not made
 run 'conwad-lab\ntesthost\ndignami-aos mondmodel\n'
+check "low disk: the existing runner is updated, the new repo refused" '[ "$RC" != 0 ] && grep -q "redan online på GitHub" "$OUT/last" && [ ! -d "$M/runner-mondmodel" ] && grep -q "Inte klart för: mondmodel" "$OUT/last"'
+rm -f "$ST/df_free_kb"
+run 'conwad-lab\ntesthost\ndignami-aos mondmodel\n' --verbose
+check "--verbose shows what the tools print" 'grep -q "Unable to locate package libicu72" "$OUT/last" && grep -q "Created symlink" "$OUT/last"'
 check "two runners: two isolated machines" '[ "$RC" = 0 ] && [ -d "$M/runner-mondmodel" ] && [ -d "$M/runner-mondmodel-2" ]'
 check "two runners: both online under their own names" '[ "$(jq -r "[.[] | select(.status == \"online\") | .name] | sort | join(\" \")" "$ST/runners_mondmodel.json")" = "testhost-mondmodel testhost-mondmodel-2" ]'
 check "per-repo override survives the rewrite of the config" 'grep -q "^RUNNERS_mondmodel=2$" "$CONF"'
@@ -293,6 +325,9 @@ run 'conwad-lab\ntesthost\ndignami-aos mondmodel\n'
 # ---- --status
 run '' --status
 check "--status lists every runner as running, active, online" '[ "$RC" = 0 ] && [ "$(grep -c "running  *active  *online" "$OUT/last")" = 3 ]'
+check "--status ends with the free disk and the threshold" 'tail -1 "$OUT/last" | grep -q "^Ledigt på Macens disk: 50.0 GB (en ny maskin skapas inte under 5 GB).$"'
+run '' --status --verbose
+check "--verbose is accepted after the mode" '[ "$RC" = 0 ] && [ "$(grep -c "running  *active  *online" "$OUT/last")" = 3 ]'
 
 # ---- (e) --uninstall one repo: runner removed on GitHub, machine deleted, the rest untouched
 run '' --uninstall dignami-aos
@@ -328,10 +363,38 @@ sed -i.bak 's/\[ "\$tok" = "\$FAKE_TOKEN" \]/false/' "$T/mbin/tar" && rm -f "$T/
 run 'conwad-lab\ntesthost\nunghud-site\n'
 check "failed config.sh: error shown, token masked" '[ "$RC" != 0 ] && grep -q "token=\*\*\*" "$OUT/last" && ! grep -q "$FAKE_TOKEN" "$OUT/last"'
 
+# ---- v0.8.12: a quiet step that fails shows its output and stops the install
+run '' --uninstall unghud-site
+touch "$ST/hook_deps_fail"
+run 'conwad-lab\ntesthost\nunghud-site\n'
+check "failing quiet step: its output shown, install stopped before registration" '[ "$RC" != 0 ] && grep -q "deps exploded" "$OUT/last" && grep -q "runnern kunde inte hämtas" "$OUT/last" && ! grep -q "registrerad" "$OUT/last" && ! grep -q "$FAKE_TOKEN" "$OUT/last"'
+rm -f "$ST/hook_deps_fail"
+
+# ---- v0.8.12: the cleanup hook and images (run as GitHub runs it: bash -e)
+H="$T/hook"; mkdir -p "$H/bin" "$H/home"
+cat > "$H/bin/docker" <<'DK'
+#!/bin/sh
+echo "$*" >> "$ST/docker_calls"
+case "$*" in "image prune"*|"builder prune"*) [ -f "$ST/hook_prune_fails" ] && exit 1 ;; esac
+exit 0
+DK
+chmod +x "$H/bin/docker"
+hook() { : > "$ST/docker_calls"; (unset GITHUB_WORKSPACE; HOME="$H/home" PATH="$H/bin:$T/bin:$PATH" bash -e "$SKILL/assets/runner/cleanup.sh"); }
+hook; HRC=$?
+check "hook with room: dangling images only" '[ "$HRC" = 0 ] && grep -qx "image prune -f" "$ST/docker_calls" && ! grep -qx "image prune -af" "$ST/docker_calls" && ! grep -q "^builder prune" "$ST/docker_calls"'
+check "hook still removes volumes and networks" 'grep -qx "volume prune -af" "$ST/docker_calls" && grep -qx "network prune -f" "$ST/docker_calls"'
+echo 5242880 > "$ST/df_free_kb"   # 5 GB free in the machine: under the hook's 10 GB
+hook; HRC=$?
+check "hook short of disk: every unused image and the build cache" '[ "$HRC" = 0 ] && grep -qx "image prune -af" "$ST/docker_calls" && grep -qx "builder prune -af" "$ST/docker_calls"'
+touch "$ST/hook_prune_fails"
+hook; HRC=$?
+check "hook: a failing image prune never stops the job" '[ "$HRC" = 0 ] && grep -qx "image prune -af" "$ST/docker_calls"'
+rm -f "$ST/hook_prune_fails" "$ST/df_free_kb"
+
 # ---- no token-shaped string and no bash-4-only construct in the installer
 check "bash -n passes" 'bash -n "$SKILL/bin/runner-install"'
 check "no mapfile, readarray, declare -A or \${var,,} (bash 3.2)" '! grep -nE "mapfile|readarray|declare -A|\\$\\{[A-Za-z_]+(,,|\\^\\^)" "$SKILL/bin/runner-install"'
-check "example config and installer agree on the keys" '[ "$(grep -oE "^[A-Z_]+=" "$SKILL/assets/runner/runner.env.example" | sort | tr -d "\n")" = "DISTRO=HOST=LABELS=OWNER=REPOS=RUNNERS_PER_REPO=" ]'
+check "example config and installer agree on the keys" '[ "$(grep -oE "^[A-Z_]+=" "$SKILL/assets/runner/runner.env.example" | sort | tr -d "\n")" = "DISTRO=HOST=LABELS=MIN_FREE_GB=OWNER=REPOS=RUNNERS_PER_REPO=" ]'
 
 echo "1..$n"
 exit "$fail"
