@@ -197,7 +197,7 @@ check "unwritable board: exit 2 (S1)" '[ "$(cat "$T/rc")" = 2 ] && grep -q "cann
 
 # ---- estimates (story D): merged stories with an Estimate against their Outcome
 put repos/o/e <<< '{"default_branch":"main"}'
-printf '%s\n' .team/backlog/007-norounds.md .team/plans/007-norounds.md .team/reviews/007-norounds.response.md .team/backlog/001-held.md .team/backlog/002-rounds.md .team/backlog/003-switch.md .team/backlog/004-nooutcome.md .team/backlog/005-noest.md .team/backlog/006-open.md \
+printf '%s\n' .team/backlog/008-parts.md .team/plans/008-parts.md .team/reviews/008-parts.response.md .team/backlog/007-norounds.md .team/plans/007-norounds.md .team/reviews/007-norounds.response.md .team/backlog/001-held.md .team/backlog/002-rounds.md .team/backlog/003-switch.md .team/backlog/004-nooutcome.md .team/backlog/005-noest.md .team/backlog/006-open.md \
   .team/plans/001-held.md .team/plans/002-rounds.md .team/plans/003-switch.md .team/plans/004-nooutcome.md .team/plans/005-noest.md .team/plans/006-open.md \
   .team/reviews/001-held.response.md .team/reviews/002-rounds.response.md .team/reviews/003-switch.response.md \
   | jq -R '{path: .}' | jq -s '{tree: .}' | put "repos/o/e/git/trees/main?recursive=1"
@@ -210,9 +210,11 @@ plan 004-nooutcome "$(est L adversarial 3 claude)"
 plan 005-noest $'## Files\n- x'
 plan 006-open "$(est S plain 1 codex)"
 plan 007-norounds "$(est S plain '<n>' codex)"
+plan 008-parts "$(est S plain 2 codex)"$'- `src/api.ts` — spine\n\n## Parts\n<!-- Optional (team/PARTS.md [P1]). -->\n- p1 — files: `tests/a.test.ts` — check: `true` — model: light\n- p2 — files: `docs/a.md` — check: `true` — model: light\n\n## Steps\n- not a part\n'
 resp() { put "repos/o/e/contents/.team/reviews/$1.response.md?ref=main" <<< "{\"content\":\"$(b64 "$2")\"}"; }
 resp 001-held $'## Codex round 1 — 2026-11-01\n- M1 fixed in a\n\n## Codex round 2 — 2026-11-01\n- none\n\n## Outcome\nbuilt-by: codex\nmodel: claude-sonnet-5-5\nmissed: nothing'
 resp 002-rounds $'## Codex round 1 — 2026-11-01\n## Codex round 2 — 2026-11-01\n## Codex round 3 — 2026-11-02\n## Judge round 1 — 2026-11-02\n\n## Outcome\nbuilt-by: codex\nmissed: the parser'
+resp 008-parts $'## Codex round 1 — 2026-11-01\n\n## Outcome\nbuilt-by: codex\nparts: 1 taken, 1 rebuilt — p2: header | name not in the plan\nmissed: nothing'
 resp 007-norounds $'## Codex round 1 — 2026-11-01\n\n## Outcome\nbuilt-by: codex'
 resp 003-switch $'## Codex round 1 — 2026-11-01\n\n## Outcome\nbuilt-by: codex->claude\nmissed: Codex failed twice'
 epr() { # number title merged_ago opened_ago
@@ -225,6 +227,7 @@ epr() { # number title merged_ago opened_ago
   epr 4 "004: no outcome" $((1*D)) $((1*D+30*H))
   epr 5 "005: no estimate" $((1*D)) $((1*D+2*H))
   epr 7 "007: no rounds" $((1*D)) $((1*D+1*H))
+  epr 8 "008: parts" $((1*D)) $((1*D+3*H))
   printf '{"number":6,"title":"006: open","state":"open","draft":true,"merged_at":null,"updated_at":"%s","created_at":"%s","head":{"ref":"feat/006-open","sha":"s6"},"html_url":"u6"}]' "$(t H)" "$(t H)"
 } | put "repos/o/e/pulls?state=all&per_page=100"
 
@@ -241,12 +244,14 @@ check "estimates: no Estimate absent"  '! erow 005-noest'
 check "estimates: unmerged absent"     '! erow 006-open'
 check "estimates: prose builder: ignored" '! grep -q "| claude in" "$T/est.md"'
 check "estimates: no numeric rounds → unknown (r1 S1)" 'erow 007-norounds | grep -q "| ? (no codex-rounds) |"'
-check "estimates: Model column (v0.8.6)"  'grep -q "| Held | Model planned → actual |$" "$T/est.md"'
-check "estimates: model planned → actual" 'erow 001-held | grep -q "| yes | light → claude-sonnet-5-5 |$"'
-check "estimates: model planned, none recorded" 'erow 002-rounds | grep -q "| no (rounds) | standard → — |$"'
-check "estimates: no model on either side → —" 'erow 004-nooutcome | grep -q "| — | — |$"'
-check "estimates: footer S codex"      'grep -q "^| S | codex | 2 | 1 | 2.5 |" "$T/est.md"'
-check "estimates: footer median"       'grep -q "^| M | codex | 1 | 0 | 10 |" "$T/est.md"'
+check "estimates: Model column (v0.8.6)"  'grep -q "| Held | Model planned → actual | Parts |$" "$T/est.md"'
+check "estimates: model planned → actual" 'erow 001-held | grep -q "| yes | light → claude-sonnet-5-5 | - |$"'
+check "estimates: model planned, none recorded" 'erow 002-rounds | grep -q "| no (rounds) | standard → — | - |$"'
+check "estimates: no model on either side → —" 'erow 004-nooutcome | grep -q "| — | — | - |$"'
+check "estimates: footer S codex"      'grep -q "^| S | codex | no | 2 | 1 | 2.5 |" "$T/est.md"'
+check "estimates: footer median"       'grep -q "^| M | codex | no | 1 | 0 | 10 |" "$T/est.md"'
+check "estimates: Parts column, plan lines and Outcome (v0.8.11)" 'erow 008-parts | grep -q "| 2/1 | 3 | yes | — | 2: 1 taken, 1 rebuilt — p2: header / name not in the plan |$"'
+check "estimates: footer counts parts stories apart" 'grep -q "^| S | codex | yes | 1 | 1 | 3 |" "$T/est.md"'
 
 # ---- codex-quota (v0.8.6): Codex's latest reply says its usage limit is reached (wording from agent-team #24, #25)
 put repos/o/k <<< '{"default_branch":"main"}'

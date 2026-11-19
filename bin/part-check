@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# part-check: the cheap check before a Builder takes a part in (team/PARTS.md [P4]).
+#
+#   bin/part-check --base <sha> --files "<paths>" --report <file> [--check "<cmd>"] [--ignored-ok "<paths>"] [--dir <worktree>]
+#
+# Run in the part's worktree (or name it with --dir), on the part's branch.
+#   --base    the commit the part started from; it must be an ancestor of HEAD
+#   --files   the part's paths from the plan's `## Parts`, space-separated, relative to the repo root;
+#             a path ending in `/` allows everything under that directory. No globs, no spaces in a path.
+#   --report  the subagent's report, saved to a file outside the worktree
+#   --check   the part's check command from the plan (never from the report); run with `bash -c` in the worktree root
+#   --ignored-ok  git-ignored paths the part may leave behind, same form as --files: what installing the lockfile's
+#             dependencies made (`node_modules/`, `.venv/`). Decided by the Builder, never taken from the report.
+#
+# Passes only when all of these hold:
+#   1. every path the part committed since --base is on the list (`git diff --no-renames --name-only`, so a rename
+#      counts as its source and its target, a deletion as its path, a submodule pointer as its path whatever
+#      `diff.ignoreSubmodules` says), and it committed something;
+#   2. nothing is uncommitted or untracked in the worktree (work that would not come along in the merge), and no
+#      git-ignored file exists outside --files and --ignored-ok (a file the check could lean on that the merge leaves behind);
+#   3. the report's last non-empty line is `Hinder: <something>`;
+#   4. the check command exits 0 and HEAD is still the commit that 1 validated (the check runs the part's code).
+# Prints the Hinder line and then `Head: <sha>` on stdout: the Builder merges that sha, never the branch name.
+# The check's own output and one line per failure go to stderr.
+# Exit: 0 all hold and the line is `Hinder: inga` · 3 all hold but Hinder lists items · 1 any other failure · 2 usage.
+# bash 3.2 (macOS) and git only.
+set -euo pipefail
+
+usage() { echo 'usage: bin/part-check --base <sha> --files "<paths>" --report <file> [--check "<cmd>"] [--ignored-ok "<paths>"] [--dir <worktree>]' >&2; exit 2; }
+
+BASE=""; FILES=""; REPORT=""; CHECK=""; IGNOK=""; DIR="."
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --base|--files|--report|--check|--ignored-ok|--dir) [ $# -ge 2 ] || usage ;;
+  esac
+  case "$1" in
+    --base) BASE="$2"; shift 2 ;;
+    --files) FILES="$2"; shift 2 ;;
+    --report) REPORT="$2"; shift 2 ;;
+    --check) CHECK="$2"; shift 2 ;;
+    --ignored-ok) IGNOK="$2"; shift 2 ;;
+    --dir) DIR="$2"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[ -n "$BASE" ] && [ -n "$REPORT" ] || usage
+
+# paths_of "<paths>": one path per line, `./` stripped. An entry that could match everything or leave the repo is a usage error.
+paths_of() {
+  local f out=""
+  set -f
+  for f in $1; do
+    f="${f#./}"
+    case "$f" in
+      ""|/*|-*|..|../*|*/../*|*/..|*//*) set +f; echo "part-check: not a repo-relative path: $f" >&2; exit 2 ;;
+    esac
+    out="$out$f
+"
+  done
+  set +f
+  printf '%s' "$out"
+}
+LIST="$(paths_of "$FILES")" || exit 2
+[ -n "$LIST" ] || usage
+OKLIST="$(paths_of "$IGNOK")" || exit 2
+
+ROOT="$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null)" || { echo "part-check: not a git worktree: $DIR" >&2; exit 2; }
+G() { git -C "$ROOT" -c core.quotePath=false "$@"; }
+
+rc=0
+fail() { echo "part-check: $1" >&2; rc=1; }
+
+listed() { # listed PATH LIST: is the path on the list (exactly, or under a listed directory)?
+  local p="$1" f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ "$p" = "$f" ] && return 0
+    case "$f" in
+      */) case "$p" in "$f"?*) return 0 ;; esac ;;
+    esac
+  done <<EOF
+$2
+EOF
+  return 1
+}
+
+# 1. committed paths
+if ! G rev-parse --verify -q "$BASE^{commit}" > /dev/null; then
+  fail "--base is not a commit here: $BASE"
+elif ! G merge-base --is-ancestor "$BASE" HEAD; then
+  fail "--base $BASE is not an ancestor of HEAD: the part did not build on the commit it started from"
+else
+  HEAD0="$(G rev-parse HEAD)"
+  changed="$(G diff --no-renames --ignore-submodules=none --name-only "$BASE" "$HEAD0")"
+  if [ -z "$changed" ]; then
+    fail "the part committed no change since $BASE"
+  else
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      listed "$p" "$LIST" || fail "path outside the part's list: $p"
+    done <<EOF
+$changed
+EOF
+  fi
+fi
+
+# 2. nothing left behind
+st="$(G status --porcelain --untracked-files=all --ignored=traditional --ignore-submodules=none)"
+dirty="$(printf '%s\n' "$st" | grep -v '^!! ' || true)"
+if [ -n "$dirty" ]; then
+  fail "uncommitted or untracked files in the worktree: $(printf '%s\n' "$dirty" | head -5 | sed 's/^...//' | tr '\n' ' ')"
+fi
+while IFS= read -r p; do
+  case "$p" in "!! "?*) p="${p#!! }" ;; *) continue ;; esac
+  listed "$p" "$LIST" || listed "$p" "$OKLIST" || listed "${p%/}" "$OKLIST" || fail "git-ignored file outside the part's list and --ignored-ok: $p"
+done <<EOF
+$st
+EOF
+
+# 3. the Hinder line
+hinder=""
+if [ ! -f "$REPORT" ]; then
+  fail "no report file: $REPORT"
+else
+  last="$(tr -d '\r' < "$REPORT" | awk 'NF {l = $0} END {print l}' | sed 's/[[:space:]]*$//')"
+  case "$last" in
+    "Hinder: "?*) hinder="$last"; printf '%s\n' "$hinder" ;;
+    *) fail "the report's last line is not 'Hinder: inga' or 'Hinder: <list>'" ;;
+  esac
+fi
+
+# 4. the check command
+if [ -n "$CHECK" ]; then
+  if ! (cd "$ROOT" && bash -c "$CHECK") >&2; then
+    fail "check failed: $CHECK"
+  fi
+  # the check ran the part's code: the commit validated above must still be what the branch holds
+  if [ -n "${HEAD0:-}" ] && [ "$(G rev-parse HEAD)" != "$HEAD0" ]; then
+    fail "HEAD moved while the check ran: $HEAD0 was validated, the branch is now at $(G rev-parse HEAD)"
+  fi
+fi
+[ -z "${HEAD0:-}" ] || [ "$rc" != 0 ] || printf 'Head: %s\n' "$HEAD0"
+
+[ "$rc" = 0 ] || exit 1
+[ "$hinder" = "Hinder: inga" ] || { echo "part-check: the part reported obstacles" >&2; exit 3; }
+exit 0
