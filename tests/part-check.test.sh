@@ -29,7 +29,7 @@ run() { rc=0; bash "$PC" --dir "$R" --base "$BASE" "$@" > "$T/out" 2> "$T/err" |
 
 part a; echo t > "$R/tests/api.test.ts"; commit a
 run --files "tests/api.test.ts" --report "$T/inga.txt" --check "true"
-check "(a) clean part, Hinder: inga, check true → 0" '[ "$rc" = 0 ] && [ "$(cat "$T/out")" = "Hinder: inga" ]'
+check "(a) clean part, Hinder: inga, check true → 0" '[ "$rc" = 0 ] && [ "$(head -1 "$T/out")" = "Hinder: inga" ]'
 run --files "tests/api.test.ts" --report "$T/inga.txt"
 check "(a) no --check → 0" '[ "$rc" = 0 ]'
 run --files "./tests/api.test.ts src/never.ts" --report "$T/crlf.txt" --check "test -f tests/api.test.ts"
@@ -58,14 +58,14 @@ run --files "tests/api.test.ts" --report "$T/missing.txt" --check "true"
 check "(e) no report file → 1" '[ "$rc" = 1 ]'
 
 run --files "tests/api.test.ts" --report "$T/items.txt" --check "true"
-check "(f) Hinder items → 3, line printed" '[ "$rc" = 3 ] && [ "$(cat "$T/out")" = "Hinder: needs the schema name" ]'
+check "(f) Hinder items → 3, line printed" '[ "$rc" = 3 ] && [ "$(head -1 "$T/out")" = "Hinder: needs the schema name" ] && grep -q "^Head: [0-9a-f]\{40\}$" "$T/out"'
 
 run --files "tests/api.test.ts" --report "$T/inga.txt" --check "false"
 check "(g) check false → 1" '[ "$rc" = 1 ] && grep -q "check failed: false" "$T/err"'
 run --files "tests/api.test.ts" --report "$T/items.txt" --check "false"
 check "(g) Hinder items and a failed check → 1, not 3" '[ "$rc" = 1 ]'
 run --files "tests/api.test.ts" --report "$T/inga.txt" --check "echo CHECKOUT"
-check "(g) the check's output stays off stdout" '[ "$rc" = 0 ] && [ "$(cat "$T/out")" = "Hinder: inga" ] && grep -q CHECKOUT "$T/err"'
+check "(g) the check's output stays off stdout" '[ "$rc" = 0 ] && [ "$(head -1 "$T/out")" = "Hinder: inga" ] && grep -q CHECKOUT "$T/err"'
 
 part h; echo d > "$R/docs/a.md"; mkdir -p "$R/docs/deep"; echo d > "$R/docs/deep/b.md"; commit h
 run --files "docs/" --report "$T/inga.txt" --check "true"
@@ -89,6 +89,37 @@ part j; echo t > "$R/tests/api.test.ts"; g add -A; g update-index --add --cachei
 run --files "tests/api.test.ts" --report "$T/inga.txt" --check "true"
 check "(j) submodule pointer outside the list → 1" '[ "$rc" = 1 ] && grep -q "outside the part.s list: vendor/rulebook" "$T/err"'
 g reset -q --hard
+
+# Codex round 1: M1 the check moves HEAD, M2 diff.ignoreSubmodules hides a pointer, S1 git-ignored files
+part m; echo t > "$R/tests/api.test.ts"; commit m; MHEAD="$(g rev-parse HEAD)"
+run --files "tests/api.test.ts" --report "$T/inga.txt" --check "true"
+check "(m) prints the validated head (r1 M1)" '[ "$rc" = 0 ] && [ "$(sed -n 2p "$T/out")" = "Head: $MHEAD" ]'
+run --files "tests/api.test.ts" --report "$T/inga.txt" --check "echo x >> src/api.ts && git -c user.name=t -c user.email=t@t commit -qam sneak"
+check "(m) check that commits a spine change → 1, no Head line (r1 M1)" '[ "$rc" = 1 ] && grep -q "HEAD moved" "$T/err" && ! grep -q "^Head:" "$T/out"'
+
+part n; echo t > "$R/tests/api.test.ts"; g add -A; g update-index --add --cacheinfo "160000,$BASE,vendor/rulebook"; g commit -qm "part n"
+g config diff.ignoreSubmodules all
+run --files "tests/api.test.ts" --report "$T/inga.txt" --check "true"
+check "(n) submodule pointer with diff.ignoreSubmodules=all → 1 (r1 M2)" '[ "$rc" = 1 ] && grep -q "outside the part.s list: vendor/rulebook" "$T/err"'
+g config --unset diff.ignoreSubmodules; g reset -q --hard
+
+g checkout -q main; printf 'secret.env\nnode_modules/\ndocs/build/\n' > "$R/.gitignore"; g add -A; g commit -qm ignore; IBASE="$(g rev-parse HEAD)"
+g checkout -q -b o "$IBASE"; mkdir -p "$R/tests" "$R/docs/build"; echo t > "$R/tests/api.test.ts"; commit o
+runi() { rc=0; bash "$PC" --dir "$R" --base "$IBASE" "$@" > "$T/out" 2> "$T/err" || rc=$?; }
+echo k > "$R/secret.env"
+runi --files "tests/api.test.ts" --report "$T/inga.txt" --check "true"
+check "(o) git-ignored file outside the list → 1 (r1 S1)" '[ "$rc" = 1 ] && grep -q "git-ignored file outside.*secret.env" "$T/err"'
+rm "$R/secret.env"; mkdir -p "$R/node_modules/x"; echo m > "$R/node_modules/x/i.js"
+runi --files "tests/api.test.ts" --report "$T/inga.txt" --check "true"
+check "(o) node_modules without --ignored-ok → 1 (r1 S1)" '[ "$rc" = 1 ] && grep -q "git-ignored file outside.*node_modules/" "$T/err"'
+runi --files "tests/api.test.ts" --report "$T/inga.txt" --check "true" --ignored-ok "node_modules/"
+check "(o) node_modules with --ignored-ok node_modules/ → 0 (r1 S1)" '[ "$rc" = 0 ]'
+echo b > "$R/docs/build/out.html"
+runi --files "tests/api.test.ts docs/" --report "$T/inga.txt" --check "true" --ignored-ok "node_modules/"
+check "(o) ignored file under a listed directory → 0" '[ "$rc" = 0 ]'
+runi --files "tests/api.test.ts" --report "$T/inga.txt" --ignored-ok "/"
+check "(o) usage: --ignored-ok / → 2" '[ "$rc" = 2 ]'
+rm -rf "$R/node_modules" "$R/docs/build"
 
 part k
 run --files "tests/api.test.ts" --report "$T/inga.txt" --check "true"
