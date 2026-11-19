@@ -4,6 +4,7 @@
 #   bash <(curl -fsSL https://raw.githubusercontent.com/conwad-lab/agent-team/main/bin/runner-install)
 #   bin/runner-install --status               machine, service and GitHub's view per runner
 #   bin/runner-install --uninstall [repo…]    remove the runner on GitHub (revokes its key) and delete its machine
+#   --verbose (anywhere on the line)          also show what apt, Docker, the runner's scripts and systemd print
 #
 # One isolated OrbStack Linux machine per runner. The registration token is fetched with the human's own `gh` login
 # and piped straight into the machine: it is never in a variable or an argument on the Mac, never printed, never
@@ -13,8 +14,14 @@ set -euo pipefail
 # gh prints HTTP traffic, the registration token's response included, on stderr when these are set
 unset GH_DEBUG DEBUG
 
-usage() { echo "usage: runner-install [--status | --uninstall [repo…]]"; }
+usage() { echo "usage: runner-install [--verbose] [--status | --uninstall [repo…]]"; }
 MODE=install
+VERBOSE=0
+argc=$#
+while [ "$argc" -gt 0 ]; do   # take --verbose out of the arguments, wherever it stands
+  a="$1"; shift; argc=$((argc - 1))
+  if [ "$a" = --verbose ]; then VERBOSE=1; else set -- ${1+"$@"} "$a"; fi   # ${1+…}: bash 3.2 with set -u rejects an empty "$@"
+done
 case "${1:-}" in
   --status) MODE=status; shift ;;
   --uninstall) MODE=uninstall; shift ;;
@@ -47,6 +54,21 @@ asset() {
 # so no command inside can swallow the rest of the script.
 in_machine() { orb -m "$1" bash -s; }
 params() { while [ $# -gt 1 ]; do printf '%s=%q\n' "$1" "$2"; shift 2; done; }
+# quiet: first lines of a machine script. `q cmd…` runs a tool whose output the human does not need: nothing is
+# shown unless it fails (then its last lines) or --verbose was given. Its exit code is the command's own.
+quiet() { params VERBOSE "$VERBOSE"; cat <<'S'
+q() {
+  if [ "$VERBOSE" = 1 ]; then "$@"; return $?; fi
+  local o rc=0
+  o="$("$@" 2>&1)" || rc=$?
+  if [ "$rc" != 0 ]; then printf '%s\n' "$o" | tail -n 20 >&2; fi
+  return "$rc"
+}
+S
+}
+# free disk on the Mac's volume that holds OrbStack's data (under the user's Library), in KB; empty when unreadable
+free_kb() { df -Pk "$HOME" 2>/dev/null | awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print $4 }'; }
+gb() { awk -v k="$1" 'BEGIN { printf "%.1f", k / 1048576 }'; }
 
 svc_state() { in_machine "$1" <<'S'
 {
@@ -56,7 +78,7 @@ if [ -n "$u" ]; then systemctl is-active "$u" 2>/dev/null || true; else echo non
 }
 S
 }
-machine_state() { orb list 2>/dev/null </dev/null | awk -v m="$1" '$1 == m { print $2; f = 1 } END { if (!f) print "missing" }'; }
+machine_state() { { orb list 2>/dev/null </dev/null || true; } | awk -v m="$1" '$1 == m { print $2; f = 1 } END { if (!f) print "missing" }'; }
 machine_exists() { orb info "$1" >/dev/null 2>&1 </dev/null; }
 recorded() { [ -f "$STATE" ] && awk -v m="$1" '$1 == m { f = 1 } END { exit !f }' "$STATE"; }
 record() { mkdir -p "$(dirname "$STATE")"; recorded "$1" || printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >> "$STATE"; }
@@ -82,9 +104,10 @@ wait_online() { # wait_online REPO NAME SECONDS
 }
 
 load_conf() {
-  OWNER=""; HOST=""; REPOS=""; RUNNERS_PER_REPO=1; LABELS=mini; DISTRO=ubuntu:noble
+  OWNER=""; HOST=""; REPOS=""; RUNNERS_PER_REPO=1; LABELS=mini; DISTRO=ubuntu:noble; MIN_FREE_GB=5
   # shellcheck disable=SC1090
   [ -f "$CONF" ] && . "$CONF"
+  case "$MIN_FREE_GB" in ""|*[!0-9]*) MIN_FREE_GB=5 ;; esac
   return 0
 }
 valid_name() { case "$1" in ""|*[!A-Za-z0-9._-]*|.*|-*) return 1 ;; esac; }
@@ -125,6 +148,9 @@ if [ "$MODE" = status ]; then
       i=$((i + 1))
     done
   done
+  f="$(free_kb || true)"
+  if [ -n "$f" ]; then say "Ledigt på Macens disk: $(gb "$f") GB (en ny maskin skapas inte under $MIN_FREE_GB GB)."
+  else say "Ledigt på Macens disk: kunde inte läsas (df)."; fi
   exit 0
 fi
 
@@ -205,7 +231,8 @@ esc() { printf '%s' "$1" | sed -e 's/[#&\\]/\\&/g'; }
 {
   printf '%s\n' "$EXAMPLE" | sed -e "s#^OWNER=.*#OWNER=$(esc "$OWNER")#" -e "s#^HOST=.*#HOST=$(esc "$HOST")#" \
     -e "s#^REPOS=.*#REPOS=\"$(esc "$REPOS")\"#" -e "s#^RUNNERS_PER_REPO=.*#RUNNERS_PER_REPO=$RUNNERS_PER_REPO#" \
-    -e "s#^LABELS=.*#LABELS=$(esc "$LABELS")#" -e "s#^DISTRO=.*#DISTRO=$(esc "$DISTRO")#"
+    -e "s#^LABELS=.*#LABELS=$(esc "$LABELS")#" -e "s#^DISTRO=.*#DISTRO=$(esc "$DISTRO")#" \
+    -e "s#^MIN_FREE_GB=.*#MIN_FREE_GB=$MIN_FREE_GB#"
   [ -f "$CONF" ] && grep -E '^RUNNERS_[A-Za-z0-9_]+=[0-9]+$' "$CONF" | grep -v '^RUNNERS_PER_REPO=' || true
 } > "$CONF.new"
 mv "$CONF.new" "$CONF"; chmod 600 "$CONF"
@@ -264,35 +291,36 @@ S
 }
 
 toolset() { # what the PR workflows assume from ubuntu-latest; installs only what is missing
-  in_machine "$1" <<'S'
+  { quiet; cat <<'S'
 {
 set -eu
 exec </dev/null
 export DEBIAN_FRONTEND=noninteractive
 sudo -n true || { echo "no passwordless sudo in the machine" >&2; exit 1; }
-sudo apt-get update -qq
-sudo apt-get install -y -qq git curl jq zip unzip python3 python3-venv build-essential ca-certificates >/dev/null
+q sudo apt-get update -qq
+q sudo apt-get install -y -qq git curl jq zip unzip python3 python3-venv build-essential ca-certificates
 if ! command -v gh >/dev/null 2>&1; then
   sudo mkdir -p -m 755 /etc/apt/keyrings
   curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
   sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
     | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
-  sudo apt-get update -qq
-  sudo apt-get install -y -qq gh >/dev/null
+  q sudo apt-get update -qq
+  q sudo apt-get install -y -qq gh
 fi
 if ! command -v docker >/dev/null 2>&1; then
-  curl -fsSL https://get.docker.com | sudo sh >/dev/null 2>&1
+  q bash -c 'set -o pipefail; curl -fsSL https://get.docker.com | sudo sh'
 fi
 sudo usermod -aG docker "$(id -un)"
-sudo docker run --rm hello-world >/dev/null
+q sudo docker run --rm hello-world
 }
 S
+  } | in_machine "$1"
 }
 
 runner_software() { # download once, check against GitHub's published SHA-256, unpack
   release || return 1
-  { params V "$REL_V" SHA_ARM64 "$REL_ARM64" SHA_X64 "$REL_X64"; cat <<'S'
+  { quiet; params V "$REL_V" SHA_ARM64 "$REL_ARM64" SHA_X64 "$REL_X64"; cat <<'S'
 {
 set -eu
 exec </dev/null
@@ -313,7 +341,7 @@ mkdir -p "$d"
 tar xzf "$tmp/$f" -C "$d"
 rm -rf "$tmp"
 cd "$d"
-sudo ./bin/installdependencies.sh >/dev/null
+q sudo ./bin/installdependencies.sh   # tries several libicu versions: "Unable to locate package" lines are normal
 }
 S
   } | in_machine "$1"
@@ -362,7 +390,7 @@ S
 
 # hook_and_service MACHINE START BUSY: write the cleanup hook and its two .env lines; START=1 installs and starts the service
 hook_and_service() {
-  { params HOOK_B64 "$HOOK_B64" START "$2" BUSY "$3"; cat <<'S'
+  { quiet; params HOOK_B64 "$HOOK_B64" START "$2" BUSY "$3"; cat <<'S'
 {
 set -eu
 exec </dev/null
@@ -383,9 +411,9 @@ done
 # the service reads .env only when it starts: a change is pending until a restart has happened
 if [ "$changed" = 1 ]; then touch .restart-pending; fi
 if [ "$START" = 1 ]; then
-  [ -f .service ] || sudo ./svc.sh install "$(id -un)" >/dev/null
+  [ -f .service ] || q sudo ./svc.sh install "$(id -un)"
   if [ -f .restart-pending ]; then sudo ./svc.sh stop >/dev/null 2>&1 || true; fi
-  sudo ./svc.sh start >/dev/null
+  q sudo ./svc.sh start
   rm -f .restart-pending
 elif [ -f .restart-pending ]; then
   if [ "$BUSY" = true ]; then
@@ -393,7 +421,7 @@ elif [ -f .restart-pending ]; then
     exit 5
   fi
   sudo ./svc.sh stop >/dev/null 2>&1 || true
-  sudo ./svc.sh start >/dev/null
+  q sudo ./svc.sh start
   rm -f .restart-pending
 fi
 }
@@ -402,7 +430,7 @@ S
 }
 
 install_one() { # install_one REPO MACHINE NAME
-  local r="$1" m="$2" name="$3" row status busy was
+  local r="$1" m="$2" name="$3" row status busy was free
   say "— $name (maskin $m)"
   if machine_exists "$m"; then
     recorded "$m" || { warn "✗ maskinen $m finns redan men skapades inte av den här installern. Radera den (orb delete $m) eller byt namn."; return 1; }
@@ -414,6 +442,13 @@ install_one() { # install_one REPO MACHINE NAME
     fi
     orb start "$m" >/dev/null 2>&1 </dev/null || true
   else
+    # a machine with its tools and the runner takes a few GB: stop here, not halfway through orb create
+    free="$(free_kb || true)"
+    if [ -z "$free" ]; then warn "  ! kunde inte läsa ledigt diskutrymme (df); fortsätter utan diskkoll."
+    elif [ "$free" -lt $((MIN_FREE_GB * 1048576)) ]; then
+      warn "✗ $name: bara $(gb "$free") GB ledigt på Macens disk, en ny maskin kräver minst $MIN_FREE_GB GB (MIN_FREE_GB i $CONF). Ingen maskin skapad. Frigör utrymme och kör raden igen."
+      return 1
+    fi
     orb create --isolated --isolate-network "$DISTRO" "$m" >/dev/null </dev/null || { warn "✗ kunde inte skapa maskinen $m."; return 1; }
     record "$m" "$r" "$name" "$OWNER"
     say "  ✓ isolerad maskin skapad"
