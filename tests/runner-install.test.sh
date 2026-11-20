@@ -101,7 +101,14 @@ cat > "$T/mbin/sudo" <<'S'
 case "${1:-}" in
   -n) exit 0 ;;
   ./*) exec "$@" ;;
-  *) cat >/dev/null 2>&1 || true; echo "sudo $*" >> "$ST/sudo_calls"; exit 0 ;;
+  *) cat >/dev/null 2>&1 || true; echo "sudo $*" >> "$ST/sudo_calls"
+     case "$*" in
+       "systemctl is-active --quiet docker") [ ! -f "$ST/hook_docker_inactive" ] || exit 3 ;;
+       "systemctl start docker") if [ -f "$ST/hook_docker_db_broken" ]; then echo "Job for docker.service failed" >&2; exit 1; fi; rm -f "$ST/hook_docker_inactive" ;;
+       "test -f /var/lib/docker/network/files/local-kv.db") [ -f "$ST/hook_docker_db_broken" ] || exit 1 ;;
+       "mv /var/lib/docker/network/files/local-kv.db "*) rm -f "$ST/hook_docker_db_broken" ;;
+     esac
+     exit 0 ;;
 esac
 S
 cat > "$T/mbin/curl" <<'C'
@@ -164,7 +171,12 @@ cat > "$T/mbin/mac" <<'A'
 [ -f "$ST/hook_not_isolated" ]
 A
 printf '#!/bin/sh\necho arm64\n' > "$T/mbin/dpkg"
-printf '#!/bin/sh\necho active\n' > "$T/mbin/systemctl"
+cat > "$T/mbin/systemctl" <<'SC'
+#!/bin/sh
+quiet=0; case "$*" in *--quiet*) quiet=1 ;; esac
+case "$*" in *docker*) if [ -f "$ST/hook_docker_inactive" ]; then [ "$quiet" = 1 ] || echo inactive; exit 3; fi ;; esac
+[ "$quiet" = 1 ] || echo active
+SC
 chmod +x "$T/bin/"* "$T/mbin/"*
 
 repo_json() { # repo_json NAME PRIVATE OWNER
@@ -325,6 +337,18 @@ run 'conwad-lab\ntesthost\ndignami-aos mondmodel\n'
 # ---- --status
 run '' --status
 check "--status lists every runner as running, active, online" '[ "$RC" = 0 ] && [ "$(grep -c "running  *active  *online" "$OUT/last")" = 3 ]'
+check "toolset enables Docker and containerd in the machine (v0.8.13)" 'grep -qx "sudo systemctl enable containerd docker" "$ST/sudo_calls"'
+touch "$ST/hook_docker_inactive"
+run '' --status
+check "--status shows no-docker when the service runs without Docker" '[ "$RC" = 0 ] && [ "$(grep -c "running  *no-docker  *online" "$OUT/last")" = 3 ] && grep -q "^no-docker: Docker är nere" "$OUT/last"'
+run 'conwad-lab\ntesthost\ndignami-aos mondmodel\n'
+check "re-run starts a stopped Docker" '[ "$RC" = 0 ] && grep -qx "sudo systemctl start docker" "$ST/sudo_calls" && [ ! -f "$ST/hook_docker_inactive" ]'
+touch "$ST/hook_docker_inactive" "$ST/hook_docker_db_broken"
+run 'conwad-lab\ntesthost\ndignami-aos mondmodel\n'
+check "Docker that will not start: network database moved aside, never deleted, then started" '[ "$RC" = 0 ] && grep -q "^sudo mv /var/lib/docker/network/files/local-kv.db /var/lib/docker/network/files/local-kv.db.broken-[0-9]*$" "$ST/sudo_calls" && ! grep -q "^sudo rm" "$ST/sudo_calls" && [ ! -f "$ST/hook_docker_inactive" ] && grep -q "moving its network database aside" "$OUT/last"'
+rm -f "$ST/hook_docker_inactive" "$ST/hook_docker_db_broken"
+run '' --status
+check "--status without the fault has no no-docker line" '! grep -q "no-docker" "$OUT/last"'
 check "--status ends with the free disk and the threshold" 'tail -1 "$OUT/last" | grep -q "^Ledigt på Macens disk: 50.0 GB (en ny maskin skapas inte under 5 GB).$"'
 run '' --status --verbose
 check "--verbose is accepted after the mode" '[ "$RC" = 0 ] && [ "$(grep -c "running  *active  *online" "$OUT/last")" = 3 ]'
@@ -376,9 +400,16 @@ cat > "$H/bin/docker" <<'DK'
 #!/bin/sh
 echo "$*" >> "$ST/docker_calls"
 case "$*" in "image prune"*|"builder prune"*) [ -f "$ST/hook_prune_fails" ] && exit 1 ;; esac
+if [ -f "$ST/hook_docker_down" ]; then echo "Cannot connect to the Docker daemon" >&2; exit 1; fi
 exit 0
 DK
-chmod +x "$H/bin/docker"
+cat > "$H/bin/sudo" <<'SU'
+#!/bin/sh
+echo "sudo $*" >> "$ST/docker_calls"
+[ -f "$ST/hook_docker_dead" ] || rm -f "$ST/hook_docker_down"
+exit 0
+SU
+chmod +x "$H/bin/docker" "$H/bin/sudo"
 hook() { : > "$ST/docker_calls"; (unset GITHUB_WORKSPACE; HOME="$H/home" PATH="$H/bin:$T/bin:$PATH" bash -e "$SKILL/assets/runner/cleanup.sh"); }
 hook; HRC=$?
 check "hook with room: dangling images only" '[ "$HRC" = 0 ] && grep -qx "image prune -f" "$ST/docker_calls" && ! grep -qx "image prune -af" "$ST/docker_calls" && ! grep -q "^builder prune" "$ST/docker_calls"'
@@ -390,6 +421,16 @@ touch "$ST/hook_prune_fails"
 hook; HRC=$?
 check "hook: a failing image prune never stops the job" '[ "$HRC" = 0 ] && grep -qx "image prune -af" "$ST/docker_calls"'
 rm -f "$ST/hook_prune_fails" "$ST/df_free_kb"
+# ---- v0.8.13: Docker down when a job starts
+hook; HRC=$?
+check "hook with Docker up: no sudo, no start" '[ "$HRC" = 0 ] && ! grep -q "^sudo" "$ST/docker_calls"'
+touch "$ST/hook_docker_down"
+hook; HRC=$?
+check "hook with Docker down: starts it once and cleans as usual" '[ "$HRC" = 0 ] && [ "$(grep -c "^sudo -n systemctl start docker$" "$ST/docker_calls")" = 1 ] && grep -qx "ps -aq" "$ST/docker_calls" && grep -qx "volume prune -af" "$ST/docker_calls"'
+touch "$ST/hook_docker_down" "$ST/hook_docker_dead"
+hook > "$OUT/hook_dead" 2>&1; HRC=$?
+check "hook with Docker that will not start: the job is stopped (fail closed)" '[ "$HRC" != 0 ] && grep -q "Cannot connect to the Docker daemon" "$OUT/hook_dead" && ! grep -qx "volume prune -af" "$ST/docker_calls"'
+rm -f "$ST/hook_docker_down" "$ST/hook_docker_dead"
 
 # ---- no token-shaped string and no bash-4-only construct in the installer
 check "bash -n passes" 'bash -n "$SKILL/bin/runner-install"'

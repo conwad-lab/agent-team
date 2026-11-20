@@ -74,7 +74,10 @@ svc_state() { in_machine "$1" <<'S'
 {
 exec </dev/null
 u="$(cat "$HOME/actions-runner/.service" 2>/dev/null || true)"
-if [ -n "$u" ]; then systemctl is-active "$u" 2>/dev/null || true; else echo none; fi
+if [ -n "$u" ]; then s="$(systemctl is-active "$u" 2>/dev/null || true)"; else s=none; fi
+# a runner whose machine has no Docker fails every job in the cleanup hook: say so instead of "active"
+if [ "$s" = active ] && ! systemctl is-active --quiet docker 2>/dev/null; then s=no-docker; fi
+echo "$s"
 }
 S
 }
@@ -132,6 +135,7 @@ if [ "$MODE" = status ]; then
   [ -f "$CONF" ] || die "ingen installation här ($CONF saknas)."
   load_conf
   printf '%-34s %-9s %-9s %s\n' RUNNER MASKIN TJÄNST GITHUB
+  nodocker=0
   for r in $REPOS; do
     n="$(count_for "$r")"; i=1
     while [ "$i" -le "$n" ]; do
@@ -145,9 +149,11 @@ if [ "$MODE" = status ]; then
         gh_view="$(printf '%s' "$row" | awk '{ print $2 ($3 == "true" ? ", busy" : "") }')"
       else gh_view="not registered"; fi
       printf '%-34s %-9s %-9s %s\n' "$name" "$ms" "${svc:--}" "$gh_view"
+      [ "$svc" != no-docker ] || nodocker=1
       i=$((i + 1))
     done
   done
+  [ "$nodocker" = 0 ] || say "no-docker: Docker är nere i maskinen, så varje jobb stoppas av städkroken. Kör installationsraden igen: den startar Docker."
   f="$(free_kb || true)"
   if [ -n "$f" ]; then say "Ledigt på Macens disk: $(gb "$f") GB (en ny maskin skapas inte under $MIN_FREE_GB GB)."
   else say "Ledigt på Macens disk: kunde inte läsas (df)."; fi
@@ -310,6 +316,20 @@ if ! command -v gh >/dev/null 2>&1; then
 fi
 if ! command -v docker >/dev/null 2>&1; then
   q bash -c 'set -o pipefail; curl -fsSL https://get.docker.com | sudo sh'
+fi
+# Docker has to come up with the machine: the cleanup hook stops every job it cannot reach Docker for
+q sudo systemctl enable containerd docker
+if ! sudo systemctl is-active --quiet docker && ! q sudo systemctl start docker; then
+  # seen 2026-11-20 after the Mac restarted with a full disk: Docker's local network database held two docker0
+  # networks and dockerd refused to start. The file is state Docker rebuilds; it is moved aside, never deleted.
+  db=/var/lib/docker/network/files/local-kv.db
+  if sudo test -f "$db"; then
+    echo "Docker did not start: moving its network database aside and trying once more" >&2
+    sudo systemctl stop docker docker.socket >/dev/null 2>&1 || true
+    sudo mv "$db" "$db.broken-$(date +%Y%m%d%H%M%S)"
+    sudo systemctl reset-failed docker >/dev/null 2>&1 || true
+  fi
+  q sudo systemctl start docker
 fi
 sudo usermod -aG docker "$(id -un)"
 q sudo docker run --rm hello-world

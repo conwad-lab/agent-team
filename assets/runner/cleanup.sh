@@ -5,6 +5,13 @@ if [ -n "$GITHUB_WORKSPACE" ] && [ -d "$GITHUB_WORKSPACE" ]; then
   find "$GITHUB_WORKSPACE" -mindepth 1 -delete
 fi
 rm -f "$HOME/.docker/config.json" "$HOME/.npmrc" "$HOME/.netrc" "$HOME/.git-credentials"
+# Docker has to answer before this hook can vouch for the job. A daemon that did not come up with the machine is
+# started once here (the runner's user has passwordless sudo); if it still does not answer, docker ps stops the job.
+if ! docker info >/dev/null 2>&1; then
+  sudo -n systemctl start docker >/dev/null 2>&1 || true
+  i=0
+  while [ "$i" -lt 15 ] && ! docker info >/dev/null 2>&1; do sleep 2; i=$((i + 1)); done
+fi
 ids=$(docker ps -aq)
 if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
 docker volume prune -af >/dev/null   # -a: named volumes too, not only anonymous ones
