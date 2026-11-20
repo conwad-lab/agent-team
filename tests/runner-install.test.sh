@@ -106,7 +106,10 @@ case "${1:-}" in
        "systemctl is-active --quiet docker") [ ! -f "$ST/hook_docker_inactive" ] || exit 3 ;;
        "systemctl start docker") if [ -f "$ST/hook_docker_db_broken" ] || [ -f "$ST/hook_docker_ratelimit" ] || [ -f "$ST/hook_docker_other_fault" ]; then echo "Job for docker.service failed" >&2; exit 1; fi; rm -f "$ST/hook_docker_inactive" ;;
        "systemctl reset-failed docker") rm -f "$ST/hook_docker_ratelimit" ;;
-       "journalctl -u docker "*) [ ! -f "$ST/hook_docker_db_broken" ] || echo "failed to start daemon: ... (docker0): networks have same bridge name" ;;
+       "journalctl -u docker "*)
+         [ ! -f "$ST/hook_docker_db_broken" ] || echo "failed to start daemon: ... (docker0): networks have same bridge name"
+         # an old, already resolved bridge error is only in the journal before this attempt
+         case "$*" in *"--since "*) ;; *) [ ! -f "$ST/hook_docker_stale_journal" ] || echo "old: networks have same bridge name" ;; esac ;;
        "test -f /var/lib/docker/network/files/local-kv.db") exit 0 ;;
        "mv /var/lib/docker/network/files/local-kv.db /"*) [ -f "$ST/hook_docker_db_unrepairable" ] || rm -f "$ST/hook_docker_db_broken" ;;
      esac
@@ -357,7 +360,11 @@ check "start limit only: reset-failed and a second start, database untouched" '[
 touch "$ST/hook_docker_inactive" "$ST/hook_docker_other_fault"
 run 'conwad-lab\ntesthost\ndignami-aos\n'
 check "another Docker fault: database untouched, repo not done" '[ "$RC" != 0 ] && [ "$(mvs)" = "$before_mv" ] && grep -q "Docker does not start in this machine" "$OUT/last"'
-rm -f "$ST/hook_docker_other_fault"
+# Codex M3: an old bridge error in the journal does not diagnose today's unrelated failure
+touch "$ST/hook_docker_stale_journal"
+run 'conwad-lab\ntesthost\ndignami-aos\n'
+check "old bridge error in the journal, another fault now: database untouched" '[ "$RC" != 0 ] && [ "$(mvs)" = "$before_mv" ] && grep -q "^sudo journalctl -u docker --since [0-9-]* [0-9:]* --no-pager$" "$ST/sudo_calls"'
+rm -f "$ST/hook_docker_other_fault" "$ST/hook_docker_stale_journal"
 touch "$ST/hook_docker_db_broken" "$ST/hook_docker_db_unrepairable"
 run 'conwad-lab\ntesthost\ndignami-aos\n'
 check "repair that does not help: database put back" '[ "$RC" != 0 ] && tail -1 "$ST/sudo_calls" | grep -q "^sudo mv /var/lib/docker/network/files/local-kv.db.broken-[0-9]* /var/lib/docker/network/files/local-kv.db$" && grep -q "back in place" "$OUT/last"'
