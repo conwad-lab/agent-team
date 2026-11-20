@@ -320,16 +320,30 @@ fi
 # Docker has to come up with the machine: the cleanup hook stops every job it cannot reach Docker for
 q sudo systemctl enable containerd docker
 if ! sudo systemctl is-active --quiet docker && ! q sudo systemctl start docker; then
-  # seen 2026-11-20 after the Mac restarted with a full disk: Docker's local network database held two docker0
-  # networks and dockerd refused to start. The file is state Docker rebuilds; it is moved aside, never deleted.
-  db=/var/lib/docker/network/files/local-kv.db
-  if sudo test -f "$db"; then
-    echo "Docker did not start: moving its network database aside and trying once more" >&2
-    sudo systemctl stop docker docker.socket >/dev/null 2>&1 || true
-    sudo mv "$db" "$db.broken-$(date +%Y%m%d%H%M%S)"
-    sudo systemctl reset-failed docker >/dev/null 2>&1 || true
+  # a fault that has passed can leave systemd's start limit in the way: clear it and try again before anything else
+  sudo systemctl reset-failed docker >/dev/null 2>&1 || true
+  if ! q sudo systemctl start docker; then
+    # seen 2026-11-20 after the Mac restarted with a full disk: Docker's local network database held two docker0
+    # networks and dockerd refused to start. Only that diagnosed fault moves the file aside, and it is put back
+    # if Docker still does not start.
+    db=/var/lib/docker/network/files/local-kv.db
+    if sudo test -f "$db" && sudo journalctl -u docker -n 60 --no-pager 2>/dev/null | grep -q "networks have same bridge name"; then
+      echo "Docker did not start (two networks claim the same bridge): moving its network database aside and trying once more" >&2
+      moved="$db.broken-$(date +%Y%m%d%H%M%S)"
+      sudo systemctl stop docker docker.socket >/dev/null 2>&1 || true
+      sudo mv "$db" "$moved"
+      sudo systemctl reset-failed docker >/dev/null 2>&1 || true
+      if ! q sudo systemctl start docker; then
+        sudo systemctl stop docker docker.socket >/dev/null 2>&1 || true
+        sudo mv "$moved" "$db"
+        echo "Docker still does not start: its network database is back in place" >&2
+        exit 1
+      fi
+    else
+      echo "Docker does not start in this machine (sudo journalctl -u docker)" >&2
+      exit 1
+    fi
   fi
-  q sudo systemctl start docker
 fi
 sudo usermod -aG docker "$(id -un)"
 q sudo docker run --rm hello-world

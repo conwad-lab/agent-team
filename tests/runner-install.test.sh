@@ -104,9 +104,11 @@ case "${1:-}" in
   *) cat >/dev/null 2>&1 || true; echo "sudo $*" >> "$ST/sudo_calls"
      case "$*" in
        "systemctl is-active --quiet docker") [ ! -f "$ST/hook_docker_inactive" ] || exit 3 ;;
-       "systemctl start docker") if [ -f "$ST/hook_docker_db_broken" ]; then echo "Job for docker.service failed" >&2; exit 1; fi; rm -f "$ST/hook_docker_inactive" ;;
-       "test -f /var/lib/docker/network/files/local-kv.db") [ -f "$ST/hook_docker_db_broken" ] || exit 1 ;;
-       "mv /var/lib/docker/network/files/local-kv.db "*) rm -f "$ST/hook_docker_db_broken" ;;
+       "systemctl start docker") if [ -f "$ST/hook_docker_db_broken" ] || [ -f "$ST/hook_docker_ratelimit" ] || [ -f "$ST/hook_docker_other_fault" ]; then echo "Job for docker.service failed" >&2; exit 1; fi; rm -f "$ST/hook_docker_inactive" ;;
+       "systemctl reset-failed docker") rm -f "$ST/hook_docker_ratelimit" ;;
+       "journalctl -u docker "*) [ ! -f "$ST/hook_docker_db_broken" ] || echo "failed to start daemon: ... (docker0): networks have same bridge name" ;;
+       "test -f /var/lib/docker/network/files/local-kv.db") exit 0 ;;
+       "mv /var/lib/docker/network/files/local-kv.db /"*) [ -f "$ST/hook_docker_db_unrepairable" ] || rm -f "$ST/hook_docker_db_broken" ;;
      esac
      exit 0 ;;
 esac
@@ -345,8 +347,22 @@ run 'conwad-lab\ntesthost\ndignami-aos mondmodel\n'
 check "re-run starts a stopped Docker" '[ "$RC" = 0 ] && grep -qx "sudo systemctl start docker" "$ST/sudo_calls" && [ ! -f "$ST/hook_docker_inactive" ]'
 touch "$ST/hook_docker_inactive" "$ST/hook_docker_db_broken"
 run 'conwad-lab\ntesthost\ndignami-aos mondmodel\n'
-check "Docker that will not start: network database moved aside, never deleted, then started" '[ "$RC" = 0 ] && grep -q "^sudo mv /var/lib/docker/network/files/local-kv.db /var/lib/docker/network/files/local-kv.db.broken-[0-9]*$" "$ST/sudo_calls" && ! grep -q "^sudo rm" "$ST/sudo_calls" && [ ! -f "$ST/hook_docker_inactive" ] && grep -q "moving its network database aside" "$OUT/last"'
-rm -f "$ST/hook_docker_inactive" "$ST/hook_docker_db_broken"
+check "duplicate-bridge fault: network database moved aside, never deleted, then started" '[ "$RC" = 0 ] && grep -q "^sudo mv /var/lib/docker/network/files/local-kv.db /var/lib/docker/network/files/local-kv.db.broken-[0-9]*$" "$ST/sudo_calls" && ! grep -q "^sudo rm" "$ST/sudo_calls" && [ ! -f "$ST/hook_docker_inactive" ] && grep -q "moving its network database aside" "$OUT/last"'
+# Codex M2: only the diagnosed fault moves Docker's state, and a repair that does not help is undone
+mvs() { grep -c "^sudo mv /var/lib/docker" "$ST/sudo_calls" 2>/dev/null || true; }
+before_mv="$(mvs)"
+touch "$ST/hook_docker_inactive" "$ST/hook_docker_ratelimit"
+run 'conwad-lab\ntesthost\ndignami-aos mondmodel\n'
+check "start limit only: reset-failed and a second start, database untouched" '[ "$RC" = 0 ] && [ "$(mvs)" = "$before_mv" ] && [ ! -f "$ST/hook_docker_inactive" ]'
+touch "$ST/hook_docker_inactive" "$ST/hook_docker_other_fault"
+run 'conwad-lab\ntesthost\ndignami-aos\n'
+check "another Docker fault: database untouched, repo not done" '[ "$RC" != 0 ] && [ "$(mvs)" = "$before_mv" ] && grep -q "Docker does not start in this machine" "$OUT/last"'
+rm -f "$ST/hook_docker_other_fault"
+touch "$ST/hook_docker_db_broken" "$ST/hook_docker_db_unrepairable"
+run 'conwad-lab\ntesthost\ndignami-aos\n'
+check "repair that does not help: database put back" '[ "$RC" != 0 ] && tail -1 "$ST/sudo_calls" | grep -q "^sudo mv /var/lib/docker/network/files/local-kv.db.broken-[0-9]* /var/lib/docker/network/files/local-kv.db$" && grep -q "back in place" "$OUT/last"'
+rm -f "$ST/hook_docker_inactive" "$ST/hook_docker_db_broken" "$ST/hook_docker_db_unrepairable"
+run 'conwad-lab\ntesthost\ndignami-aos mondmodel\n'
 run '' --status
 check "--status without the fault has no no-docker line" '! grep -q "no-docker" "$OUT/last"'
 check "--status ends with the free disk and the threshold" 'tail -1 "$OUT/last" | grep -q "^Ledigt på Macens disk: 50.0 GB (en ny maskin skapas inte under 5 GB).$"'
@@ -400,6 +416,7 @@ cat > "$H/bin/docker" <<'DK'
 #!/bin/sh
 echo "$*" >> "$ST/docker_calls"
 case "$*" in "image prune"*|"builder prune"*) [ -f "$ST/hook_prune_fails" ] && exit 1 ;; esac
+if [ -f "$ST/hook_docker_hangs" ]; then /bin/sleep 300; fi
 if [ -f "$ST/hook_docker_down" ]; then echo "Cannot connect to the Docker daemon" >&2; exit 1; fi
 exit 0
 DK
@@ -426,10 +443,15 @@ hook; HRC=$?
 check "hook with Docker up: no sudo, no start" '[ "$HRC" = 0 ] && ! grep -q "^sudo" "$ST/docker_calls"'
 touch "$ST/hook_docker_down"
 hook; HRC=$?
-check "hook with Docker down: starts it once and cleans as usual" '[ "$HRC" = 0 ] && [ "$(grep -c "^sudo -n systemctl start docker$" "$ST/docker_calls")" = 1 ] && grep -qx "ps -aq" "$ST/docker_calls" && grep -qx "volume prune -af" "$ST/docker_calls"'
+check "hook with Docker down: starts it once, without blocking, and cleans as usual" '[ "$HRC" = 0 ] && [ "$(grep -c "^sudo -n systemctl start --no-block docker$" "$ST/docker_calls")" = 1 ] && grep -qx "ps -aq" "$ST/docker_calls" && grep -qx "volume prune -af" "$ST/docker_calls"'
 touch "$ST/hook_docker_down" "$ST/hook_docker_dead"
 hook > "$OUT/hook_dead" 2>&1; HRC=$?
-check "hook with Docker that will not start: the job is stopped (fail closed)" '[ "$HRC" != 0 ] && grep -q "Cannot connect to the Docker daemon" "$OUT/hook_dead" && ! grep -qx "volume prune -af" "$ST/docker_calls"'
+check "hook with Docker that will not start: the job is stopped (fail closed)" '[ "$HRC" != 0 ] && grep -q "Cannot connect to the Docker daemon" "$OUT/hook_dead" && ! grep -qx "volume prune -af" "$ST/docker_calls" && ! grep -qx "ps -aq" "$ST/docker_calls"'
+# Codex M1: a daemon that hangs instead of refusing is cut off by the probes' own time limits
+touch "$ST/hook_docker_down" "$ST/hook_docker_dead" "$ST/hook_docker_hangs"
+t0=$(date +%s); hook > "$OUT/hook_hang" 2>&1; HRC=$?; t1=$(date +%s)
+check "hook with a hanging Docker: stopped within a minute, fail closed" '[ "$HRC" != 0 ] && [ $((t1 - t0)) -lt 60 ]'
+rm -f "$ST/hook_docker_hangs"
 rm -f "$ST/hook_docker_down" "$ST/hook_docker_dead"
 
 # ---- no token-shaped string and no bash-4-only construct in the installer

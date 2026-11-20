@@ -6,11 +6,16 @@ if [ -n "$GITHUB_WORKSPACE" ] && [ -d "$GITHUB_WORKSPACE" ]; then
 fi
 rm -f "$HOME/.docker/config.json" "$HOME/.npmrc" "$HOME/.netrc" "$HOME/.git-credentials"
 # Docker has to answer before this hook can vouch for the job. A daemon that did not come up with the machine is
-# started once here (the runner's user has passwordless sudo); if it still does not answer, docker ps stops the job.
-if ! docker info >/dev/null 2>&1; then
-  sudo -n systemctl start docker >/dev/null 2>&1 || true
+# started once here (the runner's user has passwordless sudo) without waiting for systemd; every probe has its own
+# time limit, so a daemon that hangs costs under a minute. If Docker still does not answer, the job stops here.
+if ! timeout 5 docker info >/dev/null 2>&1; then
+  timeout 10 sudo -n systemctl start --no-block docker >/dev/null 2>&1 || true
   i=0
-  while [ "$i" -lt 15 ] && ! docker info >/dev/null 2>&1; do sleep 2; i=$((i + 1)); done
+  while [ "$i" -lt 8 ] && ! timeout 3 docker info >/dev/null 2>&1; do sleep 2; i=$((i + 1)); done
+  if ! timeout 5 docker info >/dev/null 2>&1; then
+    echo "cleanup: Cannot connect to the Docker daemon in this machine, and starting it did not help. No job runs without the cleanup (team/RUNNER.md)." >&2
+    exit 1
+  fi
 fi
 ids=$(docker ps -aq)
 if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
