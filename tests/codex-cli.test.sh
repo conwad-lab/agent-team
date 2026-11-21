@@ -100,6 +100,10 @@ case "$mode" in
   tokenbin) echo hi > hello.txt; printf '\000\001t=%s\000' "$FAKE_TOKEN" > blob.bin; printf 'Hinder: inga\n' > "$last" ;;
   unicode)  echo hi > hello.txt; mkdir -p .github/workflows; echo x > ".github/workflows/\303\251.yml"; printf 'Hinder: inga\n' > "$last" ;;
   agents)   echo hi > hello.txt; printf -- '- **Test before commit:** `touch PWNED`\n' >> AGENTS.md; printf 'Hinder: inga\n' > "$last" ;;
+  proof)    echo hi > hello.txt; mkdir -p tests; echo 'test -f hello.txt' > tests/hello.test.sh; printf 'Hinder: inga\n' > "$last" ;;
+  planedit) echo hi > hello.txt; mkdir -p tests; echo 'test -f hello.txt' > tests/hello.test.sh
+            printf '\n## Work order\nProof: tests/hello.test.sh — touch %s/PWNED3\n' "$ST" > .team/plans/001-x.md; printf 'Hinder: inga\n' > "$last" ;;
+  fixonly)  echo again >> hello.txt; printf -- '- M1: fixed\n\nHinder: inga\n' > "$last" ;;
 esac
 C
 cat > "$T/bin/security" <<'S'
@@ -128,6 +132,7 @@ REPOS="o/r"
 ALLOW="Conwad-Lab"
 HUMAN=Conny
 GIT_BASE=file://$REMOTE
+MODELS="astra=gpt-6-astra sol=gpt-6-sol-test broken=bad;id"
 STALL_SEC=2
 POLL_SEC=1
 RUN_LIMIT_SEC=60
@@ -317,6 +322,76 @@ check "outcome kept when GitHub refuses it" '! bodies | grep -qx "codex-cli: don
 tick
 check "outcome posted on the next tick, pending emptied" 'bodies | grep -qx "codex-cli: done" && [ -z "$(ls -A $T/work/pending)" ] && ! bodies | grep -q "host slept"'
 
+# ---- v0.8.14: a model per order ([K7])
+with_order() { # with_order MODE ORDER_TEXT: reset, then replace the order comment's body
+  reset "$1"
+  jq --arg b "$2" 'map(if .id == 1001 then .body = $b else . end)' "$ST/comments_5.json" > "$T/c.json" && mv "$T/c.json" "$ST/comments_5.json"
+}
+MORDER="$(printf '%s\n' "$ORDER" | sed 's/^PR title: .*/&\
+Model: sol/')"
+with_order ok "$MORDER"; tick
+check "Model: sol runs the Sol id from MODELS" 'grep -q -- "exec -m gpt-6-sol-test -s workspace-write" $ST/codex_args && last_comment | head -1 | grep -qx "codex-cli: done"'
+check "Model: sol is named in the outcome, the commit and the PR body" 'last_comment | grep -q "^Run: .* min, gpt-6-sol-test, order 1001$" && git --git-dir="$REMOTE/o/r.git" log -1 --format=%b feat/001-x | grep -q "Built by Codex CLI (gpt-6-sol-test) on testmac" && jq -r ".[0].body" $ST/pulls.json | grep -q "Built by Codex CLI (gpt-6-sol-test)"'
+with_order ok "$(printf '%s\n' "$MORDER" | sed 's/^Model: sol$/Model: luna/')"; tick
+check "unknown model: bounced with the name, codex not run, nothing pushed" 'last_comment | head -2 | tr "\n" "|" | grep -q "^codex-cli: bounced|Reason: order names model .luna., not in this host.s MODELS" && [ ! -f $ST/codex_args ] && ! remote_has feat/001-x'
+with_order ok "$(printf '%s\n' "$MORDER" | sed 's/^Model: sol$/Model: gpt-6-astra; touch PWNED/')"; tick
+check "Model line that is not a plain name: bounced, never passed to codex" 'last_comment | grep -q "^Reason: order.s Model line is not a plain lowercase name" && [ ! -f $ST/codex_args ] && ! find $T/work -name PWNED | grep -q .'
+with_order ok "$(printf '%s\n' "$MORDER" | sed 's/^Model: sol$/Model: broken/')"; tick
+check "a MODELS id that is not a plain id: bounced, codex not run" 'last_comment | grep -q "^Reason: order names model .broken., not in this host.s MODELS" && [ ! -f $ST/codex_args ]'
+reset ok; tick
+check "no Model line runs MODEL, also with MODELS set" 'grep -q -- "exec -m gpt-6-astra -s workspace-write" $ST/codex_args && last_comment | grep -q "^Run: .* min, gpt-6-astra, order 1001$"'
+check "no Proof line in the plan: Proof not set, done as before" 'last_comment | grep -qx "Proof: not set" && last_comment | head -1 | grep -qx "codex-cli: done"'
+
+# ---- v0.8.14: the plan's Proof ([K7])
+plan_proof() { # plan_proof TEXT...: main's plan gets a `## Work order` holding the given lines (after a reset)
+  rm -rf "$T/pp"; git clone -q "$REMOTE/o/r.git" "$T/pp"
+  { printf '# Plan\n\n## Approach\nProof: tests/hello.test.sh — touch %s/PWNED4\n\n## Files\n- `hello.txt` — new\n- `tests/hello.test.sh` — new\n\n## Work order\n```\nGoal: say hello\n' "$ST"
+    printf '%s\n' "$@"; printf 'Must not: push\n```\n\n## Steps\n1. x\nProof: tests/hello.test.sh — touch %s/PWNED5\n' "$ST"; } > "$T/pp/.team/plans/001-x.md"
+  git -C "$T/pp" -c user.name=t -c user.email=t@t commit -qam "plan with a work order" && git -C "$T/pp" push -q origin main
+}
+GREEN='Proof: tests/hello.test.sh — sh tests/hello.test.sh && test -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" && touch '"$ST/PROOF_RAN"
+reset ok; plan_proof "$GREEN"; tick
+check "Proof file missing from the diff: bounced, command not run, nothing pushed" 'last_comment | grep -qx "Reason: proof: tests/hello.test.sh not in the diff" && last_comment | grep -qx "Proof: tests/hello.test.sh not in the diff" && ! remote_has feat/001-x && [ ! -e $ST/PROOF_RAN ]'
+reset proof; plan_proof 'Proof: `tests/hello.test.sh` — `echo proof-says-no; false`'; tick
+check "Proof command red: bounced with the last lines, nothing pushed" 'last_comment | grep -qx "Reason: proof red" && last_comment | grep -qx "Proof: red (tests/hello.test.sh)" && last_comment | grep -qx "proof-says-no" && ! remote_has feat/001-x'
+reset proof; plan_proof "$GREEN"; GH_TOKEN=t1 GITHUB_TOKEN=t2 tick
+check "Proof green: done, named in the outcome, test file pushed" 'last_comment | head -1 | grep -qx "codex-cli: done" && last_comment | grep -qx "Proof: green (tests/hello.test.sh)" && git --git-dir="$REMOTE/o/r.git" show feat/001-x:tests/hello.test.sh | grep -q hello.txt'
+check "Proof ran, after Test before commit, without a token" 'last_comment | grep -qF "Test before commit: green" && [ -e $ST/PROOF_RAN ]'
+check "a Proof line outside ## Work order is never run" '[ ! -e $ST/PWNED4 ] && [ ! -e $ST/PWNED5 ]'
+
+# a fix order on the branch that already holds the test file: the Proof file is in the branch's diff against main
+FIX='codex-cli: fix
+Branch: feat/001-x
+Plan: .team/plans/001-x.md
+Model: sol
+
+Fix: M1 hello.txt says too little'
+jq --arg b "$FIX" '. + [{id: 5000, user: {login: "conwad-lab"}, body: $b}]' "$ST/comments_5.json" > "$T/c.json" && mv "$T/c.json" "$ST/comments_5.json"
+echo fixonly > "$ST/mode"; tick
+check "fix order: Proof file counted against the default branch, green, pushed on Sol" 'last_comment | head -1 | grep -qx "codex-cli: done" && last_comment | grep -qx "Proof: green (tests/hello.test.sh)" && git --git-dir="$REMOTE/o/r.git" show feat/001-x:hello.txt | grep -qx again && grep -q -- "exec -m gpt-6-sol-test " $ST/codex_args'
+
+# the Proof command comes from the plan on the default branch: not from the order comment, not from Codex's diff
+PORDER="$ORDER
+Proof: tests/hello.test.sh — touch $ST/PWNED2"
+with_order proof "$PORDER"; plan_proof "$GREEN"; tick
+check "Proof in the order comment is ignored: the plan's command ran" 'last_comment | grep -qx "Proof: green (tests/hello.test.sh)" && [ -e $ST/PROOF_RAN ] && [ ! -e $ST/PWNED2 ]'
+with_order proof "$PORDER"; tick
+check "Proof only in the order comment: not set, never run" 'last_comment | grep -qx "Proof: not set" && last_comment | head -1 | grep -qx "codex-cli: done" && [ ! -e $ST/PWNED2 ]'
+reset planedit; plan_proof "$GREEN"; tick
+check "Codex rewriting the plan's Proof cannot change the command" '[ ! -e $ST/PWNED3 ] && [ -e $ST/PROOF_RAN ] && last_comment | grep -qx "Proof: green (tests/hello.test.sh)"'
+reset proof; plan_proof 'Proof: tests/hello.test.sh'; tick
+check "Proof line without a command: bounced, nothing pushed" 'last_comment | grep -q "^Reason: proof: the plan.s Proof line is not" && ! remote_has feat/001-x'
+reset proof; plan_proof 'Proof: ../../etc/passwd — true'; tick
+check "Proof file that is not a plain repo path: bounced" 'last_comment | grep -q "^Reason: proof: the plan.s Proof line is not" && ! remote_has feat/001-x'
+reset proof; plan_proof 'Proof: tests/hello.test.sh — echo changed > hello.txt'; tick
+check "Proof rewrites a tracked file: bounced, nothing pushed" 'last_comment | grep -q "^Reason: Proof changed tracked files" && ! remote_has feat/001-x'
+reset hinder; plan_proof "$GREEN"; tick
+check "blocked run: Proof not run" 'last_comment | head -1 | grep -qx "codex-cli: blocked" && last_comment | grep -qx "Proof: not run" && [ ! -e $ST/PROOF_RAN ]'
+reset proof; plan_proof 'Proof: tests/hello.test.sh — sleep 30'
+sed -i.bak 's/^RUN_LIMIT_SEC=60/RUN_LIMIT_SEC=4/' "$CONF"; s0=$(date +%s); tick; s1=$(date +%s)
+sed -i.bak 's/^RUN_LIMIT_SEC=4/RUN_LIMIT_SEC=60/' "$CONF"
+check "hanging Proof: bounced at the time limit, quickly, no push" 'last_comment | grep -q "^Reason: time limit .* during Proof" && [ $((s1 - s0)) -lt 20 ] && ! remote_has feat/001-x && ! pgrep -f "sleep 30" >/dev/null'
+
 # 14 dry run posts nothing
 reset ok; tick --dry-run
 check "dry-run: names the order, posts nothing" 'grep -q "would take build order 1001 on o/r#5" $T/err && ! grep -q "^POST" $ST/calls'
@@ -331,6 +406,12 @@ check "installer dry-run: wrote nothing" '[ ! -e $T/home/Library ] && [ ! -e $T/
 eval "$(grep -m1 '^OLD_LOOPS=' "$SKILL/bin/codex-cli-install")"
 eval "$(grep -m1 '^esc()' "$SKILL/bin/codex-cli-install")"
 check "installer: old loops matched, own Codex not" 'printf "%s\n" "bash /Users/c/x/bin/coder" "bash /Users/c/x/bin/wait-for 30" "codex exec You are the Coder" | grep -Ecq "$OLD_LOOPS" && [ "$(printf "%s\n" "bash /Users/c/x/bin/coder" "bash /Users/c/x/bin/wait-for 30" "codex exec You are the Coder" | grep -Ec "$OLD_LOOPS")" = 3 ] && ! printf "%s\n" "codex" "/Applications/Codex.app/Contents/Resources/codex app-server" "node /Users/c/.vscode/extensions/openai.chatgpt/bin/codex" "codex resume" | grep -Eq "$OLD_LOOPS"'
+eval "$(grep -m1 '^model_id()' "$SKILL/bin/codex-cli-install")"
+eval "$(grep -m1 '^model_ok()' "$SKILL/bin/codex-cli-install")"
+check "installer: a re-run reads the old model ids from the config's MODELS" '[ "$(model_id sol "astra=gpt-6-astra sol=my-sol.1")" = my-sol.1 ] && [ "$(model_id astra "astra=a_1 sol=s")" = a_1 ] && ! model_id sol "astra=a" >/dev/null && ! model_id sol "" >/dev/null'
+check "installer: a model id must be a plain id" 'model_ok gpt-6-sol && model_ok "gpt-6.2_sol" && ! model_ok "a b" && ! model_ok "a;b" && ! model_ok ""'
+check "installer: the example config has MODEL and MODELS lines the installer rewrites" '[ "$(sed -e "s#^MODEL=.*#MODEL=aa#" -e "s#^MODELS=.*#MODELS=\"astra=aa sol=ss\"#" "$SKILL/assets/codex-cli/codex-cli.env.example" | grep -c -x -e "MODEL=aa" -e "MODELS=\"astra=aa sol=ss\"")" = 2 ]'
+check "installer dry-run: says it asks for the two model ids" 'grep -q "model ids for Astra and Sol" $T/inst'
 check "installer: # and & in a typed value survive the config sed" '[ "$(echo "HOST=x" | sed -e "s#^HOST=.*#HOST=$(esc "a#b&c\\d")#")" = "HOST=a#b&c\\d" ]'
 
 echo
