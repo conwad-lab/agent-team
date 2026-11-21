@@ -270,8 +270,8 @@ jobs:
               # source counts: moving a file into .team/reviews/ still changes what lies outside it (Codex M4, M9 on #36)
               cr=$(gh api --paginate "repos/$REPO/commits/$c" --jq '(.files // [])[] | [.filename, (.previous_filename // "")] | @tsv') || { echo "could not read the files of $c"; exit 1; }
               [ "$(grep -c . <<<"$cr")" -lt 3000 ] || refuse "commit ${c:0:7} lists 3000 files, so GitHub may not show them all"
-              cf=$(tr '\t' '\n' <<<"$cr")
-              if grep -qv '^\.team/reviews/' <<<"$cf"; then code=$c; break; fi
+              # empty rename sources and empty file lists are no path (Codex M10 on #36)
+              if tr '\t' '\n' <<<"$cr" | awk 'NF && !/^\.team\/reviews\// {f=1} END {exit !f}'; then code=$c; break; fi
             done
             [ -n "$code" ] || refuse "no commit outside .team/reviews/"
             # only evidence GitHub ties to that commit counts: a receipt naming it, a Codex review on it, or Codex's

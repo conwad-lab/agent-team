@@ -308,6 +308,9 @@ amerged && ok "auto: the version line in .team/team.md may move" || nok "auto: t
 asetup; put "repos/o/r/commits/$H" '{"files":[{"filename":".team/reviews/cfg.md","previous_filename":".team/team.md"}]}'; arun
 ! amerged && quiet && grep -q "no finished Codex review of 1111111" "$A/out" && ok "auto: a rename out of .team/ into reviews/ makes that commit the last code commit (Codex M4 on #36)" || nok "auto: rename source in commit"
 
+asetup; put "repos/o/r/commits/$H" '{"files":[{"filename":".team/reviews/030-bump.md"},{"filename":".team/reviews/030-bump.response.md"}]}'; arun
+amerged && ok "auto: a review-only commit with two review files is not taken for code (Codex M10 on #36)" || nok "auto: two review files"
+
 asetup; rm "$A/repos~o~r~commits~$H"; arun
 ! amerged && [ "$(cat "$A/rc")" = 1 ] && quiet && ok "auto: a commit's files unreadable: stops without merging" || nok "auto: commit files unreadable"
 
