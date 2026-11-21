@@ -1,21 +1,32 @@
 # agent-team: the merge step of cloud mode (team/CLOUD.md § Judge 5, § Walls "Merge workflow").
-# The Judge never runs a merge itself. It posts its verdict comment ending with the line
+# Job merge: the Judge never runs a merge itself. It posts its verdict comment ending with the line
 #   agent-team-merge: <40-hex head sha>
 # and this workflow merges exactly that head (squash), or answers why it did not.
-# It runs from the default branch's copy, never from the PR, and checks out no code.
-# Install: copy to .github/workflows/ in the team repo (a human-merge path). Private repos
-# with `runner: mini` change runs-on to ${{ fromJSON(vars.RUNS_ON || '["self-hosted","mini"]') }}.
+# Job auto (v0.8.15): where AGENTS.md Team settings say `- **Auto-merge:** release`, a PR that only moves
+# the agent-team submodule forward (a release bump) merges by itself once the Judge's approving review
+# file is posted on the head, Codex reviewed the last code commit without a P0/P1 or M/S finding and
+# every check is green; no comment asks for it (team/SETUP.md § Walls in full, "Merge workflow").
+# Both run from the default branch's copy, never from the PR, and check out no code.
+# Install: copy to .github/workflows/ in the team repo (a human-merge path) and list the repo's PR
+# workflows under workflow_run (GitHub starts no check_suite event for Actions' own checks). Private
+# repos with `runner: mini` change runs-on to ${{ fromJSON(vars.RUNS_ON || '["self-hosted","mini"]') }}.
 name: agent-team-merge
 on:
   issue_comment:
     types: [created]
+  pull_request_target:
+    types: [synchronize, ready_for_review]
+  check_suite:
+    types: [completed]
+  workflow_run:
+    workflows: ["CI"] # the repo's PR workflows by name, filled in by the install PR
+    types: [completed]
 permissions:
   contents: write
   pull-requests: write
   actions: write
-concurrency:
-  group: agent-team-merge-${{ github.event.issue.number }}
-  cancel-in-progress: false
+  checks: read
+  statuses: read
 jobs:
   merge:
     if: >-
@@ -26,6 +37,9 @@ jobs:
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ${{ fromJSON(vars.RUNS_ON || '["ubuntu-latest"]') }}
     timeout-minutes: 5
+    concurrency:
+      group: agent-team-merge-${{ github.event.issue.number }}
+      cancel-in-progress: false
     steps:
       - name: Merge the pinned head
         env:
@@ -106,3 +120,182 @@ jobs:
           done
           say "Merged by agent-team-merge: head $sha, as asked in $COMMENT_URL"
           # --- end agent-team-merge script
+  auto:
+    name: agent-team-auto
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       github.event.comment.user.login == 'chatgpt-codex-connector[bot]') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request') ||
+      (github.event_name == 'check_suite' && github.event.check_suite.app.slug != 'github-actions')
+    runs-on: ${{ fromJSON(vars.RUNS_ON || '["ubuntu-latest"]') }}
+    timeout-minutes: 5
+    concurrency:
+      group: agent-team-auto-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
+      cancel-in-progress: false
+    steps:
+      - name: Merge a release bump on agreement
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          AGENT_ACCOUNT: ${{ vars.AGENT_ACCOUNT }}
+          PRS: ${{ github.event.pull_request.number || github.event.issue.number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
+          AFTER_MERGE_WORKFLOWS: ${{ vars.AFTER_MERGE_WORKFLOWS }}
+        shell: bash
+        run: |
+          # --- begin agent-team-auto script
+          set -uo pipefail
+          BOT='chatgpt-codex-connector[bot]'; SELF='agent-team-auto'; SUB='.claude/skills/agent-team'
+          MARK='agent-team-merge (release bump) did not merge'
+          # a Codex finding that blocks agreement (CLOUD.md [J10] c): a P0/P1 badge or an M/S number
+          FIND='\\bP[01]\\b|\\b[MS][0-9]+\\b'
+          b64() { gh api "repos/$REPO/contents/$1?ref=$2" --jq .content | base64 -d; }
+          settings() { awk '/^## Team settings[[:space:]]*$/ {f=1; next} /^## / {f=0} f'; }
+          section() { awk 'BEGIN {s=0; e=0} /^## Team settings[[:space:]]*$/ && !s {s=NR; next} s && !e && /^## / {e=NR} END {if (!e) e=NR+1; print s, e}'; }
+          defb=$(gh api "repos/$REPO" --jq .default_branch) || { echo "could not read the repo"; exit 1; }
+          agents=$(b64 AGENTS.md "$defb") || { echo "could not read AGENTS.md on $defb"; exit 1; }
+          ts=$(settings <<<"$agents") # captured first: grep -q in a pipe can kill the writer under pipefail
+          if ! grep -qE '^- \*\*Auto-merge:\*\* release([[:space:]]|<|$)' <<<"$ts"; then
+            echo "Team settings on $defb do not say Auto-merge: release; nothing to do"; exit 0
+          fi
+          # the repo's own Human-only paths, backticked globs; text that is neither `none` nor globs refuses every bump
+          honly=$(sed -n 's/^- \*\*Human-only paths:\*\*//p' <<<"$ts" | head -n 1 | sed 's/<!--.*//')
+          hglobs=$(grep -o '`[^`]*`' <<<"$honly" | tr -d '`' || true)
+          hbad=""; [ -z "$hglobs" ] && ! grep -qE '^[[:space:]]*(none)?[[:space:]]*$' <<<"$honly" && hbad=1
+          if [ -z "${PRS// }" ] && [ -n "${HEAD_SHA:-}" ]; then
+            PRS=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" --jq '.[] | select(.state == "open") | .number') || PRS=""
+          fi
+          one() {
+            PR=$1
+            later() { echo "not yet on #$PR: $1"; exit 0; }
+            refuse() { # once per head: a class violation, a red check, a Codex finding, a stale branch
+              echo "not merged: $1"
+              seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq ".[] | select((.body // \"\") | startswith(\"$MARK, head $head:\")) | .id") || seen=""
+              [ -n "$seen" ] || gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$MARK, head $head: $1. The Judge goes on as CLOUD.md § Judge 5 says." >/dev/null || true
+              exit 0
+            }
+            pr=$(gh api "repos/$REPO/pulls/$PR") || { echo "could not read #$PR"; exit 1; }
+            head=$(jq -r .head.sha <<<"$pr"); ref=$(jq -r .head.ref <<<"$pr")
+            [ "$(jq -r .state <<<"$pr")" = open ] || later "the PR is not open"
+            [ "$(jq -r .draft <<<"$pr")" = false ] || later "the PR is a draft"
+            [ "$(jq -r '.head.repo.full_name // ""' <<<"$pr")" = "$REPO" ] || later "the PR comes from another repo"
+            [ "$(jq -r .base.ref <<<"$pr")" = "$defb" ] || later "the PR's base is not $defb"
+            files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | [.status, .filename, (.previous_filename // "")] | @tsv') || { echo "could not list the files of #$PR"; exit 1; }
+            awk -F'\t' -v s="$SUB" '$2 == s {f=1} END {exit !f}' <<<"$files" || later "the submodule $SUB does not move: not a release bump"
+            # 1. the diff is a release bump and nothing else
+            set -f
+            while IFS=$'\t' read -r st f prev; do
+              for g in "$f" $prev; do
+                case "$g" in
+                  "$SUB"|AGENTS.md) [ "$st" = modified ] || refuse "$g is $st, not modified" ;;
+                  .team/backlog/*|.team/plans/*|.team/reviews/*|.team/ORDER.md|.team/team.md|.team/PAPERCUTS.md) ;;
+                  *) refuse "$g is outside a release bump (the submodule, .team/ board and review files, .team/team.md, AGENTS.md Team settings)" ;;
+                esac
+                [ -z "$hbad" ] || refuse "the Human-only paths line in AGENTS.md lists no backticked paths"
+                for p in $hglobs; do
+                  if [[ $g == $p ]] || [[ $p == */ && $g == "$p"* ]] || [[ $g == "$p"/* ]]; then refuse "$g is on Human-only paths ($p)"; fi
+                done
+              done
+            done <<<"$files"
+            set +f
+            cmp=$(gh api "repos/$REPO/compare/$defb...$head") || { echo "could not compare $defb...$head"; exit 1; }
+            mb=$(jq -r .merge_base_commit.sha <<<"$cmp")
+            # 2. AGENTS.md: only lines inside ## Team settings, none of the keys that turn this job on or widen it
+            if awk -F'\t' '$2 == "AGENTS.md" {f=1} END {exit !f}' <<<"$files"; then
+              patch=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.filename == "AGENTS.md") | .patch // ""') || patch=""
+              [ -n "$patch" ] || refuse "GitHub shows no diff for AGENTS.md"
+              ob=$(b64 AGENTS.md "$mb") && nb=$(b64 AGENTS.md "$head") || { echo "could not read AGENTS.md at $mb and $head"; exit 1; }
+              read -r os oe <<<"$(section <<<"$ob")"; read -r ns ne <<<"$(section <<<"$nb")"
+              [ "$os" -gt 0 ] && [ "$ns" -gt 0 ] || refuse "AGENTS.md has no ## Team settings section"
+              lines=$(awk '/^@@/ {match($0, /-[0-9]+/); o = substr($0, RSTART + 1, RLENGTH - 1); match($0, /\+[0-9]+/); n = substr($0, RSTART + 1, RLENGTH - 1); next}
+                /^\\/ {next} /^-/ {print "-\t" o "\t" substr($0, 2); o++; next} /^\+/ {print "+\t" n "\t" substr($0, 2); n++; next} {o++; n++}' <<<"$patch")
+              while IFS=$'\t' read -r sign no text; do
+                [ -n "$sign" ] || continue
+                if [ "$sign" = - ]; then lo=$os; hi=$oe; else lo=$ns; hi=$ne; fi
+                [ "$no" -gt "$lo" ] && [ "$no" -lt "$hi" ] || refuse "AGENTS.md line $no ($sign) is outside ## Team settings"
+                if grep -qiE '^#|auto-merge|human-merge paths|human-only paths|stories in flight|\*\*merge:\*\*' <<<"$text"; then
+                  refuse "AGENTS.md changes a line that only a card may change: $(cut -c1-80 <<<"$text")"
+                fi
+              done <<<"$lines"
+            fi
+            # 3. the pin moves forward to a commit on the agent-team default branch named in .gitmodules
+            pin() { gh api "repos/$REPO/contents/$SUB?ref=$1" --jq 'select(.type == "submodule") | .sha'; }
+            old=$(pin "$mb") && new=$(pin "$head") || { echo "could not read the submodule pins"; exit 1; }
+            grep -qxE '[0-9a-f]{40}' <<<"$old" && grep -qxE '[0-9a-f]{40}' <<<"$new" || refuse "$SUB is not a submodule at both $mb and $head"
+            gm=$(b64 .gitmodules "$defb") || refuse "could not read .gitmodules on $defb"
+            url=$(awk -v s="$SUB" '/^\[submodule/ {p=""; u=""} $1 == "path" {p=$3} $1 == "url" {u=$3} p == s && u != "" {print u; exit}' <<<"$gm")
+            up=$(sed -nE 's#^https://github\.com/([^/[:space:]]+/[^/[:space:]]+)/?$#\1#p' <<<"$url" | sed 's/\.git$//')
+            [ -n "$up" ] || refuse "the submodule's url ($url) is not a GitHub repo"
+            upb=$(gh api "repos/$up" --jq .default_branch) || { echo "could not read $up"; exit 1; }
+            s1=$(gh api "repos/$up/compare/$old...$new" --jq .status) || { echo "could not compare the pins"; exit 1; }
+            [ "$s1" = ahead ] || refuse "the pin does not move forward ($up ${old:0:7}...${new:0:7} is $s1)"
+            s2=$(gh api "repos/$up/compare/$new...$upb" --jq .status) || { echo "could not compare the new pin with $up $upb"; exit 1; }
+            [ "$s2" = ahead ] || [ "$s2" = identical ] || refuse "the new pin ${new:0:7} is not on $up $upb ($s2)"
+            # 4. the Judge approved this head: an approving review file, posted as a review on the head by the owner or AGENT_ACCOUNT
+            ok=""
+            for f in $(awk -F'\t' '$1 != "removed" && $2 ~ /^\.team\/reviews\/[^\/]+\.md$/ && $2 !~ /\.response\.md$/ {print $2}' <<<"$files"); do
+              review=$(b64 "$f" "$head") || { echo "could not read $f"; exit 1; }
+              if grep -qE '^verdict:[[:space:]]*approve[[:space:]]*$' <<<"$review"; then ok=1; fi
+            done
+            [ -n "$ok" ] || later "no review file with 'verdict: approve' at $head"
+            reviews=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" --jq '.[] | [.user.login, (.commit_id // ""), ((.body // "") | test("'"$FIND"'") | tostring)] | @tsv') || { echo "could not list reviews"; exit 1; }
+            awk -F'\t' -v h="$head" -v o="$OWNER" -v a="${AGENT_ACCOUNT:-}" '$2 == h && ($1 == o || (a != "" && $1 == a)) {f=1} END {exit !f}' <<<"$reviews" \
+              || later "the review is not posted on $head by $OWNER${AGENT_ACCOUNT:+ or $AGENT_ACCOUNT}"
+            # 5. Codex finished a review of the last commit outside .team/reviews/** with no P0/P1 or M/S
+            code=""
+            for c in $(gh api --paginate "repos/$REPO/pulls/$PR/commits" --jq '.[].sha' | tac); do
+              cj=$(gh api "repos/$REPO/commits/$c") || { echo "could not read $c"; exit 1; }
+              cf=$(jq -r '(.files // [])[].filename' <<<"$cj")
+              if grep -qv '^\.team/reviews/' <<<"$cf"; then code=$c; cdate=$(jq -r .commit.committer.date <<<"$cj"); break; fi
+            done
+            [ -n "$code" ] || refuse "no commit outside .team/reviews/"
+            done_=""; bad=""
+            while IFS=$'\t' read -r at s hit; do
+              [ -n "$at" ] || continue
+              if { [ "$s" = - ] && [[ ! "$at" < "$cdate" ]]; } || { [ "$s" != - ] && [[ $code == "$s"* ]]; }; then done_=1; [ "$hit" = true ] && bad=1; fi
+            done <<<"$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "'"$BOT"'" and ((.body // "") | test("^\\s*<!-- codex-review-receipt"))) | [.created_at, (((.body | capture("Reviewed commit:\\*\\*\\s*`(?<s>[0-9a-f]{7,40})`").s)) // "-"), (.body | test("'"$FIND"'") | tostring)] | @tsv')"
+            if awk -F'\t' -v b="$BOT" -v c="$code" '$1 == b && $2 == c {f=1} END {exit !f}' <<<"$reviews"; then done_=1; fi
+            awk -F'\t' -v b="$BOT" -v c="$code" '$1 == b && $2 == c && $3 == "true" {f=1} END {exit !f}' <<<"$reviews" && bad=1
+            inline=$(gh api --paginate "repos/$REPO/pulls/$PR/comments" --jq '.[] | select(.user.login == "'"$BOT"'" and .original_commit_id == "'"$code"'") | (.body // "") | test("'"$FIND"'") | tostring') || inline=""
+            grep -qx true <<<"$inline" && bad=1
+            [ -z "$bad" ] || refuse "Codex left a P0/P1 or M/S finding on ${code:0:7}"
+            if [ -z "$done_" ]; then # a 👍 by Codex after that commit, on the PR or on an @codex request
+              thumbs=$( { gh api --paginate "repos/$REPO/issues/$PR/reactions" --jq '.[] | select(.content == "+1" and .user.login == "'"$BOT"'") | .created_at'
+                for id in $(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select((.body // "") | test("@codex")) | .id'); do
+                  gh api --paginate "repos/$REPO/issues/comments/$id/reactions" --jq '.[] | select(.content == "+1" and .user.login == "'"$BOT"'") | .created_at'
+                done; } || true)
+              while read -r at; do [ -n "$at" ] && [[ ! "$at" < "$cdate" ]] && done_=1; done <<<"$thumbs"
+            fi
+            [ -n "$done_" ] || later "no finished Codex review of ${code:0:7} yet"
+            # 6. every check on the head green, the latest run per name
+            runs=$(gh api --paginate "repos/$REPO/commits/$head/check-runs?per_page=100" --jq '.check_runs[] | [.id, .name, .status, (.conclusion // "")] | @tsv') || { echo "could not list check runs"; exit 1; }
+            while IFS=$'\t' read -r id name st concl; do
+              [ -n "$id" ] && [ "$name" != "$SELF" ] || continue
+              [ "$st" = completed ] || later "check $name is $st"
+              case "$concl" in success|skipped|neutral) ;; *) refuse "check $name is $concl" ;; esac
+            done <<<"$(sort -t$'\t' -k1,1nr <<<"$runs" | awk -F'\t' '!seen[$2]++')"
+            stats=$(gh api "repos/$REPO/commits/$head/status" --jq '.statuses[] | [.context, .state] | @tsv') || { echo "could not read statuses"; exit 1; }
+            while IFS=$'\t' read -r ctx st; do
+              [ -n "$ctx" ] || continue
+              [ "$st" = success ] || { [ "$st" = pending ] && later "status $ctx is pending"; refuse "status $ctx is $st"; }
+            done <<<"$stats"
+            # 7. the head contains the default branch
+            behind=$(jq -r .behind_by <<<"$cmp")
+            [ "$behind" = 0 ] || refuse "the branch is $behind commits behind $defb; merge $defb, and the Judge reviews the new head"
+            if ! out=$(gh api -X PUT "repos/$REPO/pulls/$PR/merge" -f sha="$head" -f merge_method=squash 2>&1); then
+              [ "$(gh api "repos/$REPO/pulls/$PR" --jq .merged 2>/dev/null)" = true ] && { echo "#$PR is already merged"; exit 0; }
+              refuse "GitHub refused the merge: $(tr '\n' ' ' <<<"$out" | cut -c1-300)"
+            fi
+            now=$(gh api "repos/$REPO/git/ref/heads/$ref" --jq .object.sha 2>/dev/null || true)
+            if [ "$now" = "$head" ]; then gh api -X DELETE "repos/$REPO/git/refs/heads/$ref" >/dev/null 2>&1 || echo "branch $ref not deleted"; fi
+            for wf in ${AFTER_MERGE_WORKFLOWS:-}; do
+              gh api -X POST "repos/$REPO/actions/workflows/$wf/dispatches" -f ref="$defb" >/dev/null 2>&1 || echo "could not dispatch $wf"
+            done
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="Merged by agent-team-merge (release bump): head $head" >/dev/null || true
+          }
+          rc=0
+          for p in $PRS; do ( one "$p" ) || rc=1; done
+          exit $rc
+          # --- end agent-team-auto script
