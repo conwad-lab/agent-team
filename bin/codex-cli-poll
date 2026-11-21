@@ -256,6 +256,8 @@ if [ -n "$PLAN" ]; then
 fi
 [ "$KIND" = fix ] || [ -n "$PR_TITLE" ] || bounce "build order has no 'PR title:' line"
 # the order's model: a name this host's MODELS maps to an id; the id, never the order's text, reaches codex
+# a `Model:` line with nothing after it is malformed, not "no line"
+if [ -z "$MODEL_NAME" ] && printf '%s\n' "$ORDER_BODY" | grep -qE '^Model:'; then MODEL_NAME=" "; fi
 if [ -n "$MODEL_NAME" ]; then
   RUN_MODEL="—"
   [[ "$MODEL_NAME" =~ ^[a-z]{1,32}$ ]] || bounce "order's Model line is not a plain lowercase name"

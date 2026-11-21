@@ -336,6 +336,10 @@ with_order ok "$(printf '%s\n' "$MORDER" | sed 's/^Model: sol$/Model: luna/')"; 
 check "unknown model: bounced with the name, codex not run, nothing pushed" 'last_comment | head -2 | tr "\n" "|" | grep -q "^codex-cli: bounced|Reason: order names model .luna., not in this host.s MODELS" && [ ! -f $ST/codex_args ] && ! remote_has feat/001-x'
 with_order ok "$(printf '%s\n' "$MORDER" | sed 's/^Model: sol$/Model: gpt-6-astra; touch PWNED/')"; tick
 check "Model line that is not a plain name: bounced, never passed to codex" 'last_comment | grep -q "^Reason: order.s Model line is not a plain lowercase name" && [ ! -f $ST/codex_args ] && ! find $T/work -name PWNED | grep -q .'
+with_order ok "$(printf '%s\n' "$MORDER" | sed 's/^Model: sol$/Model:/')"; tick
+check "empty Model line: bounced, the default model is not run" 'last_comment | grep -q "^Reason: order.s Model line is not a plain lowercase name" && [ ! -f $ST/codex_args ]'
+with_order ok "$(printf '%s\n' "$MORDER" | sed 's/^Model: sol$/Model:   /')"; tick
+check "blank Model line: bounced, the default model is not run" 'last_comment | grep -q "^Reason: order.s Model line is not a plain lowercase name" && [ ! -f $ST/codex_args ]'
 with_order ok "$(printf '%s\n' "$MORDER" | sed 's/^Model: sol$/Model: broken/')"; tick
 check "a MODELS id that is not a plain id: bounced, codex not run" 'last_comment | grep -q "^Reason: order names model .broken., not in this host.s MODELS" && [ ! -f $ST/codex_args ]'
 reset ok; tick
