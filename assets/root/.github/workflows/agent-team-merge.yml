@@ -282,7 +282,8 @@ jobs:
                   # [J10] (c): no review there failed or timed out, whatever else finished
                   if [ "$sc" = "$code" ]; then
                     case "$ss" in
-                      completed) done_=1; [ "$sf" = false ] || bad=1 ;;
+                      # its has_any_findings counts the PR's unresolved threads, not this commit: findings are read below
+                      completed) done_=1 ;;
                       running|queued|pending|in_progress) running=1 ;;
                       *) failed=$ss ;;
                     esac

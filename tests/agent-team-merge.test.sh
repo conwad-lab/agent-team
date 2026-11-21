@@ -279,7 +279,7 @@ asetup; summary "\"commit_sha\":\"$C\",\"has_any_findings\":false,\"has_unresolv
 amerged && ok "auto: Codex's status summary, completed without findings on the last code commit, counts as clean" || nok "auto: summary clean"
 
 asetup; summary "\"commit_sha\":\"$C\",\"has_any_findings\":true,\"has_unresolved_findings\":true,\"status\":\"completed\""; arun
-! amerged && asaid "Codex left a P0/P1 or M/S finding" && ok "auto: a summary with findings on the last code commit refuses" || nok "auto: summary findings"
+amerged && ok "auto: the summary's findings flag alone does not refuse: it counts the PR's open threads (48516c6 on #36: clean receipt, flag true)" || nok "auto: summary flag"
 
 asetup; jq --arg b "$BOT" --arg c "$C" '. + [{id:11,user:{login:$b},body:("<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 &#123;\"code_review\":&#123;\"commit_sha\":\"" + $c + "\",\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":\"failed\"&#125;&#125; -->")}]' "$A/repos~o~r~issues~7~comments" > "$A/x" && mv "$A/x" "$A/repos~o~r~issues~7~comments"; arun
 ! amerged && asaid "a Codex review of 2222222 ended failed" && ok "auto: a clean receipt plus a failed summary for the same commit refuses (Codex M7 on #36; escaped braces as GitHub stores them)" || nok "auto: failed summary"
