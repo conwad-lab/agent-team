@@ -221,7 +221,7 @@ asetup() {
     {id:9,user:{login:$b},created_at:"2026-11-21T10:05:00Z",body:"<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn'"'"'t find any major issues.\n\n**Reviewed commit:** `2222222`"}]' > "$A/repos~o~r~issues~7~comments"
   put repos/o/r/issues/7/reactions '[]'; put repos/o/r/issues/comments/8/reactions '[]'; put repos/o/r/pulls/7/comments '[]'
   put "repos/o/r/commits/$H/check-runs?per_page=100" '{"check_runs":[{"id":5,"name":"pr-check","status":"completed","conclusion":"success"}]}'
-  put "repos/o/r/commits/$H/status" '{"statuses":[]}'
+  put "repos/o/r/commits/$H/status?per_page=100" '{"state":"pending","total_count":0,"statuses":[]}'
   put repos/o/r/git/ref/heads/bump "{\"object\":{\"sha\":\"$H\"}}"
 }
 arun() { : > "$A/calls"; REPO=o/r OWNER=o AGENT_ACCOUNT="${AA:-}" PRS="${APRS-7}" HEAD_SHA="${AHS:-}" AFTER_MERGE_WORKFLOWS="" GH_TOKEN=x PATH="$T/abin:$PATH" bash "$T/auto.sh" > "$A/out" 2>&1; echo $? > "$A/rc"; }
@@ -335,8 +335,17 @@ asetup; put "repos/o/r/commits/$H/check-runs?per_page=100" '{"check_runs":[{"id"
 asetup; put "repos/o/r/commits/$H/check-runs?per_page=100" '{"check_runs":[{"id":5,"name":"pr-check","status":"in_progress","conclusion":null}]}'; arun
 ! amerged && quiet && grep -q "check pr-check is in_progress" "$A/out" && ok "auto: a running check: waits silently" || nok "auto: running check"
 
-asetup; put "repos/o/r/commits/$H/status" '{"statuses":[{"context":"Vercel","state":"failure"}]}'; arun
+asetup; put "repos/o/r/commits/$H/status?per_page=100" '{"state":"failure","total_count":1,"statuses":[{"context":"Vercel","state":"failure"}]}'; arun
 ! amerged && asaid "status Vercel is failure" && ok "auto: a red commit status refuses" || nok "auto: red status"
+# M11: more contexts than one page shows; the aggregate state or a row count mismatch stops it
+asetup; put "repos/o/r/commits/$H/status?per_page=100" '{"state":"failure","total_count":31,"statuses":[{"context":"a","state":"success"}]}'; arun
+! amerged && grep -q "read 1 of 31 statuses" "$A/out" && quiet && [ "$(cat "$A/rc")" = 1 ] && ok "auto: a status list shorter than total_count stops without merging" || nok "auto: short status list"
+asetup; put "repos/o/r/commits/$H/status?per_page=100" '{"state":"failure","total_count":1,"statuses":[{"context":"a","state":"success"}]}'; arun
+! amerged && asaid "the combined status is failure" && ok "auto: a red combined status refuses even when every row read is green" || nok "auto: red aggregate"
+asetup; put "repos/o/r/commits/$H/status?per_page=100" '{"state":"pending","total_count":1,"statuses":[{"context":"a","state":"success"}]}'; arun
+! amerged && quiet && ok "auto: a pending combined status waits quietly" || nok "auto: pending aggregate"
+asetup; put "repos/o/r/commits/$H/status?per_page=100" '{"state":"success","total_count":1,"statuses":[{"context":"a","state":"success"}]}'; arun
+amerged && ok "auto: a green combined status merges" || nok "auto: green aggregate"
 
 asetup; put "repos/o/r/compare/main...$H" "{\"behind_by\":2,\"merge_base_commit\":{\"sha\":\"$MB\"}}"; arun
 ! amerged && asaid "2 commits behind main" && ok "auto: a head behind main refuses" || nok "auto: behind main"

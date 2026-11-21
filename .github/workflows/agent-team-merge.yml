@@ -312,11 +312,19 @@ jobs:
               [ "$st" = completed ] || later "check $name is $st"
               case "$concl" in success|skipped|neutral) ;; *) refuse "check $name is $concl" ;; esac
             done <<<"$(sort -t$'\t' -k1,1nr <<<"$runs" | awk -F'\t' '!seen[$2]++')"
-            stats=$(gh api "repos/$REPO/commits/$head/status" --jq '.statuses[] | [.context, .state] | @tsv') || { echo "could not read statuses"; exit 1; }
-            while IFS=$'\t' read -r ctx st; do
+            stats=$(gh api --paginate "repos/$REPO/commits/$head/status?per_page=100" --jq '"S\t\(.state)\t\(.total_count // 0)", (.statuses[] | "C\t\(.context)\t\(.state)")') || { echo "could not read statuses"; exit 1; }
+            agg=$(grep -m1 '^S' <<<"$stats" | cut -f2) || agg=""
+            total=$(grep -m1 '^S' <<<"$stats" | cut -f3) || total=0
+            nrows=$(grep -c '^C' <<<"$stats") || nrows=0
+            [ "${total:-0}" = "$nrows" ] || { echo "read $nrows of ${total:-0} statuses on ${head:0:7}"; exit 1; }
+            while IFS=$'\t' read -r _ ctx st; do
               [ -n "$ctx" ] || continue
               [ "$st" = success ] || { [ "$st" = pending ] && later "status $ctx is pending"; refuse "status $ctx is $st"; }
-            done <<<"$stats"
+            done <<<"$(grep '^C' <<<"$stats" || true)"
+            if [ "$nrows" -gt 0 ] && [ "$agg" != success ]; then
+              [ "$agg" = pending ] && later "the combined status is pending"
+              refuse "the combined status is $agg"
+            fi
             # 7. the head contains the default branch
             behind=$(jq -r .behind_by <<<"$cmp")
             [ "$behind" = 0 ] || refuse "the branch is $behind commits behind $defb; merge $defb, and the Judge reviews the new head"
