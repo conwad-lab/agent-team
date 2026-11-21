@@ -261,7 +261,10 @@ jobs:
             [ "$last" = "COMMENTED"$'\t'"true" ] || [ "$last" = "APPROVED"$'\t'"true" ] || later "the latest review on $head by $OWNER${AGENT_ACCOUNT:+ or $AGENT_ACCOUNT} does not say 'verdict: approve'"
             # 5. Codex finished a review of the last commit outside .team/reviews/** with no P0/P1 or M/S
             code=""
-            for c in $(gh api --paginate "repos/$REPO/pulls/$PR/commits" --jq '.[].sha' | tac); do
+            # the whole list or nothing: a page that fails partway must not leave out the latest commits (Codex M8 on #36)
+            shas=$(gh api --paginate "repos/$REPO/pulls/$PR/commits" --jq '.[].sha') || { echo "could not list the PR's commits"; exit 1; }
+            [ "$(tail -n 1 <<<"$shas")" = "$head" ] || { echo "the PR's commit list does not end at the head $head"; exit 1; }
+            for c in $(tac <<<"$shas"); do
               cj=$(gh api "repos/$REPO/commits/$c") || { echo "could not read $c"; exit 1; }
               # a rename's source counts: moving a file into .team/reviews/ still changes what lies outside it
               cf=$(jq -r '(.files // [])[] | .filename, (.previous_filename // empty)' <<<"$cj")

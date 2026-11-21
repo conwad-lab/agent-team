@@ -308,6 +308,12 @@ amerged && ok "auto: the version line in .team/team.md may move" || nok "auto: t
 asetup; put "repos/o/r/commits/$H" '{"files":[{"filename":".team/reviews/cfg.md","previous_filename":".team/team.md"}]}'; arun
 ! amerged && quiet && grep -q "no finished Codex review of 1111111" "$A/out" && ok "auto: a rename out of .team/ into reviews/ makes that commit the last code commit (Codex M4 on #36)" || nok "auto: rename source in commit"
 
+asetup; rm "$A/repos~o~r~pulls~7~commits"; arun
+! amerged && [ "$(cat "$A/rc")" = 1 ] && quiet && ok "auto: the PR's commit list unreadable: stops without merging (Codex M8 on #36)" || nok "auto: commits unreadable"
+
+asetup; put repos/o/r/pulls/7/commits "[{\"sha\":\"$C\"}]"; arun
+! amerged && [ "$(cat "$A/rc")" = 1 ] && grep -q "does not end at the head" "$A/out" && ok "auto: a commit list cut short (it does not end at the head): stops without merging" || nok "auto: commits cut short"
+
 asetup; rm "$A/repos~o~r~pulls~7~comments"; arun
 ! amerged && [ "$(cat "$A/rc")" = 1 ] && quiet && ok "auto: Codex's inline comments unreadable: stops without merging (Codex M3 on #36)" || nok "auto: inline unreadable"
 
