@@ -7,7 +7,8 @@
 #
 # It checks codex, gh, git and jq, that `codex login status` is a ChatGPT sign-in, lists old local Codex loops and
 # offers to stop them, stores the fine-grained token in the login Keychain (typed into `security`'s own prompt, never
-# on a command line), writes ~/.config/agent-team/codex-cli.env, loads the launchd job and runs one dry tick.
+# on a command line), asks for the two Codex model ids (Astra and Sol; a re-run keeps the old ones), writes
+# ~/.config/agent-team/codex-cli.env, loads the launchd job and runs one dry tick.
 set -euo pipefail
 
 MODE=install
@@ -28,6 +29,8 @@ TEAM_REPOS="conwad-lab/mondmodel conwad-lab/tb-site conwad-lab/dignami-aos conwa
 say() { printf '%s\n' "$*"; }
 die() { printf 'Stopp: %s\n' "$*" >&2; exit 1; }
 ask() { local a; read -r -p "$1 [$2]: " a < /dev/tty || true; printf '%s' "${a:-$2}"; }
+model_id() { local kv; for kv in $2; do case "$kv" in "$1="*) printf '%s' "${kv#*=}"; return 0 ;; esac; done; return 1; }   # model_id NAME "name=id ..."
+model_ok() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }
 
 if [ "$MODE" = uninstall ]; then
   [ -f "$CONF" ] && ITEM="$(. "$CONF"; printf '%s' "${KEYCHAIN_ITEM:-$ITEM}")"
@@ -52,6 +55,7 @@ if [ "$MODE" = dry ]; then
   [ -n "$HERE" ] && [ -f "$HERE/assets/codex-cli/$LABEL.plist" ] || die "--dry-run needs a checkout of agent-team"
   say "Dry run: nothing is written."
   say "Would check: macOS, codex, gh, git, jq on PATH; 'codex login status' signed in with ChatGPT; old local Codex loops."
+  say "Would ask for the Codex model ids for Astra and Sol (Enter keeps the config's, else gpt-6-astra and gpt-6-sol)."
   say "Would store the token in the Keychain item $ITEM, write $CONF from assets/codex-cli/codex-cli.env.example,"
   say "clone $RULEBOOK into WORK_DIR/agent-team and load $PLIST:"
   render_plist "$HERE/assets/codex-cli/$LABEL.plist" "\$HOME/agent-team-builds/agent-team/bin/codex-cli-poll" "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" "$LOGS"
@@ -84,6 +88,22 @@ HOST="$(ask 'Värdnamn i kommentarerna' "${DEF_HOST:-macbook}")"
 WORK_DIR="$(ask 'Arbetsmapp' "$HOME/agent-team-builds")"
 case "$WORK_DIR" in "$HOME/WebProjects"|"$HOME/WebProjects/"*|*[Vv]ault*) die "arbetsmappen får inte ligga under ~/WebProjects eller i en vault." ;; esac
 REPOS="$(ask 'Repon' "$TEAM_REPOS")"
+# the two Codex models an order may name (`Model: astra|sol`); a re-run offers the config's own values
+OLD_MODELS=""; OLD_MODEL=""
+if [ -f "$CONF" ]; then
+  # shellcheck disable=SC1090
+  OLD_MODELS="$( (. "$CONF"; printf '%s' "${MODELS:-}") 2>/dev/null || true)"
+  # shellcheck disable=SC1090
+  OLD_MODEL="$( (. "$CONF"; printf '%s' "${MODEL:-}") 2>/dev/null || true)"
+fi
+DEF_ASTRA="$(model_id astra "$OLD_MODELS" || printf '%s' "${OLD_MODEL:-gpt-6-astra}")"
+DEF_SOL="$(model_id sol "$OLD_MODELS" || printf '%s' gpt-6-sol)"
+model_ok "$DEF_ASTRA" || DEF_ASTRA=gpt-6-astra
+model_ok "$DEF_SOL" || DEF_SOL=gpt-6-sol
+ASTRA_ID="$(ask 'Codex modell-id för Astra (som /model i codex visar det)' "$DEF_ASTRA")"
+SOL_ID="$(ask 'Codex modell-id för Sol' "$DEF_SOL")"
+model_ok "$ASTRA_ID" && model_ok "$SOL_ID" || die "ett modell-id får bara ha bokstäver, siffror, punkt, bindestreck och understreck."
+MODELS_LINE="astra=$ASTRA_ID sol=$SOL_ID"
 
 # ---- token: typed into security's own prompt, then checked against GitHub
 say ""
@@ -107,9 +127,11 @@ SRC="$WORK_DIR/agent-team"
 esc() { printf '%s' "$1" | sed -e 's/[#&\\]/\\&/g'; }   # a typed value may hold # or & (sed's delimiter and match)
 sed -e "s#^HOST=.*#HOST=$(esc "$HOST")#" -e "s#^WORK_DIR=.*#WORK_DIR=\"$(esc "$WORK_DIR")\"#" \
     -e "s#^REPOS=.*#REPOS=\"$(esc "$REPOS")\"#" -e "s#^ALLOW=.*#ALLOW=\"$(esc "$ALLOW")\"#" \
-    -e "s#^KEYCHAIN_ITEM=.*#KEYCHAIN_ITEM=$ITEM#" "$SRC/assets/codex-cli/codex-cli.env.example" > "$CONF"
+    -e "s#^KEYCHAIN_ITEM=.*#KEYCHAIN_ITEM=$ITEM#" \
+    -e "s#^MODEL=.*#MODEL=$ASTRA_ID#" -e "s#^MODELS=.*#MODELS=\"$MODELS_LINE\"#" "$SRC/assets/codex-cli/codex-cli.env.example" > "$CONF"
 chmod 600 "$CONF"
 say "✓ $CONF"
+say "✓ MODELS=\"$MODELS_LINE\" (en order utan Model-rad kör $ASTRA_ID)"
 
 PATH_FOR_JOB="$(for c in codex gh git jq node; do command -v "$c" >/dev/null && dirname "$(command -v "$c")"; done | awk '!s[$0]++' | paste -sd: -):/usr/bin:/bin:/usr/sbin:/sbin"
 render_plist "$SRC/assets/codex-cli/$LABEL.plist" "$SRC/bin/codex-cli-poll" "$PATH_FOR_JOB" "$LOGS" > "$PLIST"

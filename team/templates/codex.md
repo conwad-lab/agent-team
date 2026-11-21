@@ -14,6 +14,8 @@ A new comment, or the issue's body when the issue is new; an edited body starts 
 
 ```
 @codex build .team/plans/NNN-slug.md for .team/backlog/NNN-slug.md. Follow AGENTS.md. Run Test before commit. Open a draft PR titled NNN: <story title> from feat/NNN-slug, body as in roles/coder.md with one line per acceptance criterion. Sign — Coder (Codex) on behalf of <human>.
+
+<the plan's `## Work order`, pasted unchanged>
 ```
 
 Fixes, one comment per finding on the PR: `@codex fix M2: <one line>`.
@@ -35,21 +37,23 @@ Fixes, one comment per finding on the PR: `@codex fix M2: <one line>`.
 
 ## CLI work order (`builder: codex-cli`, on the story's issue, with the label `codex-cli`)
 
-The Builder thread writes it (`team/CODEX-CLI.md` [K1]–[K2]): narrow enough that Codex makes no design choice. The first line and the `Branch:`, `Plan:` and `PR title:` lines are read by the poller and must stay exactly in this form; a step that needs a choice is written as "stop and list it under Hinder".
+The Builder thread posts it (`team/CODEX-CLI.md` [K1]–[K2], [K7]): the header lines below, then the plan's `## Work order` pasted unchanged (Goal, May touch, Steps, Proof, Must not), then the two closing lines. The first line and the `Branch:`, `Plan:`, `PR title:` and `Model:` lines are read by the poller and must stay exactly in this form. `Model:` is the plan's `codex-model:` (`sol` or `astra`); without the line the host's default model runs. The poller reads `Proof:` from the plan on the default branch, never from this comment.
 
 ```
 codex-cli: build
 Branch: feat/NNN-slug
 Plan: .team/plans/NNN-slug.md
 PR title: NNN: <story title>
+Model: sol | astra
 
 Goal: <one sentence>
 May touch: <the plan's Files, one path per line>
 Steps:
 1. <exact change, file by file>
-Test before commit: <the command from AGENTS.md>; it must be green
-Done when: <each acceptance criterion, how it is shown>
+Proof: <test file> — <command>
 Must not: commit or push; touch any file not under May touch; add dependencies; change tests to make them pass; <story-specific>
+
+Test before commit: <the command from AGENTS.md>; it and the Proof command must be green
 Answer with: one line per acceptance criterion (`- [x] <criterion>: <how shown>`), then as the very last line `Hinder: inga` or `Hinder: <short list>`.
 ```
 
@@ -59,6 +63,7 @@ Fix, one order per Codex round (the findings to fix, quoted from the review):
 codex-cli: fix
 Branch: feat/NNN-slug
 Plan: .team/plans/NNN-slug.md
+Model: sol | astra
 
 Fix: M1 `<file:line>` <finding in one line>; S2 …
 May touch: <paths>

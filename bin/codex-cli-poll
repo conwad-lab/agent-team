@@ -4,8 +4,8 @@
 # launchd runs this every 5 minutes on the host Mac. Each tick: find one open issue labelled `codex-cli` in the
 # configured repos with an unclaimed `codex-cli: build` or `codex-cli: fix` order from an allowed author, claim it,
 # run `codex exec` on it in a fresh worktree (sandbox workspace-write, no GitHub token in its environment), check
-# the `Hinder:` line and Test before commit, guard the diff, push, open the draft PR (build) and post one outcome
-# comment: done, blocked or bounced.
+# the `Hinder:` line, Test before commit and the plan's Proof, guard the diff, push, open the draft PR (build) and
+# post one outcome comment: done, blocked or bounced. An order's `Model: <name>` line picks the model from MODELS.
 #
 #   bin/codex-cli-poll            one tick
 #   bin/codex-cli-poll --dry-run  say which order a tick would take; posts, runs and writes nothing
@@ -36,6 +36,7 @@ REPOS="${REPOS:?REPOS missing in $CONF}"
 ALLOW="${ALLOW:?ALLOW missing in $CONF}"
 HUMAN="${HUMAN:-Conny}"
 MODEL="${MODEL:-gpt-6-astra}"
+MODELS="${MODELS:-}"   # "name=id ..." an order's `Model: <name>` line may pick from; no line: MODEL
 RUN_LIMIT_SEC="${RUN_LIMIT_SEC:-$(( ${RUN_LIMIT_MIN:-45} * 60 ))}"
 STALL_SEC="${STALL_SEC:-$(( ${STALL_MIN:-10} * 60 ))}"
 POLL_SEC="${POLL_SEC:-10}"
@@ -173,12 +174,13 @@ ORDER_ID="$(printf '%s' "$ORDER" | jq -r .id)"
 ORDER_BODY="$(printf '%s' "$ORDER" | jq -r '.body | gsub("\r"; "")')"
 KIND="$(printf '%s\n' "$ORDER_BODY" | head -1 | sed -E 's/^codex-cli: ([a-z]+).*/\1/')"
 field() { printf '%s\n' "$ORDER_BODY" | sed -n -E "s/^$1:[[:space:]]*(.*[^[:space:]])[[:space:]]*\$/\\1/p" | head -1; }
-BRANCH="$(field Branch)"; PLAN="$(field Plan)"; PR_TITLE="$(field 'PR title')"
+BRANCH="$(field Branch)"; PLAN="$(field Plan)"; PR_TITLE="$(field 'PR title')"; MODEL_NAME="$(field Model)"
 if [ "$DRY" = 1 ]; then log "dry-run: would take $KIND order $ORDER_ID on $REPO#$ISSUE (branch $BRANCH)"; exit 0; fi
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 START=$(date +%s)
-OUTCOME=""; REASON=""; HINDER="—"; PR_URL=""; HEAD_SHA=""; TEST_RESULT="not run"; TAIL=""
+OUTCOME=""; REASON=""; HINDER="—"; PR_URL=""; HEAD_SHA=""; TEST_RESULT="not run"; PROOF_RESULT="not run"; TAIL=""
+RUN_MODEL="$MODEL"
 WT=""; CLONE=""
 
 finish() { # post the outcome comment, log the run, clean up
@@ -192,8 +194,9 @@ PR: $PR_URL (draft), head $HEAD_SHA"
 Branch: $BRANCH pushed, head $HEAD_SHA"
   body="$body
 Test before commit: $TEST_RESULT
+Proof: $PROOF_RESULT
 $HINDER
-Run: $RUN_ID, $mins min, $MODEL, order $ORDER_ID"
+Run: $RUN_ID, $mins min, $RUN_MODEL, order $ORDER_ID"
   [ -n "$TAIL" ] && body="$body
 
 <details><summary>Last 30 lines</summary>
@@ -252,6 +255,17 @@ if [ -n "$PLAN" ]; then
   { [[ "$PLAN" =~ ^[A-Za-z0-9._/-]+$ ]] && [[ "$PLAN" != *..* ]]; } || bounce "order's Plan path is not a plain repo path"
 fi
 [ "$KIND" = fix ] || [ -n "$PR_TITLE" ] || bounce "build order has no 'PR title:' line"
+# the order's model: a name this host's MODELS maps to an id; the id, never the order's text, reaches codex
+# a `Model:` line with nothing after it is malformed, not "no line"
+if [ -z "$MODEL_NAME" ] && printf '%s\n' "$ORDER_BODY" | grep -qE '^Model:'; then MODEL_NAME=" "; fi
+if [ -n "$MODEL_NAME" ]; then
+  RUN_MODEL="—"
+  [[ "$MODEL_NAME" =~ ^[a-z]{1,32}$ ]] || bounce "order's Model line is not a plain lowercase name"
+  for kv in $MODELS; do
+    case "$kv" in "$MODEL_NAME="*) RUN_MODEL="${kv#*=}"; break ;; esac
+  done
+  [[ "$RUN_MODEL" =~ ^[A-Za-z0-9._-]+$ ]] || { RUN_MODEL="—"; bounce "order names model '$MODEL_NAME', not in this host's MODELS"; }
+fi
 
 # ---- worktree in the poller's own clone
 CLONE="$WORK_DIR/repos/$(printf '%s' "$REPO" | tr '/' '_')"
@@ -275,7 +289,7 @@ START_SHA="$(git -C "$WT" rev-parse HEAD)"
 mkdir -p "$WORK_DIR/logs"
 LAST="$WORK_DIR/logs/$RUN_ID.last.md"; OUT="$WORK_DIR/logs/$RUN_ID.out"; MARK="$WORK_DIR/wt/$RUN_ID.mark"
 : > "$MARK"
-PROMPT="You are the Coder for this repository, started headless by the agent-team host poller (team/CODEX-CLI.md in the agent-team rulebook). Follow the work order below exactly; it was written by the Builder.
+PROMPT="You are the Coder for this repository, started headless by the agent-team host poller (team/CODEX-CLI.md in the agent-team rulebook). Follow the work order below exactly; it comes from the story's plan.
 - Work only inside this directory. Do not commit, push or open a pull request: the poller does that when you finish.
 - Do not touch .github/, .claude/, .codex/ or .gitmodules unless the order's May touch lists them.
 - A step that needs a design choice, a file outside May touch, network access or anything the order does not settle: stop and list it under Hinder.
@@ -288,7 +302,7 @@ set -m   # own process group: the time limit and stall watch stop Codex and ever
 (
   cd "$WT"
   printf '%s\n' "$PROMPT" | exec env $NO_GH_TOKENS \
-    codex exec -m "$MODEL" -s workspace-write -o "$LAST" -
+    codex exec -m "$RUN_MODEL" -s workspace-write -o "$LAST" -
 ) > "$OUT" 2>&1 &
 CPID=$!
 set +m
@@ -326,7 +340,7 @@ git -C "$WT" add -A
 if ! git -C "$WT" diff --cached --quiet; then
   if [ "$KIND" = build ]; then msg="$PR_TITLE"; else msg="$(printf '%s' "${BRANCH#feat/}" | cut -d- -f1): fix from Codex CLI order $ORDER_ID"; fi
   git -C "$WT" -c user.name="Codex CLI ($HOST)" -c user.email="codex-cli@$HOST.invalid" \
-    commit --quiet -m "$msg" -m "Built by Codex CLI ($MODEL) on $HOST from $REPO#$ISSUE comment $ORDER_ID. $(redact "$HINDER")"
+    commit --quiet -m "$msg" -m "Built by Codex CLI ($RUN_MODEL) on $HOST from $REPO#$ISSUE comment $ORDER_ID. $(redact "$HINDER")"
 fi
 HEAD_NOW="$(git -C "$WT" rev-parse HEAD)"
 [ "$HEAD_NOW" != "$START_SHA" ] || { [ "$BLOCKED" = 1 ] && { OUTCOME=blocked; finish; }; bounce "no changes"; }
@@ -338,30 +352,83 @@ if printf '%s' "$TBC" | grep -q '`'; then
 else
   TBC="$(printf '%s' "$TBC" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 fi
+# gate COMMAND LOGFILE: run it in the worktree, outside the sandbox, without the token, in its own process group so
+# the run's deadline can stop it and everything it started. 0 green, 1 red, 2 stopped at the time limit.
+gate() {
+  local pid rc=0
+  set -m
+  (cd "$WT" && exec env $NO_GH_TOKENS bash -c "$1") > "$2" 2>&1 &
+  pid=$!
+  set +m
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ $(( $(date +%s) - START )) -ge "$RUN_LIMIT_SEC" ]; then
+      kill -TERM -- "-$pid" 2>/dev/null || true; sleep 2; kill -KILL -- "-$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 2
+    fi
+    sleep "$POLL_SEC"
+  done
+  wait "$pid" || rc=1
+  return "$rc"
+}
 if [ "$BLOCKED" = 0 ]; then
   if [ -z "$TBC" ]; then TEST_RESULT="not named in AGENTS.md (the Builder runs it)"
   else
-    # own process group, so the run's deadline can stop the test and everything it started
-    set -m
-    (cd "$WT" && exec env $NO_GH_TOKENS bash -c "$TBC") > "$OUT.test" 2>&1 &
-    TPID=$!
-    set +m
-    while kill -0 "$TPID" 2>/dev/null; do
-      if [ $(( $(date +%s) - START )) -ge "$RUN_LIMIT_SEC" ]; then
-        kill -TERM -- "-$TPID" 2>/dev/null || true; sleep 2; kill -KILL -- "-$TPID" 2>/dev/null || true
-        wait "$TPID" 2>/dev/null || true
-        TEST_RESULT="stopped at the time limit (\`$TBC\`)"; TAIL="$(tail -n 30 "$OUT.test")"
-        bounce "time limit ($(dur "$RUN_LIMIT_SEC")) during Test before commit"
-      fi
-      sleep "$POLL_SEC"
-    done
-    if wait "$TPID"; then TEST_RESULT="green (\`$TBC\`)"
+    grc=0; gate "$TBC" "$OUT.test" || grc=$?
+    if [ "$grc" = 2 ]; then
+      TEST_RESULT="stopped at the time limit (\`$TBC\`)"; TAIL="$(tail -n 30 "$OUT.test")"
+      bounce "time limit ($(dur "$RUN_LIMIT_SEC")) during Test before commit"
+    fi
+    if [ "$grc" = 0 ]; then TEST_RESULT="green (\`$TBC\`)"
     else TEST_RESULT="red (\`$TBC\`)"; TAIL="$(tail -n 30 "$OUT.test")"; TAIL="${TAIL:-(no output)}"; bounce "test red"; fi
     # the test passed on the tree it ran on; if it rewrote tracked files, that is not the commit we would push
     if ! git -C "$WT" diff --quiet HEAD --; then
       TEST_RESULT="green but it changed tracked files (\`$TBC\`)"
       TAIL="$(git -C "$WT" diff --name-only HEAD -- | head -n 20)"
       bounce "Test before commit changed tracked files; the pushed commit would differ from the tested tree"
+    fi
+  fi
+fi
+
+# ---- Proof: the one test the plan names for this story. `Proof: <test file> — <command>` is read from the plan's
+# `## Work order` on the default branch (never from the order comment or Codex's diff, as Test before commit). The
+# branch must add or change that file, and the command must be green: same trust and same limits as Test before commit.
+if [ "$BLOCKED" = 0 ]; then
+  PROOF=""
+  if [ -n "$PLAN" ]; then
+    # only the section headed exactly `## Work order`, up to the next `# ` or `## ` heading; the line is kept whole,
+    # so an empty `Proof:` is not "no line"
+    PROOF="$(git -C "$CLONE" show "origin/$DEF:$PLAN" 2>/dev/null | tr -d '\r' \
+      | awk '/^## Work order[[:space:]]*$/ {on=1; next} /^##?[[:space:]]/ {on=0} on' | grep -m1 -E '^Proof:' || true)"
+  fi
+  if [ -z "$PROOF" ]; then PROOF_RESULT="not set"
+  else
+    PROOF="$(printf '%s' "$PROOF" | sed -E 's/^Proof:[[:space:]]*//')"
+    PROOF_FILE="${PROOF%% — *}"; PROOF_CMD="${PROOF#* — }"
+    PROOF_FILE="$(printf '%s' "$PROOF_FILE" | tr -d '`' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    PROOF_CMD="$(printf '%s' "$PROOF_CMD" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^`\(.*\)`$/\1/' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    if [ "$PROOF_FILE" = "$PROOF" ] || [ -z "$PROOF_CMD" ] || ! [[ "$PROOF_FILE" =~ ^[A-Za-z0-9._/-]+$ ]] || [[ "$PROOF_FILE" == *..* ]]; then
+      PROOF_RESULT="unreadable"
+      bounce "proof: the plan's Proof line is not '<test file> — <command>'"
+    fi
+    # against the default branch, so a fix order on a branch that already holds the test file passes
+    if ! git -C "$WT" diff --no-renames --name-only --diff-filter=AM "origin/$DEF...HEAD" | grep -qxF -- "$PROOF_FILE"; then
+      PROOF_RESULT="$PROOF_FILE not in the diff"
+      bounce "proof: $PROOF_FILE not in the diff"
+    fi
+    grc=0; gate "$PROOF_CMD" "$OUT.proof" || grc=$?
+    if [ "$grc" = 2 ]; then
+      PROOF_RESULT="stopped at the time limit ($PROOF_FILE)"; TAIL="$(tail -n 30 "$OUT.proof")"
+      bounce "time limit ($(dur "$RUN_LIMIT_SEC")) during Proof"
+    fi
+    if [ "$grc" != 0 ]; then
+      PROOF_RESULT="red ($PROOF_FILE)"; TAIL="$(tail -n 30 "$OUT.proof")"; TAIL="${TAIL:-(no output)}"; bounce "proof red"
+    fi
+    PROOF_RESULT="green ($PROOF_FILE)"
+    if ! git -C "$WT" diff --quiet HEAD --; then
+      PROOF_RESULT="green but it changed tracked files ($PROOF_FILE)"
+      TAIL="$(git -C "$WT" diff --name-only HEAD -- | head -n 20)"
+      bounce "Proof changed tracked files; the pushed commit would differ from the tested tree"
     fi
   fi
 fi
@@ -408,7 +475,7 @@ if [ -z "$PR_URL" ]; then
   if [ "$KIND" = fix ]; then bounce "pushed $HEAD_SHA, but no open PR from $BRANCH"; fi
   redact "$(cat "$LAST")" > "$LAST.redacted"
   jq -n --arg t "$PR_TITLE" --arg h "$BRANCH" --arg b "$DEF" --rawfile m "$LAST.redacted" \
-     --arg f "Built by Codex CLI ($MODEL) on $HOST from the work order $GIT_BASE/$REPO/issues/$ISSUE#issuecomment-$ORDER_ID. The Builder thread owns this PR (team/CODEX-CLI.md).
+     --arg f "Built by Codex CLI ($RUN_MODEL) on $HOST from the work order $GIT_BASE/$REPO/issues/$ISSUE#issuecomment-$ORDER_ID. The Builder thread owns this PR (team/CODEX-CLI.md).
 
 $SIGN" \
      '{title: $t, head: $h, base: $b, draft: true, body: ($m + "\n\n---\n" + $f)}' > "$WORK_DIR/wt/$RUN_ID.pr.json"
