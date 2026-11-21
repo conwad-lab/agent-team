@@ -345,7 +345,7 @@ check "no Proof line in the plan: Proof not set, done as before" 'last_comment |
 # ---- v0.8.14: the plan's Proof ([K7])
 plan_proof() { # plan_proof TEXT...: main's plan gets a `## Work order` holding the given lines (after a reset)
   rm -rf "$T/pp"; git clone -q "$REMOTE/o/r.git" "$T/pp"
-  { printf '# Plan\n\n## Approach\nProof: tests/hello.test.sh — touch %s/PWNED4\n\n## Files\n- `hello.txt` — new\n- `tests/hello.test.sh` — new\n\n## Work order\n```\nGoal: say hello\n' "$ST"
+  { printf '# Plan\n\n## Approach\nProof: tests/hello.test.sh — touch %s/PWNED4\n\n## Work order examples\nProof: tests/hello.test.sh — touch %s/PWNED6\n\n## Files\n- `hello.txt` — new\n- `tests/hello.test.sh` — new\n\n## Work order\n```\nGoal: say hello\n' "$ST" "$ST"
     printf '%s\n' "$@"; printf 'Must not: push\n```\n\n## Steps\n1. x\nProof: tests/hello.test.sh — touch %s/PWNED5\n' "$ST"; } > "$T/pp/.team/plans/001-x.md"
   git -C "$T/pp" -c user.name=t -c user.email=t@t commit -qam "plan with a work order" && git -C "$T/pp" push -q origin main
 }
@@ -357,7 +357,7 @@ check "Proof command red: bounced with the last lines, nothing pushed" 'last_com
 reset proof; plan_proof "$GREEN"; GH_TOKEN=t1 GITHUB_TOKEN=t2 tick
 check "Proof green: done, named in the outcome, test file pushed" 'last_comment | head -1 | grep -qx "codex-cli: done" && last_comment | grep -qx "Proof: green (tests/hello.test.sh)" && git --git-dir="$REMOTE/o/r.git" show feat/001-x:tests/hello.test.sh | grep -q hello.txt'
 check "Proof ran, after Test before commit, without a token" 'last_comment | grep -qF "Test before commit: green" && [ -e $ST/PROOF_RAN ]'
-check "a Proof line outside ## Work order is never run" '[ ! -e $ST/PWNED4 ] && [ ! -e $ST/PWNED5 ]'
+check "a Proof line outside ## Work order is never run" '[ ! -e $ST/PWNED4 ] && [ ! -e $ST/PWNED5 ] && [ ! -e $ST/PWNED6 ]'
 
 # a fix order on the branch that already holds the test file: the Proof file is in the branch's diff against main
 FIX='codex-cli: fix
@@ -381,6 +381,10 @@ reset planedit; plan_proof "$GREEN"; tick
 check "Codex rewriting the plan's Proof cannot change the command" '[ ! -e $ST/PWNED3 ] && [ -e $ST/PROOF_RAN ] && last_comment | grep -qx "Proof: green (tests/hello.test.sh)"'
 reset proof; plan_proof 'Proof: tests/hello.test.sh'; tick
 check "Proof line without a command: bounced, nothing pushed" 'last_comment | grep -q "^Reason: proof: the plan.s Proof line is not" && ! remote_has feat/001-x'
+reset proof; plan_proof 'Proof:'; tick
+check "empty Proof line: bounced, not read as no Proof" 'last_comment | grep -q "^Reason: proof: the plan.s Proof line is not" && ! remote_has feat/001-x'
+reset proof; plan_proof 'Proof:   ' "$GREEN"; tick
+check "empty first Proof line with a second one below: bounced, the second never run" 'last_comment | grep -q "^Reason: proof: the plan.s Proof line is not" && [ ! -e $ST/PROOF_RAN ] && ! remote_has feat/001-x'
 reset proof; plan_proof 'Proof: ../../etc/passwd — true'; tick
 check "Proof file that is not a plain repo path: bounced" 'last_comment | grep -q "^Reason: proof: the plan.s Proof line is not" && ! remote_has feat/001-x'
 reset proof; plan_proof 'Proof: tests/hello.test.sh — echo changed > hello.txt'; tick

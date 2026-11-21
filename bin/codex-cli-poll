@@ -394,11 +394,13 @@ fi
 if [ "$BLOCKED" = 0 ]; then
   PROOF=""
   if [ -n "$PLAN" ]; then
+    # only the section headed exactly `## Work order`; the line is kept whole, so an empty `Proof:` is not "no line"
     PROOF="$(git -C "$CLONE" show "origin/$DEF:$PLAN" 2>/dev/null | tr -d '\r' \
-      | awk '/^## Work order/ {on=1; next} /^## / {on=0} on' | sed -n -E 's/^Proof:[[:space:]]*//p' | head -1 || true)"
+      | awk '/^## Work order[[:space:]]*$/ {on=1; next} /^## / {on=0} on' | grep -m1 -E '^Proof:' || true)"
   fi
   if [ -z "$PROOF" ]; then PROOF_RESULT="not set"
   else
+    PROOF="$(printf '%s' "$PROOF" | sed -E 's/^Proof:[[:space:]]*//')"
     PROOF_FILE="${PROOF%% — *}"; PROOF_CMD="${PROOF#* — }"
     PROOF_FILE="$(printf '%s' "$PROOF_FILE" | tr -d '`' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
     PROOF_CMD="$(printf '%s' "$PROOF_CMD" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^`\(.*\)`$/\1/')"
