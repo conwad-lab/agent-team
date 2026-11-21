@@ -185,6 +185,7 @@ jobs:
             [ "$(jq -r '.head.repo.full_name // ""' <<<"$pr")" = "$REPO" ] || later "the PR comes from another repo"
             [ "$(jq -r .base.ref <<<"$pr")" = "$defb" ] || later "the PR's base is not $defb"
             files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | [.status, .filename, (.previous_filename // "")] | @tsv') || { echo "could not list the files of #$PR"; exit 1; }
+            [ "$(grep -c . <<<"$files")" -lt 3000 ] || later "the PR lists 3000 files, so GitHub may not show them all: not a release bump"
             awk -F'\t' -v s="$SUB" '$2 == s {f=1} END {exit !f}' <<<"$files" || later "the submodule $SUB does not move: not a release bump"
             # 1. the diff is a release bump and nothing else
             set -f
@@ -265,9 +266,11 @@ jobs:
             shas=$(gh api --paginate "repos/$REPO/pulls/$PR/commits" --jq '.[].sha') || { echo "could not list the PR's commits"; exit 1; }
             [ "$(tail -n 1 <<<"$shas")" = "$head" ] || { echo "the PR's commit list does not end at the head $head"; exit 1; }
             for c in $(tac <<<"$shas"); do
-              cj=$(gh api "repos/$REPO/commits/$c") || { echo "could not read $c"; exit 1; }
-              # a rename's source counts: moving a file into .team/reviews/ still changes what lies outside it
-              cf=$(jq -r '(.files // [])[] | .filename, (.previous_filename // empty)' <<<"$cj")
+              # every page of the commit's files (GitHub pages them past 300, and lists at most 3000); a rename's
+              # source counts: moving a file into .team/reviews/ still changes what lies outside it (Codex M4, M9 on #36)
+              cr=$(gh api --paginate "repos/$REPO/commits/$c" --jq '(.files // [])[] | [.filename, (.previous_filename // "")] | @tsv') || { echo "could not read the files of $c"; exit 1; }
+              [ "$(grep -c . <<<"$cr")" -lt 3000 ] || refuse "commit ${c:0:7} lists 3000 files, so GitHub may not show them all"
+              cf=$(tr '\t' '\n' <<<"$cr")
               if grep -qv '^\.team/reviews/' <<<"$cf"; then code=$c; break; fi
             done
             [ -n "$code" ] || refuse "no commit outside .team/reviews/"

@@ -308,6 +308,12 @@ amerged && ok "auto: the version line in .team/team.md may move" || nok "auto: t
 asetup; put "repos/o/r/commits/$H" '{"files":[{"filename":".team/reviews/cfg.md","previous_filename":".team/team.md"}]}'; arun
 ! amerged && quiet && grep -q "no finished Codex review of 1111111" "$A/out" && ok "auto: a rename out of .team/ into reviews/ makes that commit the last code commit (Codex M4 on #36)" || nok "auto: rename source in commit"
 
+asetup; rm "$A/repos~o~r~commits~$H"; arun
+! amerged && [ "$(cat "$A/rc")" = 1 ] && quiet && ok "auto: a commit's files unreadable: stops without merging" || nok "auto: commit files unreadable"
+
+asetup; jq -n '{files: ([range(0; 3000)] | map({filename: (".team/reviews/r\(.).md")}))}' > "$A/repos~o~r~commits~$H"; arun
+! amerged && asaid "lists 3000 files" && ok "auto: a commit at GitHub's 3000-file cap refuses (Codex M9 on #36)" || nok "auto: commit file cap"
+
 asetup; rm "$A/repos~o~r~pulls~7~commits"; arun
 ! amerged && [ "$(cat "$A/rc")" = 1 ] && quiet && ok "auto: the PR's commit list unreadable: stops without merging (Codex M8 on #36)" || nok "auto: commits unreadable"
 
