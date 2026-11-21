@@ -39,7 +39,8 @@ model: light | standard | strongest — <one-line reason>
      No choice is left to Codex: a step that would need one is settled here, or the story is Claude's. Proof names the
      one new or changed test file that shows the story was built and the command that runs it; the poller reads this
      line from the plan on the default branch, checks the diff holds the file and runs the command. Keep `Proof:` at
-     the start of its line, with ` — ` between the file and the command. -->
+     the start of its line, with ` — ` between the file and the command, and start no line of the section with `# `
+     or `## `: the poller reads a heading as the section's end. -->
 ```
 Goal: <one sentence>
 May touch: <the Files above, one path per line>

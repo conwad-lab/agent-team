@@ -385,6 +385,10 @@ reset proof; plan_proof 'Proof:'; tick
 check "empty Proof line: bounced, not read as no Proof" 'last_comment | grep -q "^Reason: proof: the plan.s Proof line is not" && ! remote_has feat/001-x'
 reset proof; plan_proof 'Proof:   ' "$GREEN"; tick
 check "empty first Proof line with a second one below: bounced, the second never run" 'last_comment | grep -q "^Reason: proof: the plan.s Proof line is not" && [ ! -e $ST/PROOF_RAN ] && ! remote_has feat/001-x'
+reset proof; plan_proof 'Proof: tests/hello.test.sh — `   `'; tick
+check "Proof command that is only blanks inside backticks: bounced" 'last_comment | grep -q "^Reason: proof: the plan.s Proof line is not" && ! remote_has feat/001-x'
+reset proof; plan_proof 'Must not: x' '```' '' '# Appendix' "Proof: tests/hello.test.sh — touch $ST/PWNED7" '```'; tick
+check "a Proof line under a level-one heading after the Work order is never run" '[ ! -e $ST/PWNED7 ] && last_comment | grep -qx "Proof: not set"'
 reset proof; plan_proof 'Proof: ../../etc/passwd — true'; tick
 check "Proof file that is not a plain repo path: bounced" 'last_comment | grep -q "^Reason: proof: the plan.s Proof line is not" && ! remote_has feat/001-x'
 reset proof; plan_proof 'Proof: tests/hello.test.sh — echo changed > hello.txt'; tick
