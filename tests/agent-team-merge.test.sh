@@ -281,6 +281,12 @@ amerged && ok "auto: Codex's status summary, completed without findings on the l
 asetup; summary "\"commit_sha\":\"$C\",\"has_any_findings\":true,\"has_unresolved_findings\":true,\"status\":\"completed\""; arun
 ! amerged && asaid "Codex left a P0/P1 or M/S finding" && ok "auto: a summary with findings on the last code commit refuses" || nok "auto: summary findings"
 
+asetup; jq --arg b "$BOT" --arg c "$C" '. + [{id:11,user:{login:$b},body:("<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 &#123;\"code_review\":&#123;\"commit_sha\":\"" + $c + "\",\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":\"failed\"&#125;&#125; -->")}]' "$A/repos~o~r~issues~7~comments" > "$A/x" && mv "$A/x" "$A/repos~o~r~issues~7~comments"; arun
+! amerged && asaid "a Codex review of 2222222 ended failed" && ok "auto: a clean receipt plus a failed summary for the same commit refuses (Codex M7 on #36; escaped braces as GitHub stores them)" || nok "auto: failed summary"
+
+asetup; summary "\"commit_sha\":\"$C\",\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":\"running\""; arun
+! amerged && quiet && grep -q "still running" "$A/out" && ok "auto: a Codex review still running on the last code commit: waits silently" || nok "auto: summary running"
+
 asetup; summary "\"commit_sha\":\"$H\",\"has_any_findings\":false,\"has_unresolved_findings\":false,\"status\":\"completed\""; arun
 ! amerged && quiet && ok "auto: a summary for another commit is no review of the last code commit" || nok "auto: summary other commit"
 
@@ -332,7 +338,7 @@ amerged && ok "auto: a workflow_run or check_suite event finds the PR by its hea
 asetup; touch "$A/refuse"; arun
 ! amerged || true; asaid "GitHub refused the merge: Required status check" && ! asaid "Merged by" && ok "auto: GitHub refuses: says why, no success comment" || nok "auto: GitHub refuses"
 
-grep -q "workflows: \[" "$WF" && grep -q 'pull_request_target' "$WF" && grep -q "user.login == 'chatgpt-codex-connector\[bot\]'" "$WF" && ok "auto: triggers on the PR, Codex's comments and finished CI" || nok "auto: triggers"
+grep -q "workflows: \[" "$WF" && grep -q 'pull_request_target' "$WF" && grep -q "github.event.action == 'created' && github.event.issue.pull_request" "$WF" && grep -q "user.login == 'chatgpt-codex-connector\[bot\]'" "$WF" && ok "auto: triggers on the PR, Codex's comments and finished CI" || nok "auto: triggers"
 
 grep -q 'github.event.comment.body }}' "$WF" && ! grep -qE 'run:.*\$\{\{' "$WF" && ok "comment body reaches the script only through env" || nok "body through env"
 grep -q 'actions/checkout' "$WF" && nok "checks out no code" || ok "checks out no code"

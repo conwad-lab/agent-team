@@ -13,7 +13,7 @@
 name: agent-team-merge
 on:
   issue_comment:
-    types: [created]
+    types: [created, edited] # edited: Codex updates its status summary in place
   pull_request_target:
     types: [synchronize, ready_for_review]
   check_suite:
@@ -30,7 +30,7 @@ permissions:
 jobs:
   merge:
     if: >-
-      github.event.issue.pull_request &&
+      github.event.action == 'created' && github.event.issue.pull_request &&
       contains(github.event.comment.body, 'agent-team-merge: ') &&
       (github.event.comment.user.login == github.repository_owner ||
        (vars.AGENT_ACCOUNT != '' && github.event.comment.user.login == vars.AGENT_ACCOUNT)) &&
@@ -270,7 +270,7 @@ jobs:
             [ -n "$code" ] || refuse "no commit outside .team/reviews/"
             # only evidence GitHub ties to that commit counts: a receipt naming it, a Codex review on it, or Codex's
             # status summary for it. Never a timestamp: commit dates are the pusher's to set (Codex M2 on #36).
-            done_=""; bad=""
+            done_=""; bad=""; running=""; failed=""
             receipts=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "'"$BOT"'") | (.body // "") as $b
               | if ($b | test("^\\s*<!-- codex-review-receipt")) then ["receipt", ((($b | capture("Reviewed commit:\\*\\*\\s*`(?<s>[0-9a-f]{7,40})`").s)) // "-"), ($b | test("'"$FIND"'") | tostring)]
                 elif ($b | test("codex-pull-request-review-summary")) then ["summary", ((($b | capture("\"code_review\":(\\{|&#123;)\"commit_sha\":\"(?<c>[0-9a-f]{40})\",\"has_any_findings\":(?<f>[a-z]+),\"has_unresolved_findings\":[a-z]+,\"status\":\"(?<s>[a-z]+)\"") | .c + " " + .f + " " + .s)) // "-"), "-"]
@@ -279,7 +279,14 @@ jobs:
               case "$kind" in
                 receipt) if [ "$s" != - ] && [[ $code == "$s"* ]]; then done_=1; [ "$hit" = true ] && bad=1; fi ;;
                 summary) read -r sc sf ss <<<"$s"
-                  if [ "$sc" = "$code" ] && [ "$ss" = completed ]; then done_=1; [ "$sf" = false ] || bad=1; fi ;;
+                  # [J10] (c): no review there failed or timed out, whatever else finished
+                  if [ "$sc" = "$code" ]; then
+                    case "$ss" in
+                      completed) done_=1; [ "$sf" = false ] || bad=1 ;;
+                      running|queued|pending|in_progress) running=1 ;;
+                      *) failed=$ss ;;
+                    esac
+                  fi ;;
               esac
             done <<<"$receipts"
             if awk -F'\t' -v b="$BOT" -v c="$code" '$1 == b && $2 == c {f=1} END {exit !f}' <<<"$reviews"; then done_=1; fi
@@ -288,6 +295,8 @@ jobs:
               || { echo "could not read Codex's inline comments: unknown is not clean"; exit 1; }
             grep -qx true <<<"$inline" && bad=1
             [ -z "$bad" ] || refuse "Codex left a P0/P1 or M/S finding on ${code:0:7}"
+            [ -z "$failed" ] || refuse "a Codex review of ${code:0:7} ended $failed"
+            [ -z "$running" ] || later "a Codex review of ${code:0:7} is still running"
             [ -n "$done_" ] || later "no finished Codex review of ${code:0:7} yet"
             # 6. every check on the head green, the latest run per name
             runs=$(gh api --paginate "repos/$REPO/commits/$head/check-runs?per_page=100" --jq '.check_runs[] | [.id, .name, .status, (.conclusion // "")] | @tsv') || { echo "could not list check runs"; exit 1; }
