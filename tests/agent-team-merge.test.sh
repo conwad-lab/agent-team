@@ -201,7 +201,7 @@ asetup() {
   content repos/o/r/contents/AGENTS.md "$MB" "$(agents_md release none claude)"
   content repos/o/r/contents/AGENTS.md "$H" "$(agents_md release none codex-cli)"
   put repos/o/r/pulls/7 "{\"state\":\"open\",\"draft\":false,\"merged\":false,\"head\":{\"sha\":\"$H\",\"ref\":\"bump\",\"repo\":{\"full_name\":\"o/r\"}},\"base\":{\"ref\":\"main\"}}"
-  jq -n --arg p "$BPATCH" '[{status:"modified",filename:".claude/skills/agent-team"},{status:"added",filename:".team/reviews/030-bump.md"},{status:"modified",filename:".team/team.md"},{status:"modified",filename:"AGENTS.md",patch:$p}]' > "$A/repos~o~r~pulls~7~files"
+  jq -n --arg p "$BPATCH" '[{status:"modified",filename:".claude/skills/agent-team"},{status:"added",filename:".team/reviews/030-bump.md"},{status:"modified",filename:".team/team.md",patch:"@@ -8,1 +8,1 @@\n-  coder: codex\n+  coder: codex-cli"},{status:"modified",filename:"AGENTS.md",patch:$p}]' > "$A/repos~o~r~pulls~7~files"
   put "repos/o/r/compare/main...$H" "{\"behind_by\":0,\"merge_base_commit\":{\"sha\":\"$MB\"}}"
   put "repos/o/r/contents/.claude/skills/agent-team?ref=$MB" "{\"type\":\"submodule\",\"sha\":\"$OLD\"}"
   put "repos/o/r/contents/.claude/skills/agent-team?ref=$H" "{\"type\":\"submodule\",\"sha\":\"$NEW\"}"
@@ -213,7 +213,7 @@ asetup() {
   put "repos/u/agent-team/compare/$OLD...$NEW" '{"status":"ahead"}'
   put "repos/u/agent-team/compare/$NEW...main" '{"status":"identical"}'
   content repos/o/r/contents/.team/reviews/030-bump.md "$H" $'---\nid: 030\nverdict: approve\n---\n# Review 030'
-  put repos/o/r/pulls/7/reviews "[{\"user\":{\"login\":\"o\"},\"commit_id\":\"$H\",\"body\":\"# Review 030\"}]"
+  put repos/o/r/pulls/7/reviews "[{\"user\":{\"login\":\"o\"},\"commit_id\":\"$H\",\"state\":\"COMMENTED\",\"body\":\"---\\nid: 030\\nverdict: approve\\n---\\n# Review 030\"}]"
   put repos/o/r/pulls/7/commits "[{\"sha\":\"$C\"},{\"sha\":\"$H\"}]"
   put "repos/o/r/commits/$C" '{"commit":{"committer":{"date":"2026-11-21T10:00:00Z"}},"files":[{"filename":".claude/skills/agent-team"},{"filename":"AGENTS.md"}]}'
   put "repos/o/r/commits/$H" '{"commit":{"committer":{"date":"2026-11-21T10:10:00Z"}},"files":[{"filename":".team/reviews/030-bump.md"}]}'
@@ -274,11 +274,36 @@ asetup; put repos/o/r/pulls/7/comments "[{\"user\":{\"login\":\"$BOT\"},\"origin
 asetup; jq -n --arg b "$BOT" '[{id:9,user:{login:$b},created_at:"2026-11-21T09:00:00Z",body:"<!-- codex-review-receipt:v1 -->\nCodex Review: fine.\n**Reviewed commit:** `9999999`"}]' > "$A/repos~o~r~issues~7~comments"; arun
 ! amerged && quiet && grep -q "no finished Codex review of 2222222" "$A/out" && ok "auto: a receipt for an older commit is no review of the last one: waits silently" || nok "auto: receipt for older commit"
 
-asetup; jq -n '[{id:8,user:{login:"o"},created_at:"2026-11-21T10:01:00Z",body:"@codex review"}]' > "$A/repos~o~r~issues~7~comments"; put repos/o/r/issues/comments/8/reactions "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\",\"created_at\":\"2026-11-21T10:04:00Z\"}]"; arun
-amerged && ok "auto: a Codex 👍 on the request after the last code commit counts as clean" || nok "auto: Codex thumbs"
+summary() { jq -n --arg b "$BOT" --arg s "$1" '[{id:8,user:{login:"o"},body:"@codex review"},{id:10,user:{login:$b},body:("<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {\"code_review\":{" + $s + "},\"security_review\":{}} -->")}]' > "$A/repos~o~r~issues~7~comments"; }
+asetup; summary "\"commit_sha\":\"$C\",\"has_any_findings\":false,\"has_unresolved_findings\":false,\"status\":\"completed\""; arun
+amerged && ok "auto: Codex's status summary, completed without findings on the last code commit, counts as clean" || nok "auto: summary clean"
 
-asetup; jq -n '[]' > "$A/repos~o~r~issues~7~comments"; put repos/o/r/issues/7/reactions "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\",\"created_at\":\"2026-11-21T09:59:00Z\"}]"; arun
-! amerged && quiet && grep -q "no finished Codex review of 2222222" "$A/out" && ok "auto: a Codex 👍 from before the last code commit does not count" || nok "auto: old thumbs"
+asetup; summary "\"commit_sha\":\"$C\",\"has_any_findings\":true,\"has_unresolved_findings\":true,\"status\":\"completed\""; arun
+! amerged && asaid "Codex left a P0/P1 or M/S finding" && ok "auto: a summary with findings on the last code commit refuses" || nok "auto: summary findings"
+
+asetup; summary "\"commit_sha\":\"$H\",\"has_any_findings\":false,\"has_unresolved_findings\":false,\"status\":\"completed\""; arun
+! amerged && quiet && ok "auto: a summary for another commit is no review of the last code commit" || nok "auto: summary other commit"
+
+asetup; jq -n '[{id:8,user:{login:"o"},created_at:"2026-11-21T10:01:00Z",body:"@codex review"}]' > "$A/repos~o~r~issues~7~comments"; put repos/o/r/issues/comments/8/reactions "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\",\"created_at\":\"2026-11-21T10:04:00Z\"}]"; put repos/o/r/issues/7/reactions "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\",\"created_at\":\"2026-11-21T10:30:00Z\"}]"; arun
+! amerged && quiet && grep -q "no finished Codex review of 2222222" "$A/out" && ok "auto: a Codex 👍 alone never counts: it names no commit (Codex M2 on #36)" || nok "auto: thumbs alone"
+
+asetup; put repos/o/r/pulls/7/reviews "[{\"user\":{\"login\":\"o\"},\"commit_id\":\"$H\",\"state\":\"COMMENTED\",\"body\":\"verdict: approve\"},{\"user\":{\"login\":\"o\"},\"commit_id\":\"$H\",\"state\":\"CHANGES_REQUESTED\",\"body\":\"verdict: request-changes. Do not merge\"}]"; arun
+! amerged && quiet && grep -q "does not say 'verdict: approve'" "$A/out" && ok "auto: a later request-changes review by the owner on the head stops it (Codex M1 on #36)" || nok "auto: negative review"
+
+asetup; put repos/o/r/pulls/7/reviews "[{\"user\":{\"login\":\"o\"},\"commit_id\":\"$H\",\"state\":\"COMMENTED\",\"body\":\"looks fine\"}]"; arun
+! amerged && quiet && ok "auto: a review on the head without the verdict line does not count" || nok "auto: review without verdict"
+
+asetup; jq '(.[] | select(.filename == ".team/team.md")) |= . + {patch:"@@ -17,1 +17,1 @@\n-merge: human\n+merge: auto"}' "$A/repos~o~r~pulls~7~files" > "$A/x" && mv "$A/x" "$A/repos~o~r~pulls~7~files"; arun
+! amerged && asaid ".team/team.md changes a line that only a card may change: merge: human" && ok "auto: a merge: change in .team/team.md refuses (Codex M5 on #36)" || nok "auto: team.md merge line"
+
+asetup; jq '(.[] | select(.filename == ".team/team.md")) |= . + {patch:"@@ -30,1 +30,1 @@\n-team: .claude/skills/agent-team @ v0.8.14\n+team: .claude/skills/agent-team @ v0.8.15"}' "$A/repos~o~r~pulls~7~files" > "$A/x" && mv "$A/x" "$A/repos~o~r~pulls~7~files"; arun
+amerged && ok "auto: the version line in .team/team.md may move" || nok "auto: team.md version line"
+
+asetup; put "repos/o/r/commits/$H" '{"files":[{"filename":".team/reviews/cfg.md","previous_filename":".team/team.md"}]}'; arun
+! amerged && quiet && grep -q "no finished Codex review of 1111111" "$A/out" && ok "auto: a rename out of .team/ into reviews/ makes that commit the last code commit (Codex M4 on #36)" || nok "auto: rename source in commit"
+
+asetup; rm "$A/repos~o~r~pulls~7~comments"; arun
+! amerged && [ "$(cat "$A/rc")" = 1 ] && quiet && ok "auto: Codex's inline comments unreadable: stops without merging (Codex M3 on #36)" || nok "auto: inline unreadable"
 
 asetup; put "repos/o/r/commits/$H/check-runs?per_page=100" '{"check_runs":[{"id":5,"name":"pr-check","status":"completed","conclusion":"cancelled"},{"id":6,"name":"pr-check","status":"completed","conclusion":"success"}]}'; arun
 amerged && ok "auto: a cancelled older run with a green newer run of the same check merges" || nok "auto: latest run per check"

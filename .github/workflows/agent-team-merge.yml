@@ -154,6 +154,8 @@ jobs:
           b64() { gh api "repos/$REPO/contents/$1?ref=$2" --jq .content | base64 -d; }
           settings() { awk '/^## Team settings[[:space:]]*$/ {f=1; next} /^## / {f=0} f'; }
           section() { awk 'BEGIN {s=0; e=0} /^## Team settings[[:space:]]*$/ && !s {s=NR; next} s && !e && /^## / {e=NR} END {if (!e) e=NR+1; print s, e}'; }
+          hunks() { awk '/^@@/ {match($0, /-[0-9]+/); o = substr($0, RSTART + 1, RLENGTH - 1); match($0, /\+[0-9]+/); n = substr($0, RSTART + 1, RLENGTH - 1); next}
+            /^\\/ {next} /^-/ {print "-\t" o "\t" substr($0, 2); o++; next} /^\+/ {print "+\t" n "\t" substr($0, 2); n++; next} {o++; n++}'; }
           defb=$(gh api "repos/$REPO" --jq .default_branch) || { echo "could not read the repo"; exit 1; }
           agents=$(b64 AGENTS.md "$defb") || { echo "could not read AGENTS.md on $defb"; exit 1; }
           ts=$(settings <<<"$agents") # captured first: grep -q in a pipe can kill the writer under pipefail
@@ -209,8 +211,7 @@ jobs:
               ob=$(b64 AGENTS.md "$mb") && nb=$(b64 AGENTS.md "$head") || { echo "could not read AGENTS.md at $mb and $head"; exit 1; }
               read -r os oe <<<"$(section <<<"$ob")"; read -r ns ne <<<"$(section <<<"$nb")"
               [ "$os" -gt 0 ] && [ "$ns" -gt 0 ] || refuse "AGENTS.md has no ## Team settings section"
-              lines=$(awk '/^@@/ {match($0, /-[0-9]+/); o = substr($0, RSTART + 1, RLENGTH - 1); match($0, /\+[0-9]+/); n = substr($0, RSTART + 1, RLENGTH - 1); next}
-                /^\\/ {next} /^-/ {print "-\t" o "\t" substr($0, 2); o++; next} /^\+/ {print "+\t" n "\t" substr($0, 2); n++; next} {o++; n++}' <<<"$patch")
+              lines=$(hunks <<<"$patch")
               while IFS=$'\t' read -r sign no text; do
                 [ -n "$sign" ] || continue
                 if [ "$sign" = - ]; then lo=$os; hi=$oe; else lo=$ns; hi=$ne; fi
@@ -219,6 +220,18 @@ jobs:
                   refuse "AGENTS.md changes a line that only a card may change: $(cut -c1-80 <<<"$text")"
                 fi
               done <<<"$lines"
+            fi
+            # 2b. .team/team.md: the version and model lines move, never who decides (merge, mode, runner, the agent account, the human)
+            if awk -F'\t' '$2 == ".team/team.md" || $3 == ".team/team.md" {f=1} END {exit !f}' <<<"$files"; then
+              awk -F'\t' '$2 == ".team/team.md" && $1 == "modified" {f=1} END {exit !f}' <<<"$files" || refuse ".team/team.md is not simply modified"
+              patch=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.filename == ".team/team.md") | .patch // ""') || { echo "could not read the diff of .team/team.md"; exit 1; }
+              [ -n "$patch" ] || refuse "GitHub shows no diff for .team/team.md"
+              while IFS=$'\t' read -r sign no text; do
+                [ -n "$sign" ] || continue
+                if grep -qiE '^[[:space:]]*#?[[:space:]]*(human|merge|mode|runner|agent-account|auth|seats)[[:space:]]*:' <<<"$text"; then
+                  refuse ".team/team.md changes a line that only a card may change: $(cut -c1-80 <<<"$text")"
+                fi
+              done <<<"$(hunks <<<"$patch")"
             fi
             # 3. the pin moves forward to a commit on the agent-team default branch named in .gitmodules
             pin() { gh api "repos/$REPO/contents/$SUB?ref=$1" --jq 'select(.type == "submodule") | .sha'; }
@@ -240,34 +253,41 @@ jobs:
               if grep -qE '^verdict:[[:space:]]*approve[[:space:]]*$' <<<"$review"; then ok=1; fi
             done
             [ -n "$ok" ] || later "no review file with 'verdict: approve' at $head"
-            reviews=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" --jq '.[] | [.user.login, (.commit_id // ""), ((.body // "") | test("'"$FIND"'") | tostring)] | @tsv') || { echo "could not list reviews"; exit 1; }
-            awk -F'\t' -v h="$head" -v o="$OWNER" -v a="${AGENT_ACCOUNT:-}" '$2 == h && ($1 == o || (a != "" && $1 == a)) {f=1} END {exit !f}' <<<"$reviews" \
-              || later "the review is not posted on $head by $OWNER${AGENT_ACCOUNT:+ or $AGENT_ACCOUNT}"
+            reviews=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" --jq '.[] | [.user.login, (.commit_id // ""), ((.body // "") | test("'"$FIND"'") | tostring), .state,
+              ((.body // "") | test("(^|\\n)verdict:[ \\t]*approve[ \\t]*(\\r?\\n|$)") | tostring)] | @tsv') || { echo "could not list reviews"; exit 1; }
+            # the latest review on the head by the owner or AGENT_ACCOUNT carries the verdict: its body holds the file's `verdict: approve`
+            last=$(awk -F'\t' -v h="$head" -v o="$OWNER" -v a="${AGENT_ACCOUNT:-}" '$2 == h && ($1 == o || (a != "" && $1 == a)) {l = $4 "\t" $5} END {print l}' <<<"$reviews")
+            [ -n "$last" ] || later "the review is not posted on $head by $OWNER${AGENT_ACCOUNT:+ or $AGENT_ACCOUNT}"
+            [ "$last" = "COMMENTED"$'\t'"true" ] || [ "$last" = "APPROVED"$'\t'"true" ] || later "the latest review on $head by $OWNER${AGENT_ACCOUNT:+ or $AGENT_ACCOUNT} does not say 'verdict: approve'"
             # 5. Codex finished a review of the last commit outside .team/reviews/** with no P0/P1 or M/S
             code=""
             for c in $(gh api --paginate "repos/$REPO/pulls/$PR/commits" --jq '.[].sha' | tac); do
               cj=$(gh api "repos/$REPO/commits/$c") || { echo "could not read $c"; exit 1; }
-              cf=$(jq -r '(.files // [])[].filename' <<<"$cj")
-              if grep -qv '^\.team/reviews/' <<<"$cf"; then code=$c; cdate=$(jq -r .commit.committer.date <<<"$cj"); break; fi
+              # a rename's source counts: moving a file into .team/reviews/ still changes what lies outside it
+              cf=$(jq -r '(.files // [])[] | .filename, (.previous_filename // empty)' <<<"$cj")
+              if grep -qv '^\.team/reviews/' <<<"$cf"; then code=$c; break; fi
             done
             [ -n "$code" ] || refuse "no commit outside .team/reviews/"
+            # only evidence GitHub ties to that commit counts: a receipt naming it, a Codex review on it, or Codex's
+            # status summary for it. Never a timestamp: commit dates are the pusher's to set (Codex M2 on #36).
             done_=""; bad=""
-            while IFS=$'\t' read -r at s hit; do
-              [ -n "$at" ] || continue
-              if { [ "$s" = - ] && [[ ! "$at" < "$cdate" ]]; } || { [ "$s" != - ] && [[ $code == "$s"* ]]; }; then done_=1; [ "$hit" = true ] && bad=1; fi
-            done <<<"$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "'"$BOT"'" and ((.body // "") | test("^\\s*<!-- codex-review-receipt"))) | [.created_at, (((.body | capture("Reviewed commit:\\*\\*\\s*`(?<s>[0-9a-f]{7,40})`").s)) // "-"), (.body | test("'"$FIND"'") | tostring)] | @tsv')"
+            receipts=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "'"$BOT"'") | (.body // "") as $b
+              | if ($b | test("^\\s*<!-- codex-review-receipt")) then ["receipt", ((($b | capture("Reviewed commit:\\*\\*\\s*`(?<s>[0-9a-f]{7,40})`").s)) // "-"), ($b | test("'"$FIND"'") | tostring)]
+                elif ($b | test("codex-pull-request-review-summary")) then ["summary", ((($b | capture("\"code_review\":(\\{|&#123;)\"commit_sha\":\"(?<c>[0-9a-f]{40})\",\"has_any_findings\":(?<f>[a-z]+),\"has_unresolved_findings\":[a-z]+,\"status\":\"(?<s>[a-z]+)\"") | .c + " " + .f + " " + .s)) // "-"), "-"]
+                else empty end | @tsv') || { echo "could not list the PR's comments"; exit 1; }
+            while IFS=$'\t' read -r kind s hit; do
+              case "$kind" in
+                receipt) if [ "$s" != - ] && [[ $code == "$s"* ]]; then done_=1; [ "$hit" = true ] && bad=1; fi ;;
+                summary) read -r sc sf ss <<<"$s"
+                  if [ "$sc" = "$code" ] && [ "$ss" = completed ]; then done_=1; [ "$sf" = false ] || bad=1; fi ;;
+              esac
+            done <<<"$receipts"
             if awk -F'\t' -v b="$BOT" -v c="$code" '$1 == b && $2 == c {f=1} END {exit !f}' <<<"$reviews"; then done_=1; fi
             awk -F'\t' -v b="$BOT" -v c="$code" '$1 == b && $2 == c && $3 == "true" {f=1} END {exit !f}' <<<"$reviews" && bad=1
-            inline=$(gh api --paginate "repos/$REPO/pulls/$PR/comments" --jq '.[] | select(.user.login == "'"$BOT"'" and .original_commit_id == "'"$code"'") | (.body // "") | test("'"$FIND"'") | tostring') || inline=""
+            inline=$(gh api --paginate "repos/$REPO/pulls/$PR/comments" --jq '.[] | select(.user.login == "'"$BOT"'" and .original_commit_id == "'"$code"'") | (.body // "") | test("'"$FIND"'") | tostring') \
+              || { echo "could not read Codex's inline comments: unknown is not clean"; exit 1; }
             grep -qx true <<<"$inline" && bad=1
             [ -z "$bad" ] || refuse "Codex left a P0/P1 or M/S finding on ${code:0:7}"
-            if [ -z "$done_" ]; then # a 👍 by Codex after that commit, on the PR or on an @codex request
-              thumbs=$( { gh api --paginate "repos/$REPO/issues/$PR/reactions" --jq '.[] | select(.content == "+1" and .user.login == "'"$BOT"'") | .created_at'
-                for id in $(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select((.body // "") | test("@codex")) | .id'); do
-                  gh api --paginate "repos/$REPO/issues/comments/$id/reactions" --jq '.[] | select(.content == "+1" and .user.login == "'"$BOT"'") | .created_at'
-                done; } || true)
-              while read -r at; do [ -n "$at" ] && [[ ! "$at" < "$cdate" ]] && done_=1; done <<<"$thumbs"
-            fi
             [ -n "$done_" ] || later "no finished Codex review of ${code:0:7} yet"
             # 6. every check on the head green, the latest run per name
             runs=$(gh api --paginate "repos/$REPO/commits/$head/check-runs?per_page=100" --jq '.check_runs[] | [.id, .name, .status, (.conclusion // "")] | @tsv') || { echo "could not list check runs"; exit 1; }

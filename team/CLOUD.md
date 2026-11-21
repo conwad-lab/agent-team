@@ -67,7 +67,7 @@ Claude builds and judges, Codex attacks: two model families in every loop. [T1] 
 What the Coordinator would recommend merging merges without the human (§ Judge 5), rule changes included. The human gets a **decision card** only for: [H1]
 - a disagreement: the Judge ruled a Codex P0/P1 or M/S finding `not valid`;
 - no finished Codex review on the last commit outside `.team/reviews/**`: there is no fallback. Stopped only by the quota, a PR (data aside) waits without a card until 72 hours of usage-limit replies on that head;
-- a diff on **Human-only paths**, where law, a contract or the repo's own rules require a named human's yes (board PRs and, under `Auto-merge: release`, release bumps excepted);
+- a diff on **Human-only paths**, where law, a contract or the repo's own rules require a named human's yes (board PRs excepted);
 - an escalation.
 
 1. **Card log.** Every card about a PR (merge or runner card) is logged on the PR: `Card posted <UTC time>: <exception or rule>, recommended <option>`, then `Card answered <UTC time>: <option>` (**Vänta** too). One unanswered at the routine run counts as open. [H2]
