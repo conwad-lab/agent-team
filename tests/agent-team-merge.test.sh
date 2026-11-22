@@ -153,6 +153,217 @@ merged && ok "a card approval naming the pinned head by a short sha: merges" || 
 setup "feat: x" false $S; cj '[{id:16,user:{login:$bot},body:null}]'; run "agent-team-merge: $S"
 ! merged && said "no Codex comment, review or 👍" && ok "a Codex comment with an empty body: refused for that reason (jq does not fail)" || nok "null body"
 
+# ---- v0.8.15: job auto merges a release bump on agreement by itself (story T)
+sed -n '/# --- begin agent-team-auto script/,/# --- end agent-team-auto script/p' "$WF" | sed 's/^          //' > "$T/auto.sh"
+[ -s "$T/auto.sh" ] && ok "auto script extracted" || nok "auto script extracted"
+mkdir -p "$T/abin"
+cat > "$T/abin/gh" <<'G'
+#!/usr/bin/env bash
+# a generic fake: GET <path> answers $A/<path with / as ~>, through --jq when given; writes are logged
+echo "$*" >> "$A/calls"
+shift # api
+method=GET; path=""; jqx=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -X) method=$2; shift 2 ;;
+    --paginate) shift ;;
+    --jq) jqx=$2; shift 2 ;;
+    -f) shift 2 ;;
+    *) path=$1; shift ;;
+  esac
+done
+if [ "$method" != GET ]; then
+  case "$method $path" in "PUT "*/merge) [ -f "$A/refuse" ] && { echo "Required status check is expected" >&2; exit 1; } ;; esac
+  echo '{}'; exit 0
+fi
+f="$A/${path//\//\~}"
+[ -f "$f" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+if [ -n "$jqx" ]; then jq -r "$jqx" "$f"; else cat "$f"; fi
+G
+chmod +x "$T/abin/gh"
+H=1111111111111111111111111111111111111111; C=2222222222222222222222222222222222222222; MB=3333333333333333333333333333333333333333
+OLD=4444444444444444444444444444444444444444; NEW=5555555555555555555555555555555555555555
+put() { printf '%s' "$2" > "$A/${1//\//\~}"; }
+content() { jq -n --arg c "$(printf '%s' "$3" | base64 -w0)" '{content: $c}' > "$A/${1//\//\~}?ref=$2"; }
+agents_md() { # $1 Auto-merge value  $2 Human-only value  $3 Builder value
+  printf '# r\n\n## Project conventions\n\n- Stack: x\n\n## Team settings\n\n- **Builder:** %s\n- **Human-only paths:** %s\n- **Auto-merge:** %s\n\n## Papercuts\n\nx\n' "$3" "$2" "$1"
+}
+# the AGENTS.md patch for a Builder line change: line 9 of the file above
+BPATCH='@@ -8,3 +8,3 @@
+ 
+-- **Builder:** claude
++- **Builder:** codex-cli
+ - **Human-only paths:** none'
+asetup() {
+  export A="$T/auto"; rm -rf "$A"; mkdir -p "$A"; : > "$A/calls"
+  put repos/o/r '{"default_branch":"main"}'
+  content repos/o/r/contents/AGENTS.md main "$(agents_md release none claude)"
+  content repos/o/r/contents/AGENTS.md "$MB" "$(agents_md release none claude)"
+  content repos/o/r/contents/AGENTS.md "$H" "$(agents_md release none codex-cli)"
+  put repos/o/r/pulls/7 "{\"state\":\"open\",\"draft\":false,\"merged\":false,\"head\":{\"sha\":\"$H\",\"ref\":\"bump\",\"repo\":{\"full_name\":\"o/r\"}},\"base\":{\"ref\":\"main\"}}"
+  jq -n --arg p "$BPATCH" '[{status:"modified",filename:".claude/skills/agent-team"},{status:"added",filename:".team/reviews/030-bump.md"},{status:"modified",filename:".team/team.md",patch:"@@ -8,1 +8,1 @@\n-  coder: codex\n+  coder: codex-cli"},{status:"modified",filename:"AGENTS.md",patch:$p}]' > "$A/repos~o~r~pulls~7~files"
+  put "repos/o/r/compare/main...$H" "{\"behind_by\":0,\"merge_base_commit\":{\"sha\":\"$MB\"}}"
+  put "repos/o/r/contents/.claude/skills/agent-team?ref=$MB" "{\"type\":\"submodule\",\"sha\":\"$OLD\"}"
+  put "repos/o/r/contents/.claude/skills/agent-team?ref=$H" "{\"type\":\"submodule\",\"sha\":\"$NEW\"}"
+  content repos/o/r/contents/.gitmodules main '[submodule ".claude/skills/agent-team"]
+	path = .claude/skills/agent-team
+	url = https://github.com/u/agent-team.git
+'
+  put repos/u/agent-team '{"default_branch":"main"}'
+  put "repos/u/agent-team/compare/$OLD...$NEW" '{"status":"ahead"}'
+  put "repos/u/agent-team/compare/$NEW...main" '{"status":"identical"}'
+  content repos/o/r/contents/.team/reviews/030-bump.md "$H" $'---\nid: 030\nverdict: approve\n---\n# Review 030'
+  put repos/o/r/pulls/7/reviews "[{\"user\":{\"login\":\"o\"},\"commit_id\":\"$H\",\"state\":\"COMMENTED\",\"body\":\"---\\nid: 030\\nverdict: approve\\n---\\n# Review 030\"}]"
+  put repos/o/r/pulls/7/commits "[{\"sha\":\"$C\"},{\"sha\":\"$H\"}]"
+  put "repos/o/r/commits/$C" '{"commit":{"committer":{"date":"2026-11-21T10:00:00Z"}},"files":[{"filename":".claude/skills/agent-team"},{"filename":"AGENTS.md"}]}'
+  put "repos/o/r/commits/$H" '{"commit":{"committer":{"date":"2026-11-21T10:10:00Z"}},"files":[{"filename":".team/reviews/030-bump.md"}]}'
+  jq -n --arg b "$BOT" '[{id:8,user:{login:"o"},created_at:"2026-11-21T10:01:00Z",body:"@codex review"},
+    {id:9,user:{login:$b},created_at:"2026-11-21T10:05:00Z",body:"<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn'"'"'t find any major issues.\n\n**Reviewed commit:** `2222222`"}]' > "$A/repos~o~r~issues~7~comments"
+  put repos/o/r/issues/7/reactions '[]'; put repos/o/r/issues/comments/8/reactions '[]'; put repos/o/r/pulls/7/comments '[]'
+  put "repos/o/r/commits/$H/check-runs?per_page=100" '{"check_runs":[{"id":5,"name":"pr-check","status":"completed","conclusion":"success"}]}'
+  put "repos/o/r/commits/$H/status?per_page=100" '{"state":"pending","total_count":0,"statuses":[]}'
+  put repos/o/r/git/ref/heads/bump "{\"object\":{\"sha\":\"$H\"}}"
+}
+arun() { : > "$A/calls"; REPO=o/r OWNER=o AGENT_ACCOUNT="${AA:-}" PRS="${APRS-7}" HEAD_SHA="${AHS:-}" AFTER_MERGE_WORKFLOWS="" GH_TOKEN=x PATH="$T/abin:$PATH" bash "$T/auto.sh" > "$A/out" 2>&1; echo $? > "$A/rc"; }
+amerged() { grep -q "^api -X PUT repos/o/r/pulls/7/merge -f sha=$H -f merge_method=squash" "$A/calls"; }
+asaid() { grep -q -- "$1" "$A/calls"; }
+quiet() { ! grep -q 'issues/7/comments -f body' "$A/calls"; }
+
+asetup; arun
+amerged && asaid "Merged by agent-team-merge (release bump): head $H" && asaid "DELETE repos/o/r/git/refs/heads/bump" && [ "$(cat "$A/rc")" = 0 ] && ok "auto: a green release bump merges the head, deletes the branch, says so" || { nok "auto: green bump merges"; cat "$A/out"; }
+
+asetup; content repos/o/r/contents/AGENTS.md main "$(agents_md none none claude)"; arun
+! amerged && quiet && grep -q "do not say Auto-merge: release" "$A/out" && ok "auto: Auto-merge none does nothing" || nok "auto: Auto-merge none"
+
+asetup; jq '(.[] | select(.filename == "AGENTS.md") | .patch) = "@@ -9,2 +9,2 @@\n - **Builder:** claude\n-- **Human-only paths:** none\n+- **Human-only paths:** `src/legal/**`"' "$A/repos~o~r~pulls~7~files" > "$A/x" && mv "$A/x" "$A/repos~o~r~pulls~7~files"; arun
+! amerged && asaid "a line that only a card may change" && ok "auto: a change to Human-only paths in AGENTS.md refuses" || nok "auto: Human-only paths line"
+
+asetup; jq '(.[] | select(.filename == "AGENTS.md") | .patch) = "@@ -5,1 +5,1 @@\n-- Stack: x\n+- Stack: y"' "$A/repos~o~r~pulls~7~files" > "$A/x" && mv "$A/x" "$A/repos~o~r~pulls~7~files"; arun
+! amerged && asaid "line 5 (-) is outside ## Team settings" && ok "auto: an AGENTS.md line outside Team settings refuses" || nok "auto: outside Team settings"
+
+asetup; jq '. + [{status:"modified",filename:".github/workflows/ci.yml"}]' "$A/repos~o~r~pulls~7~files" > "$A/x" && mv "$A/x" "$A/repos~o~r~pulls~7~files"; arun
+! amerged && asaid ".github/workflows/ci.yml is outside a release bump" && ok "auto: a file under .github/ refuses" || nok "auto: .github file"
+
+asetup; jq '. + [{status:"renamed",filename:".team/plans/x.md",previous_filename:"REVIEW.md"}]' "$A/repos~o~r~pulls~7~files" > "$A/x" && mv "$A/x" "$A/repos~o~r~pulls~7~files"; arun
+! amerged && asaid "REVIEW.md is outside a release bump" && ok "auto: a rename's source counts" || nok "auto: rename source"
+
+asetup; content repos/o/r/contents/AGENTS.md main "$(agents_md release '`.team/team.md`' claude)"; arun
+! amerged && asaid ".team/team.md is on Human-only paths" && ok "auto: a file on the repo's Human-only paths refuses" || nok "auto: Human-only path file"
+
+asetup; content repos/o/r/contents/AGENTS.md main "$(agents_md release 'the rulebook' claude)"; arun
+! amerged && asaid "lists no backticked paths" && ok "auto: a Human-only line that is not globs refuses" || nok "auto: unreadable Human-only line"
+
+asetup; put "repos/u/agent-team/compare/$OLD...$NEW" '{"status":"behind"}'; arun
+! amerged && asaid "the pin does not move forward" && ok "auto: a pin that moves backwards refuses" || nok "auto: pin backwards"
+
+asetup; put "repos/u/agent-team/compare/$NEW...main" '{"status":"diverged"}'; arun
+! amerged && asaid "is not on u/agent-team main" && ok "auto: a pin off agent-team main refuses" || nok "auto: pin off main"
+
+asetup; jq '[.[] | select(.filename != ".claude/skills/agent-team")]' "$A/repos~o~r~pulls~7~files" > "$A/x" && mv "$A/x" "$A/repos~o~r~pulls~7~files"; arun
+! amerged && quiet && grep -q "not a release bump" "$A/out" && ok "auto: a PR that does not move the submodule is left alone, silently" || nok "auto: not a bump"
+
+asetup; content repos/o/r/contents/.team/reviews/030-bump.md "$H" $'---\nverdict: request-changes\n---\n'; arun
+! amerged && quiet && grep -q "no review file with" "$A/out" && ok "auto: no approving review file: waits silently" || nok "auto: no approve"
+
+asetup; put repos/o/r/pulls/7/reviews "[{\"user\":{\"login\":\"o\"},\"commit_id\":\"$C\",\"body\":\"old\"}]"; arun
+! amerged && quiet && grep -q "the review is not posted on $H by o" "$A/out" && ok "auto: the review not posted on this head: waits silently" || nok "auto: review on another head"
+
+asetup; put repos/o/r/pulls/7/comments "[{\"user\":{\"login\":\"$BOT\"},\"original_commit_id\":\"$C\",\"body\":\"**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange)</sub></sub> Pin moves too far**\"}]"; arun
+! amerged && asaid "Codex left a P0/P1 or M/S finding on 2222222" && ok "auto: a Codex P1 on the last code commit refuses" || nok "auto: Codex P1"
+
+asetup; jq -n --arg b "$BOT" '[{id:9,user:{login:$b},created_at:"2026-11-21T09:00:00Z",body:"<!-- codex-review-receipt:v1 -->\nCodex Review: fine.\n**Reviewed commit:** `9999999`"}]' > "$A/repos~o~r~issues~7~comments"; arun
+! amerged && quiet && grep -q "no finished Codex review of 2222222" "$A/out" && ok "auto: a receipt for an older commit is no review of the last one: waits silently" || nok "auto: receipt for older commit"
+
+summary() { jq -n --arg b "$BOT" --arg s "$1" '[{id:8,user:{login:"o"},body:"@codex review"},{id:10,user:{login:$b},body:("<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {\"code_review\":{" + $s + "},\"security_review\":{}} -->")}]' > "$A/repos~o~r~issues~7~comments"; }
+asetup; summary "\"commit_sha\":\"$C\",\"has_any_findings\":false,\"has_unresolved_findings\":false,\"status\":\"completed\""; arun
+amerged && ok "auto: Codex's status summary, completed without findings on the last code commit, counts as clean" || nok "auto: summary clean"
+
+asetup; summary "\"commit_sha\":\"$C\",\"has_any_findings\":true,\"has_unresolved_findings\":true,\"status\":\"completed\""; arun
+amerged && ok "auto: the summary's findings flag alone does not refuse: it counts the PR's open threads (48516c6 on #36: clean receipt, flag true)" || nok "auto: summary flag"
+
+asetup; jq --arg b "$BOT" --arg c "$C" '. + [{id:11,user:{login:$b},body:("<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 &#123;\"code_review\":&#123;\"commit_sha\":\"" + $c + "\",\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":\"failed\"&#125;&#125; -->")}]' "$A/repos~o~r~issues~7~comments" > "$A/x" && mv "$A/x" "$A/repos~o~r~issues~7~comments"; arun
+! amerged && asaid "a Codex review of 2222222 ended failed" && ok "auto: a clean receipt plus a failed summary for the same commit refuses (Codex M7 on #36; escaped braces as GitHub stores them)" || nok "auto: failed summary"
+
+asetup; summary "\"commit_sha\":\"$C\",\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":\"running\""; arun
+! amerged && quiet && grep -q "still running" "$A/out" && ok "auto: a Codex review still running on the last code commit: waits silently" || nok "auto: summary running"
+
+asetup; summary "\"commit_sha\":\"$H\",\"has_any_findings\":false,\"has_unresolved_findings\":false,\"status\":\"completed\""; arun
+! amerged && quiet && ok "auto: a summary for another commit is no review of the last code commit" || nok "auto: summary other commit"
+
+asetup; jq -n '[{id:8,user:{login:"o"},created_at:"2026-11-21T10:01:00Z",body:"@codex review"}]' > "$A/repos~o~r~issues~7~comments"; put repos/o/r/issues/comments/8/reactions "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\",\"created_at\":\"2026-11-21T10:04:00Z\"}]"; put repos/o/r/issues/7/reactions "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\",\"created_at\":\"2026-11-21T10:30:00Z\"}]"; arun
+! amerged && quiet && grep -q "no finished Codex review of 2222222" "$A/out" && ok "auto: a Codex 👍 alone never counts: it names no commit (Codex M2 on #36)" || nok "auto: thumbs alone"
+
+asetup; put repos/o/r/pulls/7/reviews "[{\"user\":{\"login\":\"o\"},\"commit_id\":\"$H\",\"state\":\"COMMENTED\",\"body\":\"verdict: approve\"},{\"user\":{\"login\":\"o\"},\"commit_id\":\"$H\",\"state\":\"CHANGES_REQUESTED\",\"body\":\"verdict: request-changes. Do not merge\"}]"; arun
+! amerged && quiet && grep -q "does not say 'verdict: approve'" "$A/out" && ok "auto: a later request-changes review by the owner on the head stops it (Codex M1 on #36)" || nok "auto: negative review"
+
+asetup; put repos/o/r/pulls/7/reviews "[{\"user\":{\"login\":\"o\"},\"commit_id\":\"$H\",\"state\":\"COMMENTED\",\"body\":\"looks fine\"}]"; arun
+! amerged && quiet && ok "auto: a review on the head without the verdict line does not count" || nok "auto: review without verdict"
+
+asetup; jq '(.[] | select(.filename == ".team/team.md")) |= . + {patch:"@@ -17,1 +17,1 @@\n-merge: human\n+merge: auto"}' "$A/repos~o~r~pulls~7~files" > "$A/x" && mv "$A/x" "$A/repos~o~r~pulls~7~files"; arun
+! amerged && asaid ".team/team.md changes a line that only a card may change: merge: human" && ok "auto: a merge: change in .team/team.md refuses (Codex M5 on #36)" || nok "auto: team.md merge line"
+
+asetup; jq '(.[] | select(.filename == ".team/team.md")) |= . + {patch:"@@ -30,1 +30,1 @@\n-team: .claude/skills/agent-team @ v0.8.14\n+team: .claude/skills/agent-team @ v0.8.15"}' "$A/repos~o~r~pulls~7~files" > "$A/x" && mv "$A/x" "$A/repos~o~r~pulls~7~files"; arun
+amerged && ok "auto: the version line in .team/team.md may move" || nok "auto: team.md version line"
+
+asetup; put "repos/o/r/commits/$H" '{"files":[{"filename":".team/reviews/cfg.md","previous_filename":".team/team.md"}]}'; arun
+! amerged && quiet && grep -q "no finished Codex review of 1111111" "$A/out" && ok "auto: a rename out of .team/ into reviews/ makes that commit the last code commit (Codex M4 on #36)" || nok "auto: rename source in commit"
+
+asetup; put "repos/o/r/commits/$H" '{"files":[{"filename":".team/reviews/030-bump.md"},{"filename":".team/reviews/030-bump.response.md"}]}'; arun
+amerged && ok "auto: a review-only commit with two review files is not taken for code (Codex M10 on #36)" || nok "auto: two review files"
+
+asetup; rm "$A/repos~o~r~commits~$H"; arun
+! amerged && [ "$(cat "$A/rc")" = 1 ] && quiet && ok "auto: a commit's files unreadable: stops without merging" || nok "auto: commit files unreadable"
+
+asetup; jq -n '{files: ([range(0; 3000)] | map({filename: (".team/reviews/r\(.).md")}))}' > "$A/repos~o~r~commits~$H"; arun
+! amerged && asaid "lists 3000 files" && ok "auto: a commit at GitHub's 3000-file cap refuses (Codex M9 on #36)" || nok "auto: commit file cap"
+
+asetup; rm "$A/repos~o~r~pulls~7~commits"; arun
+! amerged && [ "$(cat "$A/rc")" = 1 ] && quiet && ok "auto: the PR's commit list unreadable: stops without merging (Codex M8 on #36)" || nok "auto: commits unreadable"
+
+asetup; put repos/o/r/pulls/7/commits "[{\"sha\":\"$C\"}]"; arun
+! amerged && [ "$(cat "$A/rc")" = 1 ] && grep -q "does not end at the head" "$A/out" && ok "auto: a commit list cut short (it does not end at the head): stops without merging" || nok "auto: commits cut short"
+
+asetup; rm "$A/repos~o~r~pulls~7~comments"; arun
+! amerged && [ "$(cat "$A/rc")" = 1 ] && quiet && ok "auto: Codex's inline comments unreadable: stops without merging (Codex M3 on #36)" || nok "auto: inline unreadable"
+
+asetup; put "repos/o/r/commits/$H/check-runs?per_page=100" '{"check_runs":[{"id":5,"name":"pr-check","status":"completed","conclusion":"cancelled"},{"id":6,"name":"pr-check","status":"completed","conclusion":"success"}]}'; arun
+amerged && ok "auto: a cancelled older run with a green newer run of the same check merges" || nok "auto: latest run per check"
+
+asetup; put "repos/o/r/commits/$H/check-runs?per_page=100" '{"check_runs":[{"id":5,"name":"pr-check","status":"completed","conclusion":"failure"}]}'; arun
+! amerged && asaid "check pr-check is failure" && ok "auto: a red check refuses" || nok "auto: red check"
+
+asetup; put "repos/o/r/commits/$H/check-runs?per_page=100" '{"check_runs":[{"id":5,"name":"pr-check","status":"in_progress","conclusion":null}]}'; arun
+! amerged && quiet && grep -q "check pr-check is in_progress" "$A/out" && ok "auto: a running check: waits silently" || nok "auto: running check"
+
+asetup; put "repos/o/r/commits/$H/status?per_page=100" '{"state":"failure","total_count":1,"statuses":[{"context":"Vercel","state":"failure"}]}'; arun
+! amerged && asaid "status Vercel is failure" && ok "auto: a red commit status refuses" || nok "auto: red status"
+# M11: more contexts than one page shows; the aggregate state or a row count mismatch stops it
+asetup; put "repos/o/r/commits/$H/status?per_page=100" '{"state":"failure","total_count":31,"statuses":[{"context":"a","state":"success"}]}'; arun
+! amerged && grep -q "read 1 of 31 statuses" "$A/out" && quiet && [ "$(cat "$A/rc")" = 1 ] && ok "auto: a status list shorter than total_count stops without merging" || nok "auto: short status list"
+asetup; put "repos/o/r/commits/$H/status?per_page=100" '{"state":"failure","total_count":1,"statuses":[{"context":"a","state":"success"}]}'; arun
+! amerged && asaid "the combined status is failure" && ok "auto: a red combined status refuses even when every row read is green" || nok "auto: red aggregate"
+asetup; put "repos/o/r/commits/$H/status?per_page=100" '{"state":"pending","total_count":1,"statuses":[{"context":"a","state":"success"}]}'; arun
+! amerged && quiet && ok "auto: a pending combined status waits quietly" || nok "auto: pending aggregate"
+asetup; put "repos/o/r/commits/$H/status?per_page=100" '{"state":"success","total_count":1,"statuses":[{"context":"a","state":"success"}]}'; arun
+amerged && ok "auto: a green combined status merges" || nok "auto: green aggregate"
+
+asetup; put "repos/o/r/compare/main...$H" "{\"behind_by\":2,\"merge_base_commit\":{\"sha\":\"$MB\"}}"; arun
+! amerged && asaid "2 commits behind main" && ok "auto: a head behind main refuses" || nok "auto: behind main"
+
+asetup; put "repos/o/r/compare/main...$H" "{\"behind_by\":2,\"merge_base_commit\":{\"sha\":\"$MB\"}}"; jq --arg h "$H" '. + [{id:20,user:{login:"github-actions[bot]"},created_at:"2026-11-21T10:20:00Z",body:("agent-team-merge (release bump) did not merge, head " + $h + ": earlier")}]' "$A/repos~o~r~issues~7~comments" > "$A/x" && mv "$A/x" "$A/repos~o~r~issues~7~comments"; arun
+! amerged && quiet && grep -q "not merged: the branch is 2 commits behind" "$A/out" && ok "auto: one refusal comment per head" || nok "auto: once per head"
+
+asetup; put repos/o/r/pulls/7 "{\"state\":\"open\",\"draft\":true,\"head\":{\"sha\":\"$H\",\"ref\":\"bump\",\"repo\":{\"full_name\":\"o/r\"}},\"base\":{\"ref\":\"main\"}}"; arun
+! amerged && quiet && grep -q "the PR is a draft" "$A/out" && ok "auto: a draft is left alone" || nok "auto: draft"
+
+asetup; put "repos/o/r/commits/$H/pulls" '[{"number":7,"state":"open"}]'; APRS="" AHS="$H" arun
+amerged && ok "auto: a workflow_run or check_suite event finds the PR by its head" || nok "auto: PR by head sha"
+
+asetup; touch "$A/refuse"; arun
+! amerged || true; asaid "GitHub refused the merge: Required status check" && ! asaid "Merged by" && ok "auto: GitHub refuses: says why, no success comment" || nok "auto: GitHub refuses"
+
+grep -q "workflows: \[" "$WF" && grep -q 'pull_request_target' "$WF" && grep -q "github.event.action == 'created' && github.event.issue.pull_request" "$WF" && grep -q "user.login == 'chatgpt-codex-connector\[bot\]'" "$WF" && ok "auto: triggers on the PR, Codex's comments and finished CI" || nok "auto: triggers"
+
 grep -q 'github.event.comment.body }}' "$WF" && ! grep -qE 'run:.*\$\{\{' "$WF" && ok "comment body reaches the script only through env" || nok "body through env"
 grep -q 'actions/checkout' "$WF" && nok "checks out no code" || ok "checks out no code"
 
