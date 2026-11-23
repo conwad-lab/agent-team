@@ -4,6 +4,7 @@ For private cloud-mode repos whose CI should not spend GitHub-hosted Actions min
 
 ## Rules
 
+- **Pricing check** (moved unchanged from `CLOUD.md` [Q3] in v0.8.22, binding as if it stood there). Where Actions minutes are a Signal source, the routine rechecks GitHub's self-hosted pricing.
 - **Private repos only.** Never register the runner on a public repo (agent-team, tb-site): anyone who can open a PR there could run code on the host Mac. `bin/runner-install` refuses a repo that is not private or not owned by the configured account. Keep "Run workflows from fork pull requests" off in each repo (Settings → Actions → General; off by default in a private repo).
 - **One runner per repo, one Linux machine per runner.** On a personal GitHub account runners are registered per repository (account-wide runners need an organization). Each runner gets its own isolated OrbStack Linux machine with its own Docker, so one repo's jobs never see another repo's containers or volumes. `RUNNERS_PER_REPO` adds machines, never runners in a shared machine: the cleanup hook removes every container and volume, so a shared Docker would kill the sibling's service containers.
 - **One job at a time.** A runner process takes one job at a time; jobs beyond that queue.

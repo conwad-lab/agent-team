@@ -203,6 +203,7 @@ Ids [X53]–[X55] are left for story W (v0.8.20), built at the same time.
 ## Cut or merged in v0.8.22
 
 [X62] [B12] the classifier-skip detail of **Green** — prevents: — still needed if: — — moved unchanged to `team/SETUP.md` § Walls in full (Green), binding as if it stood in `CLOUD.md`. Pays for [B15] and the [F3], [Q1] clauses under [C1]
+[X63] [Q3] "Where Actions minutes are a Signal source, the routine rechecks GitHub's self-hosted pricing." — prevents: — still needed if: — — moved unchanged to `team/RUNNER.md` § Rules (Pricing check), binding as if it stood in `CLOUD.md`. Pays for [B15] under [C1]
 
 ## Cut or merged in v0.8.21
 

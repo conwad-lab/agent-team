@@ -18,7 +18,7 @@ Claude builds and judges, Codex attacks: two model families in every loop. [T1] 
 
 1. **PO.** The Coordinator takes the next row under **Kö**. An outcome row gets the stories that serve it, the first written, the rest named in its Log. A story has a filled-in `## Signal`. [F1]
 2. **Architect.** Read the code, run the **Baseline**, write the plan. Too big → `verdict: needs-split`; split it as PO. [F2]
-3. **Start the Builder** with only the repo, the story and plan paths, and "follow `.claude/skills/agent-team/team/CLOUD.md` § Builder". For `builder: codex-cli` the Coordinator posts the plan's `## Work order` on the story's issue (`templates/codex.md`, label `codex-cli`), sets the [Q1] reminders and logs it. [F3] At most **Stories in flight** per repo (Team settings: default 1, at most 2; 2 needs `SETUP.md` step 9). A second story starts only when (a) its plan's Files plus **Coder extras** share no path with the one in flight (`.team/PAPERCUTS.md` excepted: append-only, a conflict keeps both sides), (b) in a product repo, neither is a `Rulebook story.`, (c) neither carries a data change, (d) the repo's open-PR cap allows it, a story without a PR counting as one and board PRs never, (e) `bin/watch` showed no `codex-quota` stall in 24 hours. When one merges, the other's Builder merges main in, runs **Test before commit** and requests a Codex round. A story is in flight until its PR is merged or closed, escalated or not. [F4]
+3. **Start the Builder** with only the repo, the story and plan paths, and "follow `.claude/skills/agent-team/team/CLOUD.md` § Builder". For `builder: codex-cli` the Coordinator posts the plan's `## Work order` on the story's issue (`templates/codex.md`, label `codex-cli`), sets the [Q1] reminders, logs it. [F3] At most **Stories in flight** per repo (Team settings: default 1, at most 2; 2 needs `SETUP.md` step 9). A second story starts only when (a) its plan's Files plus **Coder extras** share no path with the one in flight (`.team/PAPERCUTS.md` excepted: append-only, a conflict keeps both sides), (b) in a product repo, neither is a `Rulebook story.`, (c) neither carries a data change, (d) the repo's open-PR cap allows it, a story without a PR counting as one and board PRs never, (e) `bin/watch` showed no `codex-quota` stall in 24 hours. When one merges, the other's Builder merges main in, runs **Test before commit** and requests a Codex round. A story is in flight until its PR is merged or closed, escalated or not. [F4]
 3a. **Plan attack** when the plan's Files touch **Adversarial paths** or **Human-merge paths**, or for a `Rulebook story.`: Codex attacks the plan first (§ Builder 0). The Coordinator answers each M and S on its own line under the plan's `## Plan attack` (`changed in plan` or `disputed — <reason>`) and says go. [F5]
 4. **Start the Judge**, when the Builder asks, with only the repo, the PR number, and "follow `.claude/skills/agent-team/team/CLOUD.md` § Judge". [F6]
 5. **Judge** rules: `request-changes` wakes the Builder; `approve` → merge or card (§ Judge 5); `escalate` → the Coordinator writes the Operatör line and puts the dispute to the human. [F7]
@@ -26,7 +26,7 @@ Claude builds and judges, Codex attacks: two model families in every loop. [T1] 
 
 ## Builder
 
-A `codex-cli` story gets a Builder only on: `bounced` or `blocked`; no `started` in 15 minutes or no outcome in the hour ([K6]); a fix order or Codex finding to answer; a `Rulebook story.`, data change or design choice. [B15]
+A `codex-cli` story gets a Builder only on: a plan attack (§ Flow 3a, before the order); `bounced` or `blocked`; no `started` in 15 minutes or no outcome in the hour ([K6]); a fix order or Codex finding to answer; a [T2] `claude` reason. On `done` the Coordinator posts `@codex review` and, on a clean head with green checks (step 5), marks the PR ready and asks for the Judge. [B15]
 
 0. **Plan attack** (§ Flow 3a): post it from `templates/codex.md` on the story's issue `NNN: <story title>`, message the Coordinator `NNN plan attack: <n> findings, <link>`, and build when `## Plan attack` answers every M and S and the Coordinator says go. An error: ask once more; a second failure or no answer in an hour: tell the Coordinator, who notes it under `## Plan attack`; build the plan as it stands. Never edit the plan. [B1]
 1. Branch `feat/NNN-slug` from main, push it at once. Read the story, the plan, `AGENTS.md`, `TEAM.md`, `roles/coder.md` (this section wins). [B2]
@@ -98,7 +98,7 @@ One scheduled routine per project, daily. Its first run each week reads the **Si
 
 **Memory**, in that first run after the retro, follows `team/MEMORY-UPKEEP.md`. [R9]
 
-**Sample**, in that first run: the week's green rule merges are re-judged without planning context, and a Must fix there, a revert or the human's "pausa automerge" pauses the class for 14 days (`SETUP.md` § Walls in full, Sample and pause). The digest lists them, a line each, to read. [R13]
+**Sample**, in that first run: the week's green rule merges are re-judged without planning context, and a Must fix there, a revert or the human's "pausa automerge" pauses the class for 14 days (`SETUP.md` § Walls in full, Sample and pause). The digest lists them. [R13]
 
 ## What reaches the human
 
@@ -106,9 +106,9 @@ One digest per active day, none on quiet days: merges (on agreement with a link,
 
 ## Quota
 
-- Only Builder and Judge watch a PR, each its own until merged, closed or escalated, waking on PR events and messages and never re-pinging a commit beyond the one retry or the routine's one per run on a `codex-quota` head. An `@codex` task or CLI order wakes nobody: whoever posts it (a `codex-cli` order: the Coordinator) sets two reminders, at about 15 minutes and the hour. [Q1]
-- **Actions minutes.** A PR stays a draft while Codex attacks it. Every workflow with a job that installs dependencies skips its heavy jobs on drafts (`if: github.event.pull_request.draft != true`) and lists `ready_for_review` in its `pull_request` types; a new workflow keeps both. Before ready, **Test before commit** is the gate. [Q2]
-- **Self-hosted runner.** A private repo with `runner: mini` runs CI on the host Mac (`bin/runner-install`) under `team/RUNNER.md` § Rules, never on a public repo. Where Actions minutes are a Signal source, the routine rechecks GitHub's self-hosted pricing. [Q3]
+- Only Builder and Judge watch a PR, each its own until merged, closed or escalated, waking on PR events and messages and never re-pinging a commit beyond the one retry or the routine's one a run on a `codex-quota` head. An `@codex` task or CLI order wakes nobody: whoever posts it (a `codex-cli` order: the Coordinator) sets two reminders, at about 15 minutes and the hour. [Q1]
+- **Actions minutes.** A PR stays draft during Codex's attack. Every workflow with a job that installs dependencies skips its heavy jobs on drafts (`if: github.event.pull_request.draft != true`) and lists `ready_for_review` in its `pull_request` types; a new workflow keeps both. Before ready, **Test before commit** is the gate. [Q2]
+- **Self-hosted runner.** A private repo with `runner: mini` runs CI on the host Mac (`bin/runner-install`) under `team/RUNNER.md` § Rules, never on a public repo. [Q3]
 - **Runner offline.** After marking ready, or pushing after ready, under `runner: mini`, the Builder sets one reminder at **Runner offline after** (default 30 minutes) and then acts as `team/RUNNER.md` § When it is offline says. [Q4]
 
 ## Walls
