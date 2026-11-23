@@ -531,7 +531,7 @@ check "recovery: the dead slot 2 run is bounced, the live slot 1 run's recovery 
 kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
 setup3 ok; mkdir -p "$T/work/pending"; echo "o/r2 7 dead-run 1001" > "$T/work/current.2"; printf 'o/r 5\ncodex-cli: done\nlate\n' > "$T/work/pending/old-run"
 tick
-check "recovery: a dead slot's file is bounced although another slot ran this tick; a kept outcome is delivered once" '[ ! -f $T/work/current.2 ] && [ "$(bodies | grep -c "^late$")" = 1 ] && [ ! -f $T/work/pending/old-run ]'
+check "recovery: a dead slot's file is bounced although another slot ran this tick; a kept outcome is delivered once" '[ ! -f $T/work/current.2 ] && [ ! -d $T/work/.lock.2 ] && [ "$(bodies | grep -c "^late$")" = 1 ] && [ ! -f $T/work/pending/old-run ]'
 
 # Codex round 1 on #45: a failing df, a stalled run beside a busy one, a stale-lock race, files a dead tick held, v0.8.22's record
 setup3 ok; cat > "$T/bin/df" <<'D'
@@ -578,7 +578,7 @@ kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
 # v0.8.22's single record `current`: bounced when its .lock has no live holder, left alone otherwise
 setup3 ok; mkdir -p "$T/work"; echo "o/r2 7 legacy-run 1001" > "$T/work/current"
 tick
-check "legacy current: bounced, then removed" 'jq -r ".[].body" $ST/comments_7.json | grep -q "run legacy-run on testmac never finished" && [ ! -f $T/work/current ]'
+check "legacy current: bounced, then removed" 'jq -r ".[].body" $ST/comments_7.json | grep -q "run legacy-run on testmac never finished" && [ ! -f $T/work/current ] && [ ! -d $T/work/.lock ]'
 setup3 ok; mkdir -p "$T/work/.lock"; sleep 60 & live=$!; echo "$live" > "$T/work/.lock/pid"; echo "o/r2 7 legacy-live 1001" > "$T/work/current"
 tick
 check "legacy current with a live v0.8.22 holder: left alone" '[ -f $T/work/current ] && ! jq -r ".[].body" $ST/comments_7.json | grep -q legacy-live'

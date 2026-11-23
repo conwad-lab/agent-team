@@ -180,14 +180,17 @@ fi
 # ---- a run this host started and never finished (the Mac slept or the job stopped): mark it bounced.
 # Each slot has its own current.N; this tick's own slot and any slot with no live holder are recovered, one tick each.
 if [ "$DRY" = 0 ]; then
-  # current (no number) is v0.8.22's single record: recovered when its .lock has no live holder
+  # current (no number) is v0.8.22's single record, guarded by its .lock. Another slot's record is recovered only while
+  # this tick holds that slot's lock (taken when its holder is dead, given back after), so a run that starts in the slot
+  # meanwhile cannot have its fresh record taken
   for cf in "$WORK_DIR"/current "$WORK_DIR"/current.*; do
     [ -f "$cf" ] || continue
     cn="${cf##*/}"; cn="${cn#current}"; cn="${cn#.}"
-    if [ -z "$cn" ]; then
-      lock_held "$WORK_DIR/.lock" && continue
-      cn=legacy
-    elif [ "$cn" != "$SLOT" ] && lock_held "$(slot_lock "$cn")"; then continue; fi
+    xlock=""
+    if [ -z "$cn" ]; then xlock="$WORK_DIR/.lock"; cn=legacy
+    elif [ "$cn" != "$SLOT" ]; then xlock="$(slot_lock "$cn")"; fi
+    if [ -n "$xlock" ]; then take_lock "$xlock" || continue; fi
+    [ -f "$cf" ] || { [ -z "$xlock" ] || rm -rf "$xlock"; continue; }   # another tick recovered it while we waited
     cmine="$WORK_DIR/.recovering.$$.$cn"
     mv "$cf" "$cmine" 2>/dev/null || continue
     c_repo=""; c_issue=""; c_run=""; c_order=""
@@ -216,6 +219,7 @@ $SIGN"
          rm -rf "$WORK_DIR/wt/$c_run" "$WORK_DIR/wt/$c_run".* ;;
     esac
     rm -f "$cmine"
+    [ -z "$xlock" ] || rm -rf "$xlock"
   done
 fi
 
