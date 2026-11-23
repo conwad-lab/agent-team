@@ -427,6 +427,9 @@ check "installer: the example config has MODEL and MODELS lines the installer re
 check "installer dry-run: says it asks for the two model ids" 'grep -q "model ids for Astra and Sol" $T/inst'
 check "installer: # and & in a typed value survive the config sed" '[ "$(echo "HOST=x" | sed -e "s#^HOST=.*#HOST=$(esc "a#b&c\\d")#")" = "HOST=a#b&c\\d" ]'
 
+# v0.8.22 (story Z): the Coordinator, not a Builder thread, posts the order on the issue
+check "Flow 3 and CODEX-CLI.md both name the Coordinator as poster of the order" 'grep -Eq "^3\. .*codex-cli., where the Coordinator posts the plan.s .## Work order. on the story.s issue" "$SKILL/team/CLOUD.md" && grep -q "Way in.\*\* The Coordinator posts a work order" "$SKILL/team/CODEX-CLI.md" && ! grep -q "Way in.\*\* The Builder posts" "$SKILL/team/CODEX-CLI.md"'
+
 echo
 [ "$fail" = 0 ] && echo "all $n passed" || echo "FAILED"
 exit "$fail"

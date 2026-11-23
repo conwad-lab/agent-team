@@ -198,6 +198,14 @@ Ids [X53]–[X55] are left for story W (v0.8.20), built at the same time.
 
 [X53] [H6] "The Judge turns off an auto-merge enabled on the PR before the card goes out." — prevents: — still needed if: — — dropped as a restatement: `team/SETUP.md` § Walls in full (Decision cards), binding as if it stood in `CLOUD.md`, says it with the command. Pays for [R12] under [C1]
 
+[B15] (`CLOUD.md` § Builder) A `codex-cli` story's order goes on the issue from the Coordinator; a Builder starts only on a bounce, a missed claim or outcome, a fix or finding to answer, or a [T2] `claude` reason — prevents: 2026-11-23, every `codex-cli` story still paid a Claude Builder thread (model `light`) that only posted the order and waited an hour on the poller, while the Claude usage cap was reached; story Z, v0.8.22 — still needed if: a `codex-cli` story costs no Claude thread until Codex misses — kept
+
+## Cut or merged in v0.8.22
+
+[X62] [B12] the classifier-skip detail of **Green** — prevents: — still needed if: — — moved unchanged to `team/SETUP.md` § Walls in full (Green), binding as if it stood in `CLOUD.md`. Pays for [B15] and the [F3], [Q1] clauses under [C1]
+[X63] [Q3] "Where Actions minutes are a Signal source, the routine rechecks GitHub's self-hosted pricing." — prevents: — still needed if: — — moved unchanged to `team/RUNNER.md` § Rules (Pricing check), binding as if it stood in `CLOUD.md`. Pays for [B15] under [C1]
+[X64] [H1] "until 72 hours of usage-limit replies on that head"; [D5] "(a failed retry, a timeout, an offline runner)" — prevents: — still needed if: — — dropped as restatements: [R7] says no card before 72 hours, and [D5]'s rule covers any rule that lets a review go on without Codex. Pays for the Coordinator's watch in [Q1] under [C1]
+
 ## Cut or merged in v0.8.21
 
 [X61] [R8] "the Coordinator" (who comments `Parked until`) — prevents: — still needed if: — — dropped as a restatement: [R8] here and `bin/watch`'s help say whose line parks a PR (the repo owner or the agent account, which the Coordinator posts as). Pays for the `poller-down` clause in [R7] under [C1]

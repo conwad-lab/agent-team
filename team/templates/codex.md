@@ -37,7 +37,7 @@ Fixes, one comment per finding on the PR: `@codex fix M2: <one line>`.
 
 ## CLI work order (`builder: codex-cli`, on the story's issue, with the label `codex-cli`)
 
-The Builder thread posts it (`team/CODEX-CLI.md` [K1]–[K2], [K7]): the header lines below, then the plan's `## Work order` pasted unchanged (Goal, May touch, Steps, Proof, Must not), then the two closing lines. The first line and the `Branch:`, `Plan:`, `PR title:` and `Model:` lines are read by the poller and must stay exactly in this form. `Model:` is the plan's `codex-model:` (`sol` or `astra`); without the line the host's default model runs. The poller reads `Proof:` from the plan on the default branch, never from this comment.
+The Coordinator posts it (`team/CODEX-CLI.md` [K1]–[K2], [K7]): the header lines below, then the plan's `## Work order` pasted unchanged (Goal, May touch, Steps, Proof, Must not), then the two closing lines. The first line and the `Branch:`, `Plan:`, `PR title:` and `Model:` lines are read by the poller and must stay exactly in this form. `Model:` is the plan's `codex-model:` (`sol` or `astra`); without the line the host's default model runs. The poller reads `Proof:` from the plan on the default branch, never from this comment.
 
 ```
 codex-cli: build
