@@ -166,7 +166,7 @@ Written by \`bin/models\` after the nightly \`bin/tools-update\` (team/MODELS.md
 \`\`\`
 $out
 \`\`\`"
-  issue="$(limit "$LIMIT" gh api "repos/$POST/issues?state=open&per_page=100" \
+  issue="$(limit "$LIMIT" gh api --paginate "repos/$POST/issues?state=open&per_page=100" \
     --jq ".[] | select(.pull_request == null and .title == \"$title\") | .number" 2>/dev/null | head -1 || true)"
   if [ -z "$issue" ]; then
     issue="$(limit "$LIMIT" gh api -X POST "repos/$POST/issues" -f title="$title" \
@@ -174,7 +174,7 @@ $out
       || { echo "models: could not create the issue in $POST" >&2; exit 0; }
   fi
   me="$(limit "$LIMIT" gh api user --jq .login 2>/dev/null || true)"
-  cid="$(limit "$LIMIT" gh api "repos/$POST/issues/$issue/comments?per_page=100" \
+  cid="$(limit "$LIMIT" gh api --paginate "repos/$POST/issues/$issue/comments?per_page=100" \
     --jq ".[] | select(.user.login == \"$me\" and (.body | startswith(\"$MARKER\"))) | .id" 2>/dev/null | head -1 || true)"
   if [ -n "$cid" ]; then limit "$LIMIT" gh api -X PATCH "repos/$POST/issues/comments/$cid" -f body="$body" >/dev/null \
       || echo "models: could not edit comment $cid" >&2

@@ -47,6 +47,7 @@ while [ $# -gt 0 ]; do
     -X) method="$2"; shift 2 ;;
     -f) case "$2" in body=*) body="${2#body=}" ;; title=*) title="${2#title=}" ;; esac; shift 2 ;;
     --jq) jqf="$2"; shift 2 ;;
+    --paginate) echo "paginate" >> "$ST/paginated"; shift ;;
     *) url="$1"; shift ;;
   esac
 done
@@ -166,6 +167,7 @@ check "post: one comment with the marker and the newer line" '[ "$(jq length $ST
 catalogue gpt-6.2-astra:list gpt-6-astra:list gpt-6-sol:list gpt-6.2-sol:list
 GH_TOKEN=fake run --post o/r
 check "post again: same comment edited, no new issue or comment" '[ "$(jq length $ST/comments.json)" = 1 ] && grep -q "^PATCH repos/o/r/issues/comments/501" $ST/calls && [ "$(grep -c "^POST repos/o/r/issues$" $ST/calls)" = 1 ] && jq -r ".[0].body" $ST/comments.json | grep -q "newer codex sol"'
+check "post: issue and comment lookups paginate (Codex S1 on ab92e3c)" '[ "$(grep -c paginate $ST/paginated)" -ge 4 ]'
 check "post: every gh call had the token" '! grep -q NO-TOKEN $ST/calls'
 
 # 9b a hanging gh is stopped too, so the nightly job cannot hold its lock (Codex M4 on #39)
