@@ -368,6 +368,314 @@ amerged && ok "auto: a workflow_run or check_suite event finds the PR by its hea
 asetup; touch "$A/refuse"; arun
 ! amerged || true; asaid "GitHub refused the merge: Required status check" && ! asaid "Merged by" && ok "auto: GitHub refuses: says why, no success comment" || nok "auto: GitHub refuses"
 
+# ---- v0.8.19: class rules, a green rule change merges on agreement; the walls, a pause and Guard paths stop it (story X)
+agents2() { # $1 Auto-merge  $2 Guard paths  $3 Builder
+  printf '# r\n\n## Team settings\n\n- **Builder:** %s\n- **Human-only paths:** none\n- **Auto-merge:** %s\n- **Guard paths:** %s\n\n## Papercuts\n\nx\n' "$3" "$1" "$2"
+}
+files() { jq "$1" "$A/repos~o~r~pulls~7~files" > "$A/x" && mv "$A/x" "$A/repos~o~r~pulls~7~files"; }
+rsetup() { # a team repo: a Rulebook story PR that moves the version line in .team/team.md
+  asetup
+  content repos/o/r/contents/AGENTS.md main "$(agents2 'release, rules' none claude)"
+  content repos/o/r/contents/AGENTS.md "$MB" "$(agents2 'release, rules' none claude)"
+  content repos/o/r/contents/AGENTS.md "$H" "$(agents2 'release, rules' none claude)"
+  content repos/o/r/contents/.team/team.md main 'mode: cloud'
+  put repos/o/r/pulls/7 "{\"state\":\"open\",\"draft\":false,\"merged\":false,\"title\":\"031: Rulebook story. Models per role\",\"head\":{\"sha\":\"$H\",\"ref\":\"bump\",\"repo\":{\"full_name\":\"o/r\"}},\"base\":{\"ref\":\"main\"}}"
+  jq -n '[{status:"added",filename:".team/reviews/030-bump.md"},{status:"modified",filename:".team/team.md",patch:"@@ -8,1 +8,1 @@\n-  coder: codex\n+  coder: codex-cli"}]' > "$A/repos~o~r~pulls~7~files"
+  put "repos/o/r/commits/$C" '{"files":[{"filename":".team/team.md"}]}'
+}
+rgreen() { amerged && asaid "Merged by agent-team-merge (rules, green): head $H"; }
+carded() { asaid "agent-team-merge (rules) did not merge, head $H: " && asaid "goes to a decision card"; }
+
+rsetup; arun
+rgreen && [ "$(cat "$A/rc")" = 0 ] && ok "rules: a green rule change in a team repo merges on agreement and says so" || { nok "rules: green merges"; cat "$A/out"; }
+
+rsetup; content repos/o/r/contents/AGENTS.md main "$(agents2 release none claude)"; arun
+! amerged && quiet && grep -q "not a release bump" "$A/out" && ok "rules: Auto-merge: release alone leaves a rule change alone, silently" || nok "rules: release alone"
+
+rsetup; content repos/o/r/contents/AGENTS.md main "$(agents2 'release, rules, code' none claude)"; arun
+! amerged && quiet && grep -q "names 'code'" "$A/out" && ok "rules: an unknown word on the Auto-merge line turns the job off" || nok "rules: unknown Auto-merge word"
+
+rsetup; content repos/o/r/contents/AGENTS.md main "$(agents2 rules none claude)"; arun
+rgreen && ok "rules: Auto-merge: rules alone is enough" || nok "rules: rules alone"
+
+asetup; content repos/o/r/contents/AGENTS.md main "$(agents2 rules none claude)"; arun
+! amerged && quiet && grep -q "does not list release" "$A/out" && ok "rules: Auto-merge: rules alone leaves a release bump alone" || nok "rules: bump without release"
+
+asetup; content repos/o/r/contents/AGENTS.md main "$(agents_md 'release, rules' none claude)"; arun
+amerged && asaid "Merged by agent-team-merge (release bump): head $H" && ok "rules: a release bump still merges as a release bump under release, rules" || nok "rules: bump under both"
+
+rsetup; jq '.title = "031: Models per role"' "$A/repos~o~r~pulls~7" > "$A/x" && mv "$A/x" "$A/repos~o~r~pulls~7"; arun
+! amerged && quiet && grep -q "not titled 'Rulebook story.'" "$A/out" && ok "rules: a PR not titled Rulebook story. is left alone, silently" || nok "rules: title"
+
+rsetup; files '. + [{status:"added",filename:".github/workflows/x.yml"}]'; arun
+! amerged && carded && asaid ".github/workflows/x.yml is a wall" && ok "rules: a file under .github/ refuses, to a card" || { nok "rules: .github"; cat "$A/out"; }
+
+rsetup; files '. + [{status:"modified",filename:"src/a.js"}]'; arun
+! amerged && carded && asaid "src/a.js is outside the green class" && ok "rules: code refuses" || nok "rules: code"
+
+rsetup; files '. + [{status:"added",filename:".team/automerge-pause"}]'; arun
+! amerged && carded && asaid "changes only in a PR of its own" && ok "rules: the pause file beside other changes refuses" || nok "rules: pause mixed in"
+
+akey() { jq --arg p "$1" '. + [{status:"modified",filename:"AGENTS.md",patch:$p}]' "$A/repos~o~r~pulls~7~files" > "$A/x" && mv "$A/x" "$A/repos~o~r~pulls~7~files"; }
+rsetup; akey '@@ -7,1 +7,1 @@
+-- **Auto-merge:** release, rules
++- **Auto-merge:** release, rules, code'; arun
+! amerged && carded && asaid "a line that only a card may change" && ok "rules: a change to the Auto-merge key refuses" || { nok "rules: Auto-merge key"; cat "$A/out"; }
+
+rsetup; akey '@@ -8,1 +8,1 @@
+-- **Guard paths:** `x`
++- **Guard paths:** none'; arun
+! amerged && carded && asaid "a line that only a card may change" && ok "rules: a change to the Guard paths key beside other changes refuses" || nok "rules: Guard paths key"
+
+rsetup; akey '@@ -5,1 +5,1 @@
+-- **Builder:** claude
++- **Builder:** codex-cli'; arun
+rgreen && ok "rules: another Team settings line may change" || { nok "rules: Builder line"; cat "$A/out"; }
+
+rsetup; content repos/o/r/contents/AGENTS.md main "$(agents2 'release, rules' '`.team/team.md`' claude)"; arun
+! amerged && carded && asaid ".team/team.md is on Guard paths" && ok "rules: a file on the repo's Guard paths refuses" || nok "rules: Guard path"
+
+rsetup; content repos/o/r/contents/AGENTS.md main "$(agents2 'release, rules' 'the rulebook' claude)"; arun
+! amerged && carded && asaid "Guard paths line in AGENTS.md lists no backticked paths" && ok "rules: a Guard paths line that is not globs refuses" || nok "rules: unreadable Guard paths"
+
+asetup; content repos/o/r/contents/AGENTS.md main "$(agents2 'release, rules' '`.team/team.md`' claude)"; arun
+amerged && ok "rules: Guard paths do not stop a release bump" || nok "rules: Guard paths and a bump"
+
+rsetup; files '(.[] | select(.filename == ".team/team.md")) |= . + {patch:"@@ -17,1 +17,1 @@\n-merge: human\n+merge: auto"}'; arun
+! amerged && carded && asaid ".team/team.md changes a line that only a card may change" && ok "rules: a merge: change in .team/team.md refuses" || nok "rules: team.md merge line"
+
+rsetup; put repos/o/r/pulls/7/comments "[{\"user\":{\"login\":\"$BOT\"},\"original_commit_id\":\"$C\",\"body\":\"**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange)</sub></sub> Wrong model**\"}]"; arun
+! amerged && asaid "Codex left a P0/P1 or M/S finding on 2222222" && asaid "The Judge goes on as CLOUD.md § Judge 5 says" && ok "rules: a Codex P1 on the last code commit refuses" || nok "rules: Codex P1"
+
+rsetup; jq -n '[]' > "$A/repos~o~r~issues~7~comments"; arun
+! amerged && quiet && grep -q "no finished Codex review of 2222222" "$A/out" && ok "rules: no Codex review yet: waits silently" || nok "rules: no Codex"
+
+# the pause
+pause() { content "repos/o/r/contents/$1" "$2" "$3"; }
+rsetup; pause .team/automerge-pause main $'until: 2999-01-01\nreason: revert of #40'; arun
+! amerged && carded && asaid "rule changes are paused until 2999-01-01: revert of #40" && ok "rules: a pause in the future refuses, with its reason" || { nok "rules: pause in force"; cat "$A/out"; }
+
+rsetup; pause .team/automerge-pause main $'until: 2000-01-01\nreason: old'; arun
+rgreen && ok "rules: a pause in the past does not stop it" || nok "rules: pause over"
+
+rsetup; pause .team/automerge-pause main 'paused for now'; arun
+! amerged && carded && asaid "no readable 'until: YYYY-MM-DD'" && ok "rules: a pause file without a date holds" || nok "rules: pause without date"
+
+asetup; pause .team/automerge-pause main $'until: 2999-01-01\nreason: x'; content repos/o/r/contents/AGENTS.md main "$(agents_md 'release, rules' none claude)"; arun
+amerged && ok "rules: a pause does not stop a release bump" || nok "rules: pause and a bump"
+
+psetup() { # a PR that only sets the pause; no Codex review anywhere
+  rsetup; jq -n '[{status:"added",filename:".team/reviews/030-bump.md"},{status:"'"$1"'",filename:".team/automerge-pause"}]' > "$A/repos~o~r~pulls~7~files"
+  jq -n '[]' > "$A/repos~o~r~issues~7~comments"
+  pause .team/automerge-pause "$H" "$2"
+}
+psetup added $'until: 2999-01-01\nreason: Must fix in the weekly sample, #41'; arun
+amerged && asaid "Merged by agent-team-merge (rules, tightening): head $H" && ok "pause: a PR that only sets the pause merges on the Judge's approve, without Codex" || { nok "pause: sets"; cat "$A/out"; }
+
+psetup added $'until: 2999-01-01\nreason: x'; content repos/o/r/contents/.team/reviews/030-bump.md "$H" $'---\nverdict: request-changes\n---\n'; arun
+! amerged && quiet && ok "pause: still needs the Judge's approving review file" || nok "pause: no approve"
+
+psetup modified $'until: 2999-02-01\nreason: x'; pause .team/automerge-pause main $'until: 2999-01-01\nreason: x'; arun
+amerged && ok "pause: extending a pause merges" || nok "pause: extends"
+
+psetup modified $'until: 2998-12-01\nreason: x'; pause .team/automerge-pause main $'until: 2999-01-01\nreason: x'; arun
+! amerged && carded && asaid "only a card shortens a pause" && ok "pause: shortening a pause refuses" || { nok "pause: shortens"; cat "$A/out"; }
+
+psetup removed ''; pause .team/automerge-pause main $'until: 2999-01-01\nreason: x'; arun
+! amerged && carded && asaid "only a card ends a pause" && ok "pause: removing the pause file refuses" || nok "pause: removed"
+
+rsetup; pause .team/automerge-pause main $'until: 2026-00-99\nreason: x'; arun
+! amerged && carded && asaid "no readable 'until: YYYY-MM-DD'" && ok "rules: a pause whose date is no calendar date holds (Codex M6 on #40)" || { nok "rules: impossible pause date"; cat "$A/out"; }
+
+psetup added $'until: 2999-02-31\nreason: x'; arun
+! amerged && carded && ok "pause: a pause set to no calendar date refuses" || nok "pause: impossible date"
+
+psetup added 'until: soon'; arun
+! amerged && carded && asaid "no single line 'until: YYYY-MM-DD'" && ok "pause: a pause without a date refuses" || nok "pause: no date"
+
+psetup added $'until: 2999-01-01\nreason: x'; put "repos/o/r/commits/$H/check-runs?per_page=100" '{"check_runs":[{"id":5,"name":"pr-check","status":"completed","conclusion":"failure"}]}'; arun
+! amerged && asaid "check pr-check is failure" && ok "pause: a red check still refuses" || nok "pause: red check"
+
+gsetup() { # a PR that only changes the Guard paths line: $1 old value, $2 new value
+  rsetup; jq -n '[{status:"added",filename:".team/reviews/030-bump.md"},{status:"modified",filename:"AGENTS.md",patch:"@@ -8,1 +8,1 @@\n-- **Guard paths:** old\n+- **Guard paths:** new"}]' > "$A/repos~o~r~pulls~7~files"
+  jq -n '[]' > "$A/repos~o~r~issues~7~comments"
+  content repos/o/r/contents/AGENTS.md "$MB" "$(agents2 'release, rules' "$1" claude)"
+  content repos/o/r/contents/AGENTS.md "$H" "$(agents2 'release, rules' "$2" claude)"
+}
+gsetup none '`.team/team.md`'; arun
+amerged && asaid "(rules, tightening)" && ok "guard: a PR that only adds a Guard path merges on the Judge's approve, without Codex" || { nok "guard: adds"; cat "$A/out"; }
+
+gsetup '`a/**`' '`a/**`, `b.md`'; arun
+amerged && ok "guard: adding a second Guard path merges" || nok "guard: adds a second"
+
+gsetup '`a/**`, `b.md`' '`a/**`'; arun
+! amerged && carded && asaid "a line that only a card may change" && ok "guard: removing a Guard path is no tightening: refuses" || { nok "guard: removes"; cat "$A/out"; }
+
+gsetup '`a/**`' '`b.md`'; arun
+! amerged && carded && ok "guard: swapping a Guard path refuses" || nok "guard: swaps"
+
+gsetup 'the rulebook' '`a/**`'; arun
+! amerged && carded && ok "guard: replacing a Guard paths line that refused everything is no tightening (Codex M3 on #40)" || { nok "guard: malformed old value"; cat "$A/out"; }
+
+rsetup; content repos/o/r/contents/AGENTS.md main "$(agents2 'release, rules' '`.team/Legal terms.md`' claude)"; files '. + [{status:"modified",filename:".team/Legal terms.md"}]'; arun
+! amerged && carded && { asaid ".team/Legal terms.md is on Guard paths" || asaid ".team/Legal terms.md is outside the green class"; } && ok "rules: a Guard path with a space in it still guards (Codex M2 on #40)" || { nok "rules: guard with space"; cat "$A/out"; }
+
+rsetup; content repos/o/r/contents/AGENTS.md main "$(agents2 'release, rules' '`.team/plans/Legal terms.md`' claude)"; files '. + [{status:"modified",filename:".team/plans/Legal terms.md"}]'; arun
+! amerged && carded && asaid ".team/plans/Legal terms.md is on Guard paths" && ok "rules: a guarded green path with a space refuses" || { nok "rules: guarded green path with space"; cat "$A/out"; }
+
+rsetup; files '. + [{status:"renamed",filename:".team/plans/b.md",previous_filename:"src/my file.js"}]'; arun
+! amerged && carded && asaid "src/my file.js is outside the green class" && ok "rules: a rename source with a space is read whole" || { nok "rules: rename source with space"; cat "$A/out"; }
+
+gsetup none '`a/**`'; content repos/o/r/contents/AGENTS.md "$H" "$(agents2 'release, rules, code' '`a/**`' claude)"; arun
+! amerged && ok "guard: another line changed beside Guard paths is no tightening" || nok "guard: other line"
+
+# agent-team itself: no .team/, the rules live in team/
+CL='# Cloud mode
+
+## Builder
+
+1. Branch from main. [B2]
+2. Build with tests. [B3]
+
+## Judge
+
+1. Check out. [J2]
+4. Write the review. [J5]
+5. **On approve.** Pin the head. [J6]
+   - **Exceptions** never merge on your word. [J7]
+   - **On agreement** only when a to d hold. [J10]
+6. **Escalate** after the third round. [J11]
+
+## Human approval
+
+The human gets a card only for a disagreement. [H1]
+
+## Routines
+
+One routine per project. [R1]
+
+## Walls
+
+- **Merge workflow.** No agent session runs a merge. [W3]'
+ST='# Setup
+
+## One-time setup per repo
+
+1. Codex: connect the repo.
+
+## Walls in full
+
+- **Main ruleset.** PR only.'
+hsetup() { # $1 = sed script that turns the base team/CLOUD.md into the head's
+  asetup
+  content repos/o/r/contents/AGENTS.md main "$(agents2 'release, rules' none claude)"
+  rm -f "$A/repos~o~r~contents~.team~team.md?ref=main"
+  content repos/o/r/contents/team/CLOUD.md main "$CL"; content repos/o/r/contents/team/CLOUD.md "$MB" "$CL"
+  content repos/o/r/contents/team/CLOUD.md "$H" "$(sed "$1" <<<"$CL")"
+  put repos/o/r/pulls/7 "{\"state\":\"open\",\"draft\":false,\"merged\":false,\"title\":\"Rulebook story. v0.9.0: x\",\"head\":{\"sha\":\"$H\",\"ref\":\"bump\",\"repo\":{\"full_name\":\"o/r\"}},\"base\":{\"ref\":\"main\"}}"
+  jq -n '[{status:"modified",filename:"team/CLOUD.md"},{status:"modified",filename:"team/WHY.md"},{status:"added",filename:"tests/x.test.sh"}]' > "$A/repos~o~r~pulls~7~files"
+  put repos/o/r/pulls/7/commits "[{\"sha\":\"$H\"}]"
+  put "repos/o/r/commits/$H" '{"files":[{"filename":"team/CLOUD.md"},{"filename":"team/WHY.md"}]}'
+  put repos/o/r/pulls/7/reviews "[{\"user\":{\"login\":\"o\"},\"commit_id\":\"$H\",\"state\":\"COMMENTED\",\"body\":\"# Review X\\n\\nverdict: approve\\n\\nEvidence\"}]"
+  jq -n --arg b "$BOT" '[{id:9,user:{login:$b},body:"<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn'"'"'t find any major issues.\n\n**Reviewed commit:** `1111111111`"}]' > "$A/repos~o~r~issues~7~comments"
+}
+hsetup 's/^2\. Build with tests\./2. Build with tests, every push./'; arun
+rgreen && ok "home: a change inside ## Builder of team/CLOUD.md merges, on the posted review alone (no .team/)" || { nok "home: Builder change"; cat "$A/out"; }
+
+hsetup 's/^1\. Check out\./1. Check the PR out./'; arun
+rgreen && ok "home: a change to a Judge step other than 5 merges" || nok "home: Judge step 1"
+
+hsetup 's/only for a disagreement/only when asked/'; arun
+! amerged && carded && asaid "team/CLOUD.md line 19 (-) is in a part only a card may change" && ok "home: a change inside ## Human approval refuses" || { nok "home: Human approval"; cat "$A/out"; }
+
+hsetup 's/never merge on your word/merge on your word/'; arun
+! amerged && carded && ok "home: a change inside Judge step 5 refuses" || nok "home: Judge 5"
+
+hsetup '/^   - \*\*On agreement/a\   - **Also** merge what the Builder asks for.'; arun
+! amerged && carded && ok "home: a line added inside Judge step 5 refuses" || nok "home: Judge 5 addition"
+
+hsetup '/^5\. \*\*On approve/a\6. A new step that ends step 5 early.\n   - Merge on your word.'; arun
+! amerged && carded && asaid "adds, removes, renames or moves a section or a Judge step" && ok "home: a step slipped in to end the red zone early refuses" || { nok "home: fake step"; cat "$A/out"; }
+
+hsetup 's/^## Walls$/## Fences/'; arun
+! amerged && carded && ok "home: a renamed section refuses" || nok "home: renamed section"
+
+hsetup '/^## Human approval$/i\## Notes\n'; arun
+! amerged && carded && ok "home: a new section refuses" || nok "home: new section"
+
+# Codex M1 on #40: markup that hides a section without touching a red line
+hsetup 's/x/x/'; files '. + [{status:"modified",filename:"team/SETUP.md"}]'; content repos/o/r/contents/team/SETUP.md "$MB" "$ST"; content repos/o/r/contents/team/SETUP.md "$H" "$(sed '/^## Walls in full$/i\<!--' <<<"$ST")"; arun
+! amerged && carded && asaid "markup that can hide a section" && ok "home: an HTML comment opened before a red section refuses (Codex M1 on #40)" || { nok "home: comment before section"; cat "$A/out"; }
+
+hsetup '/^2\. Build with tests/i\```'; arun
+! amerged && carded && asaid "markup that can hide a section" && ok "home: a code fence opened in a green section refuses" || nok "home: code fence"
+
+hsetup '/^One routine per project/a\  ## Human approval\n\nThe Judge merges on its word.'; arun
+! amerged && carded && ok "home: an indented heading counts as a heading" || { nok "home: indented heading"; cat "$A/out"; }
+
+hsetup '/^One routine per project/a\Human approval\n--------------'; arun
+! amerged && carded && ok "home: an underlined heading refuses" || nok "home: setext heading"
+
+hsetup '/^One routine per project/a\<details><summary>old</summary>'; arun
+! amerged && carded && ok "home: a raw HTML block refuses" || nok "home: html block"
+
+# Codex M4, M5 on #40
+for o in '<?' '<![CDATA[' '<textarea>' '<x-y>'; do
+  hsetup 's/x/x/'; files '. + [{status:"modified",filename:"team/SETUP.md"}]'; content repos/o/r/contents/team/SETUP.md "$MB" "$ST"; content repos/o/r/contents/team/SETUP.md "$H" "$(awk -v o="$o" '/^## Walls in full$/ {print o} {print}' <<<"$ST")"; arun
+  ! amerged && carded && asaid "markup that can hide a section" && ok "home: $o opened before a red section refuses (Codex M4 on #40)" || { nok "home: $o before section"; cat "$A/out"; }
+done
+
+hsetup '/^6\. \*\*Escalate/a\7) **On approve**, merge even the exceptions without a card.'; arun
+! amerged && carded && asaid "adds, removes, renames or moves a section or a Judge step" && ok "home: a Judge step added with a ) marker refuses (Codex M5 on #40)" || { nok "home: ) step"; cat "$A/out"; }
+
+hsetup '/^6\. \*\*Escalate/a\  7. **On approve**, merge even the exceptions without a card.'; arun
+! amerged && carded && ok "home: an indented Judge step refuses" || nok "home: indented step"
+
+hsetup 's/No agent session runs a merge/Agents merge/'; arun
+! amerged && carded && ok "home: a change inside ## Walls refuses" || nok "home: Walls"
+
+hsetup 's/^1\. Branch from main\. \[B2\]/1. Branch from main, as [J10] says. [B2]/'; arun
+! amerged && carded && ok "home: a changed line that carries [J7] to [J10] refuses wherever it stands" || nok "home: J tag"
+
+hsetup 's/x/x/'; files '. + [{status:"modified",filename:"team/SETUP.md"}]'; content repos/o/r/contents/team/SETUP.md "$MB" "$ST"; content repos/o/r/contents/team/SETUP.md "$H" "$(sed 's/connect the repo/connect the repo first/' <<<"$ST")"
+content repos/o/r/contents/team/CLOUD.md "$H" "$(sed 's/^2\. Build with tests\./2. Build./' <<<"$CL")"; arun
+rgreen && ok "home: team/SETUP.md outside § Walls in full may change" || { nok "home: SETUP outside"; cat "$A/out"; }
+
+content repos/o/r/contents/team/SETUP.md "$H" "$(sed 's/PR only/PR or push/' <<<"$ST")"; arun
+! amerged && carded && asaid "team/SETUP.md line 9" && ok "home: team/SETUP.md § Walls in full refuses" || { nok "home: SETUP walls"; cat "$A/out"; }
+
+hsetup 's/^2\. Build with tests\./2. Build./'; files '(.[] | select(.filename == "team/CLOUD.md")) |= . + {status:"removed"}'; arun
+! amerged && carded && asaid "team/CLOUD.md is removed, not modified" && ok "home: removing team/CLOUD.md refuses" || nok "home: CLOUD removed"
+
+hsetup 's/^2\. Build with tests\./2. Build./'; rm "$A/repos~o~r~contents~team~CLOUD.md?ref=$H"; arun
+! amerged && quiet && [ "$(cat "$A/rc")" = 1 ] && ok "home: team/CLOUD.md unreadable at the head stops without merging" || nok "home: CLOUD unreadable"
+
+for f in assets/runner/cleanup.sh assets/cloud/main-ruleset.json assets/root/.claude/settings.json assets/root/.github/workflows/agent-team-merge.yml .github/workflows/agent-team-merge.yml new-project.sh .team/reviews/x.md; do
+  hsetup 's/^2\. Build with tests\./2. Build./'; files ". + [{status:\"modified\",filename:\"$f\"}]"; arun
+  ! amerged && carded && ok "home: $f refuses" || { nok "home: $f"; cat "$A/out"; }
+done
+
+hsetup 's/^2\. Build with tests\./2. Build./'; files '. + [{status:"renamed",filename:"team/NOTES.md",previous_filename:"REVIEW.md"}]'; arun
+! amerged && carded && asaid "REVIEW.md is a wall" && ok "home: a rename's source counts" || nok "home: rename source"
+
+hsetup 's/^2\. Build with tests\./2. Build./'; files '. + [{status:"modified",filename:"assets/root/AGENTS.md",patch:"@@ -7,1 +7,1 @@\n-- **Auto-merge:** none\n+- **Auto-merge:** release, rules"}]'
+content repos/o/r/contents/assets/root/AGENTS.md "$MB" "$(agents2 none none claude)"; content repos/o/r/contents/assets/root/AGENTS.md "$H" "$(agents2 'release, rules' none claude)"; arun
+! amerged && carded && asaid "assets/root/AGENTS.md changes a line that only a card may change" && ok "home: a guard key in the AGENTS.md template refuses" || { nok "home: template key"; cat "$A/out"; }
+
+hsetup 's/^2\. Build with tests\./2. Build./'; put repos/o/r/pulls/7/reviews "[{\"user\":{\"login\":\"o\"},\"commit_id\":\"$H\",\"state\":\"COMMENTED\",\"body\":\"**Verdict: approve**\"}]"; arun
+! amerged && quiet && grep -q "does not say 'verdict: approve'" "$A/out" && ok "home: a review without the line verdict: approve does not count" || nok "home: review without verdict line"
+
+hsetup 's/^2\. Build with tests\./2. Build./'; pause team/automerge-pause main $'until: 2999-01-01\nreason: x'; arun
+! amerged && carded && asaid "paused until 2999-01-01" && ok "home: the pause file is team/automerge-pause" || nok "home: pause"
+
+hsetup 's/x/x/'; jq -n '[{status:"added",filename:"team/automerge-pause"}]' > "$A/repos~o~r~pulls~7~files"; jq -n '[]' > "$A/repos~o~r~issues~7~comments"; pause team/automerge-pause "$H" $'until: 2999-01-01\nreason: revert of #40'; arun
+amerged && asaid "(rules, tightening)" && ok "home: a PR that only sets team/automerge-pause merges on the Judge's review" || { nok "home: sets pause"; cat "$A/out"; }
+
+hsetup 's/^2\. Build with tests\./2. Build./'; content repos/o/r/contents/.team/team.md main 'mode: cloud'; arun
+! amerged && carded && asaid "team/CLOUD.md is outside the green class (.team/" && ok "home: a repo with .team/team.md is a team repo, whatever else it holds" || nok "home: detection"
+
+grep -q "startsWith(github.event.comment.body, 'Judge review posted, head ')" "$WF" && ok "auto: the Judge's 'Judge review posted' comment wakes the job" || nok "auto: wake comment"
+
 grep -q "workflows: \[" "$WF" && grep -q 'pull_request_target' "$WF" && grep -q "github.event.action == 'created' && github.event.issue.pull_request" "$WF" && grep -q "user.login == 'chatgpt-codex-connector\[bot\]'" "$WF" && ok "auto: triggers on the PR, Codex's comments and finished CI" || nok "auto: triggers"
 
 grep -q 'github.event.comment.body }}' "$WF" && ! grep -qE 'run:.*\$\{\{' "$WF" && ok "comment body reaches the script only through env" || nok "body through env"
