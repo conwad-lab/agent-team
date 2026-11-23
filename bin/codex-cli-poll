@@ -73,23 +73,35 @@ lock_held() { # lock_held DIR: 0 when a live holder has it within the run limit
   [ "$age" -le $(( RUN_LIMIT_SEC + 300 )) ]
 }
 take_lock() { # take_lock DIR: 0 when this process holds it now
-  local d="$1" pid age
+  local d="$1" t="$1.takeover" pid age rc=1
   if mkdir "$d" 2>/dev/null; then echo $$ > "$d/pid"; return 0; fi
   ! lock_held "$d" || return 1
-  pid="$(cat "$d/pid" 2>/dev/null || true)"
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    age=$(( $(date +%s) - $(mtime "$d") ))
-    log "lock $d held by $pid for ${age}s, past the run limit: stopping it"
-    kill -TERM "$pid" 2>/dev/null || true; sleep 2; kill -KILL "$pid" 2>/dev/null || true
+  # a stale lock is replaced by one process at a time (the .takeover directory is the mutex; one left by a process that
+  # died is cleared after a minute), and only after looking again: two ticks that both saw it stale cannot both win
+  if ! mkdir "$t" 2>/dev/null; then
+    age=$(( $(date +%s) - $(mtime "$t" 2>/dev/null || date +%s) ))
+    [ "$age" -le 60 ] || rm -rf "$t"
+    return 1
   fi
-  rm -rf "$d"; mkdir "$d" 2>/dev/null && echo $$ > "$d/pid"
+  if ! lock_held "$d"; then
+    pid="$(cat "$d/pid" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      age=$(( $(date +%s) - $(mtime "$d") ))
+      log "lock $d held by $pid for ${age}s, past the run limit: stopping it"
+      kill -TERM "$pid" 2>/dev/null || true; sleep 2; kill -KILL "$pid" 2>/dev/null || true
+    fi
+    rm -rf "$d"
+    if mkdir "$d" 2>/dev/null; then echo $$ > "$d/pid"; rc=0; fi
+  fi
+  rm -rf "$t"
+  return "$rc"
 }
 repo_lock() { printf '%s/.repo-%s' "$WORK_DIR" "$(printf '%s' "$1" | tr '/' '-')"; }
 slot_lock() { printf '%s/.lock.%s' "$WORK_DIR" "$1"; }
 held_slots() { local i=1 n=0; while [ "$i" -le "$MAX_RUNS" ]; do lock_held "$(slot_lock "$i")" && n=$((n + 1)); i=$((i + 1)); done; echo "$n"; }
 
 # less than MIN_FREE_GB free under WORK_DIR (or df unreadable): one run at a time, so the disk is not filled twice over
-FREE_KB="$(df -Pk "$WORK_DIR" 2>/dev/null | awk 'NR==2 {print $4}')"
+FREE_KB="$(df -Pk "$WORK_DIR" 2>/dev/null | awk 'NR==2 {print $4}' || true)"   # a failing df is an unreadable answer: low
 LOW_DISK=1
 if [[ "$FREE_KB" =~ ^[0-9]+$ ]] && [ "$FREE_KB" -ge $(( MIN_FREE_GB * 1048576 )) ]; then LOW_DISK=0; fi
 
@@ -137,6 +149,21 @@ RUNS_LOG="$WORK_DIR/runs.log"
 CURRENT="$WORK_DIR/current.$SLOT"
 PENDING="$WORK_DIR/pending"
 
+# ---- files a tick was stopped with in hand (renamed out of the way while posted or bounced): back in place when that
+# tick is dead, so the next tick does the work again
+if [ "$DRY" = 0 ]; then
+  for f in "$PENDING"/.sending.* "$WORK_DIR"/.recovering.*; do
+    [ -f "$f" ] || continue
+    b="${f##*/.}"; b="${b#*.}"; opid="${b%%.*}"; oname="${b#*.}"   # sending.<pid>.<name> / recovering.<pid>.<slot>
+    kill -0 "$opid" 2>/dev/null && continue
+    case "$f" in
+      "$PENDING"/.sending.*) mv -n "$f" "$PENDING/$oname" 2>/dev/null || rm -f "$f" ;;
+      *) if [ "$oname" = legacy ]; then mv -n "$f" "$WORK_DIR/current" 2>/dev/null || rm -f "$f"
+         else mv -n "$f" "$WORK_DIR/current.$oname" 2>/dev/null || rm -f "$f"; fi ;;
+    esac
+  done
+fi
+
 # ---- outcomes a GitHub error kept from posting: deliver them first, keep them until GitHub takes them
 # (a file is renamed out of the way while it is posted, so two ticks do not both post it)
 if [ "$DRY" = 0 ] && [ -d "$PENDING" ]; then
@@ -153,10 +180,14 @@ fi
 # ---- a run this host started and never finished (the Mac slept or the job stopped): mark it bounced.
 # Each slot has its own current.N; this tick's own slot and any slot with no live holder are recovered, one tick each.
 if [ "$DRY" = 0 ]; then
-  for cf in "$WORK_DIR"/current.*; do
+  # current (no number) is v0.8.22's single record: recovered when its .lock has no live holder
+  for cf in "$WORK_DIR"/current "$WORK_DIR"/current.*; do
     [ -f "$cf" ] || continue
-    cn="${cf##*.}"
-    if [ "$cn" != "$SLOT" ] && lock_held "$(slot_lock "$cn")"; then continue; fi
+    cn="${cf##*/}"; cn="${cn#current}"; cn="${cn#.}"
+    if [ -z "$cn" ]; then
+      lock_held "$WORK_DIR/.lock" && continue
+      cn=legacy
+    elif [ "$cn" != "$SLOT" ] && lock_held "$(slot_lock "$cn")"; then continue; fi
     cmine="$WORK_DIR/.recovering.$$.$cn"
     mv "$cf" "$cmine" 2>/dev/null || continue
     c_repo=""; c_issue=""; c_run=""; c_order=""
@@ -368,7 +399,13 @@ last_size=-1; last_change=$(date +%s); KILLED=""
 while kill -0 "$CPID" 2>/dev/null; do
   sleep "$POLL_SEC"
   now=$(date +%s)
-  size="$( { find "$SESSIONS_DIR" -type f -newer "$MARK" -exec cat {} + 2>/dev/null || true; } | wc -c | tr -d ' ')"
+  # only this run's session files (they name its worktree as cwd), so another run's output does not keep a stalled one
+  # alive; none names it (another file format): every newer session file, as before
+  size="$( { find "$SESSIONS_DIR" -type f -newer "$MARK" -exec grep -lF -- "$WT" {} + 2>/dev/null || true; } \
+            | while IFS= read -r sf; do cat "$sf"; done | wc -c | tr -d ' ')"
+  if [ "$size" = 0 ]; then
+    size="$( { find "$SESSIONS_DIR" -type f -newer "$MARK" -exec cat {} + 2>/dev/null || true; } | wc -c | tr -d ' ')"
+  fi
   if [ "$size" != "$last_size" ]; then last_size="$size"; last_change=$now; fi
   if [ $(( now - START )) -ge "$RUN_LIMIT_SEC" ]; then KILLED="time limit ($(dur "$RUN_LIMIT_SEC"))"
   elif [ $(( now - last_change )) -ge "$STALL_SEC" ]; then KILLED="stalled (no session output for $(dur "$STALL_SEC"))"; fi

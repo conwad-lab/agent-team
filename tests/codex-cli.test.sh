@@ -89,7 +89,7 @@ env > "$ST/codex_env"
 cat > "$ST/prompt"
 sess="$HOME/.codex/sessions/s-$$.jsonl"
 mode="$(cat "$ST/mode")"
-echo '{"start":1}' > "$sess"
+printf '{"start":1,"cwd":"%s"}\n' "$PWD" > "$sess"
 case "$mode" in
   ok)       echo hi > hello.txt; printf -- '- AC1: hello.txt written\n\nHinder: inga\n' > "$last" ;;
   nohinder) echo hi > hello.txt; printf 'done, all good\n' > "$last" ;;
@@ -532,6 +532,57 @@ kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
 setup3 ok; mkdir -p "$T/work/pending"; echo "o/r2 7 dead-run 1001" > "$T/work/current.2"; printf 'o/r 5\ncodex-cli: done\nlate\n' > "$T/work/pending/old-run"
 tick
 check "recovery: a dead slot's file is bounced although another slot ran this tick; a kept outcome is delivered once" '[ ! -f $T/work/current.2 ] && [ "$(bodies | grep -c "^late$")" = 1 ] && [ ! -f $T/work/pending/old-run ]'
+
+# Codex round 1 on #45: a failing df, a stalled run beside a busy one, a stale-lock race, files a dead tick held, v0.8.22's record
+setup3 ok; cat > "$T/bin/df" <<'D'
+#!/usr/bin/env bash
+exit 1
+D
+tick
+check "df exits non-zero: counted as low disk, the run still goes" '[ "$(outcome_of 5)" = "codex-cli: done" ]'
+cat > "$T/bin/df" <<'D'
+#!/usr/bin/env bash
+kb="$(cat "$ST/df_kb" 2>/dev/null || echo 104857600)"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/x 999999999 1 %s 1%% /\n' "$kb"
+D
+
+# a silent run is stopped at STALL_SEC although another run keeps writing session output
+setup3 stall; rm -f "$T"/rc*
+tickbg 1; waitfor '[ -f $ST/codex_args ]'
+echo slow > "$ST/mode"; tickbg 2; waitfor 'claimed 7'
+waitfor '[ "$(outcome_of 5)" = "codex-cli: bounced" ]'
+check "stall beside a busy run: the silent run is bounced as stalled while the other still goes" 'last_comment | grep -q "^Reason: stalled" && ! [ -f $T/rc2 ]'
+touch "$ST/release"; waitfor '[ -f $T/rc1 ] && [ -f $T/rc2 ]'
+check "stall beside a busy run: the busy run finishes done" '[ "$(outcome_of 7)" = "codex-cli: done" ]'
+
+# twenty processes find the same stale lock: exactly one takes it
+LF="$T/lockfuncs.sh"; { echo 'RUN_LIMIT_SEC=60; log() { :; }'; sed -n '/^mtime()/,/^repo_lock()/p' "$SKILL/bin/codex-cli-poll" | sed '$d'; } > "$LF"
+rm -rf "$T/lk"; mkdir -p "$T/lk/.lock.1"; echo 999999 > "$T/lk/.lock.1/pid"
+for i in $(seq 1 20); do ( bash -c '. "$1"; take_lock "$2" && { echo got; sleep 4; }' _ "$LF" "$T/lk/.lock.1" > "$T/lk/got.$i" 2>/dev/null ) & done
+wait
+check "stale lock race: of twenty simultaneous takers exactly one wins" '[ "$(cat $T/lk/got.* | grep -c got)" = 1 ]'
+rm -rf "$T/lk"; mkdir -p "$T/lk/.lock.1.takeover"; touch -d '2 minutes ago' "$T/lk/.lock.1.takeover" 2>/dev/null || touch -t "$(date -u -d '2 minutes ago' +%Y%m%d%H%M 2>/dev/null || date -u -v-2M +%Y%m%d%H%M)" "$T/lk/.lock.1.takeover"
+mkdir -p "$T/lk/.lock.1"; echo 999999 > "$T/lk/.lock.1/pid"
+bash -c '. "$1"; take_lock "$2"; echo $? > "$3"' _ "$LF" "$T/lk/.lock.1" "$T/lk/rc1"; bash -c '. "$1"; take_lock "$2"; echo $? > "$3"; sleep 1' _ "$LF" "$T/lk/.lock.1" "$T/lk/rc2"
+check "a takeover mutex left by a dead process is cleared after a minute; the lock is taken by the next try" '[ "$(cat $T/lk/rc1)" = 1 ] && [ "$(cat $T/lk/rc2)" = 0 ]'
+
+# files a dead tick held come back; a live tick's stay
+setup3 ok; mkdir -p "$T/work/pending"; sleep 60 & live=$!
+printf 'o/r 5\ncodex-cli: done\nfrom-dead\n' > "$T/work/pending/.sending.999999.dead-run"
+printf 'o/r 5\ncodex-cli: done\nfrom-live\n' > "$T/work/pending/.sending.$live.live-run"
+echo "o/r2 7 dead2 1001" > "$T/work/.recovering.999999.2"; echo "o/r2 7 live2 1001" > "$T/work/.recovering.$live.2"
+tick
+check "dead tick's files: the kept outcome is posted, the recovery record is bounced; a live tick's are left" '[ "$(bodies | grep -c "^from-dead$")" = 1 ] && ! bodies | grep -q "^from-live$" && [ -f $T/work/pending/.sending.$live.live-run ] && [ -f $T/work/.recovering.$live.2 ] && jq -r ".[].body" $ST/comments_7.json | grep -q "run dead2 on testmac never finished" && ! jq -r ".[].body" $ST/comments_7.json | grep -q live2'
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+
+# v0.8.22's single record `current`: bounced when its .lock has no live holder, left alone otherwise
+setup3 ok; mkdir -p "$T/work"; echo "o/r2 7 legacy-run 1001" > "$T/work/current"
+tick
+check "legacy current: bounced, then removed" 'jq -r ".[].body" $ST/comments_7.json | grep -q "run legacy-run on testmac never finished" && [ ! -f $T/work/current ]'
+setup3 ok; mkdir -p "$T/work/.lock"; sleep 60 & live=$!; echo "$live" > "$T/work/.lock/pid"; echo "o/r2 7 legacy-live 1001" > "$T/work/current"
+tick
+check "legacy current with a live v0.8.22 holder: left alone" '[ -f $T/work/current ] && ! jq -r ".[].body" $ST/comments_7.json | grep -q legacy-live'
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
 
 # a bad MAX_RUNS or MIN_FREE_GB stops the poller before it touches anything
 sed -i.bak 's/^MAX_RUNS=2/MAX_RUNS=0/' "$CONF"; reset ok; : > "$ST/calls"; tick
