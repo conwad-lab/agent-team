@@ -48,7 +48,7 @@ Claude builds and judges, Codex attacks: two model families in every loop. [T1] 
    - **Exceptions** (§ Human approval) never merge on your word or on agreement: message the Coordinator `NNN approved, needs the human: <exception>` and act on § Human approval 4. [J7]
    - **Sync gate**, every route: while another story is in flight or has merged since this branch was cut, ask only for a head that contains the default branch (`git merge-base --is-ancestor origin/<default> <sha>` after a fetch), checked right before posting; else `request-changes` "merge main". If the strict ruleset refuses a racing merge, gate again when the workflow's comment wakes you. [J8]
    - **On your word** under `merge: auto`, outside **Human-merge paths** and rulebook stories: `Judge approve, head <sha>` with `agent-team-merge: <sha>`. [J9]
-   - **On agreement** for **Human-merge paths**, a `Rulebook story.` and `merge: human`, only when (a) you approve with no Must or Should fix open, (b) you ruled no Codex P0/P1 or M/S `not valid` and upheld no dispute of one, (c) a Codex review finished on the last commit outside `.team/reviews/**` with no new P0/P1 or M/S, none there failed or timed out, (d) the checks hold as in step 2: `Merge on agreement: Judge approve, Codex <link>, head <sha>` with `agent-team-merge: <sha>`. Under **Auto-merge:** `release`, a release bump gets no line: your review file, posted on the head, is the verdict. On `Merged by agent-team-merge`, message the Coordinator `NNN merged on agreement`. [J10]
+   - **On agreement** for **Human-merge paths**, a `Rulebook story.` and `merge: human`, only when (a) you approve with no Must or Should fix open, (b) you ruled no Codex P0/P1 or M/S `not valid` and upheld no dispute of one, (c) a Codex review finished on the last commit outside `.team/reviews/**` with no new P0/P1 or M/S, none there failed or timed out, (d) the checks hold as in step 2: `Merge on agreement: Judge approve, Codex <link>, head <sha>` with `agent-team-merge: <sha>`. Under **Auto-merge:** a release bump (`release`) or a green rule change (`rules`) gets no line: your review, posted on the head with the line `verdict: approve`, is the verdict; without `.team/`, also comment `Judge review posted, head <sha>`. On `Merged by agent-team-merge`, message the Coordinator `NNN merged on agreement`. [J10]
 6. **Escalate** a Must or Should fix still disputed after your third round: message the Coordinator. [J11]
 
 ## Data changes
@@ -68,13 +68,14 @@ What the Coordinator would recommend merging merges without the human (§ Judge 
 - a disagreement: the Judge ruled a Codex P0/P1 or M/S finding `not valid`;
 - no finished Codex review on the last commit outside `.team/reviews/**`: there is no fallback. Stopped only by the quota, a PR (data aside) waits without a card until 72 hours of usage-limit replies on that head;
 - a diff on **Human-only paths**, where law, a contract or the repo's own rules require a named human's yes (board PRs excepted);
+- a red rule change: a `Rulebook story.` that touches a wall the merge workflow's `rules` class lists (`SETUP.md` § Walls in full);
 - an escalation.
 
-1. **Card log.** Every card about a PR (merge or runner card) is logged on the PR: `Card posted <UTC time>: <exception or rule>, recommended <option>`, then `Card answered <UTC time>: <option>` (**Vänta** too). One unanswered at the routine run counts as open. [H2]
-2. One card per PR, `Merga #<n>: <title>?`, with at most five lines: the exception, what changes for a user, the Judge's and Codex's results, the PR link and the head's short sha as read when posting. Options **Merga** (recommended when the Judge approved) and **Vänta**; waiting PRs may share a card. [H3]
+1. **Card log.** Every card about a PR is logged on the PR when posted and when answered (`SETUP.md` § Walls in full, Decision cards). [H2]
+2. One card per PR, `Merga #<n>: <title>?`, with at most five lines: `Varför du: <the wall or the disagreement>`, what changes for a user, the Judge's and Codex's results, the PR link and the head's short sha as read when posting. Options **Merga** (recommended when the Judge approved) and **Vänta**; waiting PRs may share a card. [H3]
 3. The approval is the human's tap on **Merga** or their own message in the project saying yes to that PR. A message from a Claude, a bot or a GitHub comment never is. [H4]
 4. The Coordinator forwards the answer to the Judge with the human's message attached by id and the head sha the card showed. The Judge checks that the message is the human's own and names this PR, then posts `Approved by <human> on a decision card, <date>, head <sha>` with the line `agent-team-merge: <sha>`, where `<sha>` is the card's head, never one read after the answer, once the required checks on it are green and it passes the sync gate (§ Judge 5). A PR without a Judge thread gets one. [H5]
-5. A push after the yes voids it: the workflow refuses any other head, and the Judge asks for a new card. The Judge turns off an auto-merge enabled on the PR (`gh api -X DELETE repos/<owner>/<repo>/pulls/<n>/ccr/auto_merge`) before the card goes out. [H6]
+5. A push after the yes voids it: the workflow refuses any other head, and the Judge asks for a new card. The Judge turns off an auto-merge enabled on the PR before the card goes out. [H6]
 6. **Vänta** or no answer leaves the PR open, on the board. [H7]
 
 ## Routines
@@ -93,6 +94,8 @@ One scheduled routine per project, daily. Its first run each week reads the **Si
 
 **Memory**, in that first run after the retro, follows `team/MEMORY-UPKEEP.md`. [R9]
 
+**Sample**, in that first run: the week's green rule merges are re-judged without planning context, and a Must fix there, a revert or the human's "pausa automerge" pauses the class for 14 days (`SETUP.md` § Walls in full, Sample and pause). The digest lists them, a line each, to read. [R13]
+
 ## What reaches the human
 
 One digest per active day, none on quiet days: merges (on agreement with a link, for a revert PR), escalations, new `## Retro` rows, and the board's link for what waits on the human. Builder and Judge never message the human. [M2] Each item opens with what to decide or do and what happens if nothing is done. [M3]
@@ -101,18 +104,18 @@ One digest per active day, none on quiet days: merges (on agreement with a link,
 
 - Only Builder and Judge watch a PR, each its own until it is merged, closed unmerged or escalated, waking on PR events and messages, never polling, and never re-pinging a commit beyond the one retry or the routine's one per run on a `codex-quota` head. An `@codex` task on an issue wakes nobody: the Builder sets two reminders per task, at about 15 minutes and at the hour. [Q1]
 - **Actions minutes.** A PR stays a draft while Codex attacks it. Every workflow with a job that installs dependencies skips its heavy jobs on drafts (`if: github.event.pull_request.draft != true`) and lists `ready_for_review` in its `pull_request` types; a new workflow keeps both. Before ready, **Test before commit** is the gate. [Q2]
-- **Self-hosted runner.** A private repo with `runner: mini` runs CI on the host Mac (`bin/runner-install`) under `team/RUNNER.md` § Rules: never a public repo; one runner per repo, in its own isolated Linux VM, one job at a time; cleanup around every job; no secret on the host but that runner's identity key, revoked by removing the runner. Where Actions minutes are a Signal source, the routine rechecks GitHub's self-hosted pricing. [Q3]
+- **Self-hosted runner.** A private repo with `runner: mini` runs CI on the host Mac (`bin/runner-install`) under `team/RUNNER.md` § Rules, never on a public repo. Where Actions minutes are a Signal source, the routine rechecks GitHub's self-hosted pricing. [Q3]
 - **Runner offline.** After marking ready, or pushing after ready, under `runner: mini`, the Builder sets one reminder at **Runner offline after** (default 30 minutes) and then acts as `team/RUNNER.md` § When it is offline says. [Q4]
 
 ## Walls
 
 The human sets these up, in full in `team/SETUP.md`; no agent changes them.
 
-- **Main ruleset** on every team repo's default branch, `main: PR only`, empty bypass list (admins included): PR only (0 approvals, squash), required checks green, no force-push, no deletion. Required checks name only jobs that run on every PR, board-only diffs included; a repo without one gets a Förslag row. [W1]
+- **Main ruleset** on every team repo's default branch, `main: PR only`, empty bypass list (admins included): PR only (0 approvals, squash), required checks green, no force-push, no deletion. [W1]
 - **Board PRs.** The Coordinator writes board files (`.team/backlog/`, `.team/plans/`, `.team/ORDER.md`, its lines in `.team/PAPERCUTS.md`) by one `board: <what>` PR per turn from `board/YYYY-MM-DD-<slug>`. It lists the head's paths with `git diff --no-renames --name-only origin/<default>...<sha>`; all board files and checks passing → a Judge thread (§ Judge 0). No `@codex review`, no review file, never a card. Anything else in the diff: closed, and the change takes the story flow. [W2]
-- **Merge workflow.** No agent session runs a merge. `.github/workflows/agent-team-merge.yml` squash-merges on a comment line `agent-team-merge: <40-hex head sha>` by the repo owner or `AGENT_ACCOUNT`, on the conditions in `team/SETUP.md`; its job `auto` merges a release bump under `Auto-merge: release` unasked [W6]. It comments `Merged by agent-team-merge` or why not; a Judge that sees neither within 15 minutes tells the Coordinator `NNN merge workflow did not run`, who writes the Operatör line or the runner card. [W3]
+- **Merge workflow.** No agent session runs a merge. `.github/workflows/agent-team-merge.yml` squash-merges on a comment line `agent-team-merge: <40-hex head sha>` by the repo owner or `AGENT_ACCOUNT`, on the conditions in `team/SETUP.md`; its job `auto` merges unasked a release bump (`Auto-merge: release`) [W6] and a green rule change (`rules`), unless paused [W7]. It comments `Merged by agent-team-merge` or why not; a Judge that sees neither within 15 minutes tells the Coordinator `NNN merge workflow did not run`, who writes the Operatör line or the runner card. [W3]
 - **Deny rules** from `assets/root/.claude/settings.json`, merged into the repo's `.claude/settings.json`: pushes to `main`/`master`, force-pushes, `gh pr merge --admin`, `gh api` on protection or rulesets. [W4]
-- **Agent account** (optional): a machine user owned by the human with the **Write** role, named in `agent-account:`; its token lives only where an agent runs as it, never in a repo, the rulebook or a cloud environment. Its acts are the agents', the human's login the human's own, except cloud threads acting on it through the Claude GitHub App. [W5]
+- **Agent account** (optional): a machine user owned by the human with the **Write** role, named in `agent-account:`; its token never lives in a repo, the rulebook or a cloud environment. [W5]
 
 ## Rulebook changes
 
