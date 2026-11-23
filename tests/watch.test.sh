@@ -102,7 +102,7 @@ iss() { printf '{"number":%s,"html_url":"https://github.com/o/r/issues/%s"%s},' 
 put "repos/o/r/issues?state=open&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}')$(iss 9 ',"pull_request":{}')$(iss 10 ',"pull_request":{}')$(iss 40 ',"pull_request":{}')$(iss 41 ',"pull_request":{}')$(iss 42 '')$(iss 43 ',"pull_request":{}')$(iss 44 ',"pull_request":{}')$(iss 46 ',"pull_request":{}')$(iss 30 '')$(iss 48 ',"pull_request":{}')$(printf '{"number":47,"html_url":"u47","user":{"login":"conwad-lab"},"created_at":"%s","body":"@codex build x"},' "$(t $((3*H)))")$(printf '{"number":45,"html_url":"https://github.com/o/r/issues/45","user":{"login":"conwad-lab"},"created_at":"%s","body":"@codex build .team/plans/045-x.md"}' "$(t $((3*H)))")]"
 put "repos/o/r/issues/45/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"eyes\"}]"
 # 047: an issue whose body got an @codex line by an edit: Codex never reacted, so no task (r3 M3)
-# 048: original review 5 h, its retry 3 h, one result 2 h: the retry is still a retry (r3 M2)
+# 048: original review 5 h, its retry 3 h, one result 2 h: the result answers both (v0.8.16; was r3 M2)
 put "repos/o/r/issues/48/comments?per_page=100" <<< "[$(cm 481 conwad-lab $((5*H)) '@codex review')$(cm 482 conwad-lab $((3*H)) '@codex review' | sed 's/,$//')]"
 put "repos/o/r/pulls/48/reviews?per_page=100" <<< "[{\"id\":2,\"user\":{\"login\":\"$BOT\"},\"submitted_at\":\"$(t $((2*H)))\"}]"
 # 043: the summary comment, completed, is still not an answer (round 2 M1)
@@ -112,7 +112,7 @@ jq -n --arg t1 "$(t $((2*H)))" --arg t2 "$(t 6900)" --arg bot "$BOT" '[{id:431,u
 put "repos/o/r/issues/44/comments?per_page=100" <<< "[$(cm 441 conwad-lab $((3*H)) '@codex review')$(cm 442 conwad-lab 600 '@codex fix M1')$(cm 443 "$BOT" 300 'Pushed a fix for M1.' | sed 's/,$//')]"
 # 046: a retry five minutes old is still within its hour (round 2 S1)
 put "repos/o/r/issues/46/comments?per_page=100" <<< "[$(cm 461 conwad-lab $((3*H)) '@codex review')$(cm 462 conwad-lab 300 '@codex review' | sed 's/,$//')]"
-# 040: two angle requests in one batch, one review answers one of them → one left, not yet retried
+# 040: two angle requests in one batch, one review answers both (v0.8.16; was one each, M2)
 put "repos/o/r/issues/40/comments?per_page=100" <<< "[$(cm 401 conwad-lab $((3*H)) '@codex review — security')$(cm 402 conwad-lab $((3*H-120)) '@codex review — failure paths' | sed 's/,$//')]"
 put "repos/o/r/pulls/40/reviews?per_page=100" <<< "[{\"id\":1,\"user\":{\"login\":\"$BOT\"},\"submitted_at\":\"$(t $((5*H/2)))\"}]"
 # 041: an earlier request answered by 👍, a new one unanswered → retry, not silent
@@ -142,7 +142,7 @@ check "codex-silent: asked twice"             'has "codex-silent	#7:"'
 check "Codex comment answers"                 '! has "#9: @codex"'
 check "Codex 👍 answers"                      '! has "#10: @codex"'
 check "under an hour is quiet"                '! has "#30:"'
-check "one answer answers one request (M2)"   'has "codex-retry	#40: 1 @codex"'
+check "one review answers the whole batch (v0.8.16)" '! has "#40:"'
 check "earlier 👍 not counted (M3)"            'has "codex-retry	#41: 1 @codex"'
 check "fix task is codex-task (M4)"           'has "codex-task	#42:"'
 check "completed summary is no answer (r2 M1)" 'has "codex-retry	#43:"'
@@ -150,7 +150,7 @@ check "answers match their kind (r2 M2)"      'has "codex-retry	#44: 1 @codex"'
 check "issue-body build task (r2 M3)"         'has "codex-task	#45:"'
 check "fresh retry waits its hour (r2 S1)"    '! has "#46:"'
 check "edited body is no task (r3 M3)"        '! has "#47:"'
-check "partial answer keeps the retry (r3 M2)" 'has "codex-silent	#48:"'
+check "one result answers the retry too (v0.8.16)" '! has "#48:"'
 check "no blind"                              '! has "	blind	"'
 
 check "board: ready"             'row 001-ready | grep -q "| ready | Coordinator |"'
@@ -381,6 +381,34 @@ check "in main: invalid JSON after a zero is blind (#28 M2)" 'has "^o/z	blind	ca
 touch "$FIX/$(printf '%s' 'repos/o/z/issues/1/comments?per_page=100' | tr -c 'A-Za-z0-9' '_').502"
 run o/z
 check "parked: a failed comment read is blind"           'has "^o/z	blind	cannot read repos/o/z/issues/1/comments" && [ "$(cat "$T/rc")" = 2 ]'
+
+# ---- v0.8.16: Codex CLI review branches and one receipt for every earlier review request
+put repos/o/u <<< '{"default_branch":"main"}'
+put "repos/o/u/branches?per_page=100" <<< '[{"name":"main","commit":{"sha":"m"}},{"name":"feat/900-designgranskning","commit":{"sha":"u900"}},{"name":"feat/901-own-work","commit":{"sha":"u901"}},{"name":"feat/902-review","commit":{"sha":"u902"}}]'
+for b in 900-designgranskning 901-own-work 902-review; do put "repos/o/u/compare/main...feat/$b" <<< '{"ahead_by":1}'; done
+cmt() { jq -n --arg d "$(t "$1")" --arg m "$2" '{commit:{committer:{date:$d},message:$m}}'; }
+cmt $((2*D)) $'900: design review\n\nHinder: granskning klar i docs/motkritik-astra.md, ingen PR ska öppnas' | put repos/o/u/commits/u900
+cmt $((2*D)) $'901: half a build\n\nHinder: inga' | put repos/o/u/commits/u901
+cmt $((2*D)) $'902: review\n\nThe review is in docs/r.md; no PR is to be opened.' | put repos/o/u/commits/u902
+# 5: review + security review together, one receipt; a retry 55 min later, one receipt (mondmodel #927)
+put "repos/o/u/issues/5/comments?per_page=100" <<< "[$(cm 51 conwad-lab $((4*H)) '@codex review')$(cm 52 conwad-lab $((4*H-30)) '@codex security review')$(cm 53 "$BOT" $((4*H-360)) '<!-- codex-review-receipt:v1 --> Codex Review: no major issues')$(cm 54 conwad-lab $((3*H)) '@codex review')$(cm 55 "$BOT" $((3*H-300)) '<!-- codex-review-receipt:v1 --> Codex Review: no major issues' | sed 's/,$//')]"
+# 6: a review request after the last receipt stays open
+put "repos/o/u/issues/6/comments?per_page=100" <<< "[$(cm 61 conwad-lab $((5*H)) '@codex review')$(cm 62 "$BOT" $((4*H)) '<!-- codex-review-receipt:v1 --> no issues')$(cm 63 conwad-lab $((2*H)) '@codex review' | sed 's/,$//')]"
+# 7: two tasks, one Codex comment: a task is still answered one at a time
+put "repos/o/u/issues/7/comments?per_page=100" <<< "[$(cm 71 conwad-lab $((3*H)) '@codex fix M1')$(cm 72 conwad-lab $((3*H-60)) '@codex fix M2')$(cm 73 "$BOT" $((2*H)) 'Pushed a fix for M1.' | sed 's/,$//')]"
+# 8: a receipt with no review open still answers a task
+put "repos/o/u/issues/8/comments?per_page=100" <<< "[$(cm 81 conwad-lab $((3*H)) '@codex fix M1')$(cm 82 "$BOT" $((2*H)) '<!-- codex-review-receipt:v1 --> done' | sed 's/,$//')]"
+put "repos/o/u/issues?state=open&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 5 ',"pull_request":{}')$(iss 6 ',"pull_request":{}')$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}' | sed 's/,$//')]"
+run o/u
+check "review branch: no branch-idle (v0.8.16)"          '! has "feat/900-designgranskning" && ! has "feat/902-review"'
+check "review branch: board row, Operatör"               'grep -qF "| u | feat/900-designgranskning | review only, delete when read | Operatör |" "$T/board.md" && grep -qF "| u | feat/902-review | review only, delete when read | Operatör |" "$T/board.md"'
+check "Hinder: inga → branch-idle as before"             'has "branch-idle	feat/901-own-work" && ! grep -qF "feat/901-own-work | review only" "$T/board.md"'
+check "review branch: no extra API call"                 '[ "$(grep -c "^repos/o/u/commits/" "$FIX/calls")" = 3 ]'
+check "one receipt answers review + security review, a retry its own (#927)" '! has "#5:"'
+check "a review after the last receipt stays open"       'has "codex-retry	#6: 1 @codex"'
+check "tasks still one answer each"                      'has "codex-task	#7: 1 @codex"'
+check "a receipt with no review open answers a task"     '! has "#8:"'
+check "v0.8.16: no blind"                                '! has "	blind	"'
 
 echo "1..$n"
 exit $fail

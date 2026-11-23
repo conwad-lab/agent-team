@@ -10,11 +10,14 @@
 #                 (CLOUD.md § Human approval 1) shows an open card or a Vänta answer, or the
 #                 PR is parked (below)
 #   branch-idle   feat/ branch with no PR, no commit for 24 h, and commits ahead of the default
-#                 branch (compare API); one with none is listed on the board as `in main, delete`
+#                 branch (compare API); one with none is listed on the board as `in main, delete`, one
+#                 whose head commit message says `Hinder: granskning klar` or `ingen PR ska öppnas` / `no PR
+#                 is to be opened` (a Codex CLI review order, CODEX-CLI.md [K3]) as `review only, delete when read`
 #   queued        workflow run queued longer than --queued-after (Runner offline after, default 30)
 #   not-started   run failed in the last 24 h without a job starting (minutes, spending limit)
 #   codex-retry   @codex review unanswered for an hour, not yet retried: the routine asks once more
-#   codex-silent  @codex review unanswered for an hour after a retry
+#   codex-silent  @codex review unanswered for an hour after a retry; one Codex review or receipt answers
+#                 every review and retry request posted before it (a task is answered one at a time)
 #   codex-task    any other @codex request (build, fix, plan attack) unanswered for an hour
 #   codex-quota   Codex's latest reply on an open PR or issue says its usage limit is reached (since =
 #                 the first such reply in a row). Instead of the other codex kinds there: the routine
@@ -56,7 +59,7 @@ while [ $# -gt 0 ]; do
     --estimates) ESTIMATES="$2"; shift 2 ;;
     --now) NOW_ISO="$2"; shift 2 ;;
     --queued-after) QUEUED_AFTER="$2"; shift 2 ;;
-    -h|--help) sed -n '2,48p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR > 1 && !/^#/ {exit} NR > 1' "$0"; exit 0 ;;
     --) shift; break ;;
     -*) echo "watch: unknown option $1" >&2; exit 2 ;;
     *) break ;;
@@ -118,6 +121,12 @@ answer() { # answer FILE KIND...: an answer removes the oldest open request of t
   set -- "$f"
   [ -n "$n" ] && { sed "${n}d" "$1" > "$1.tmp"; mv "$1.tmp" "$1"; }
   return 0
+}
+answer_reviews() { # answer_reviews FILE: a Codex review or receipt answers every open review and retry before it
+  local f="$1"            # (events are read in time order, so every pending one is earlier); else a task
+  if awk -F'\t' '$2 == "review" || $2 == "retry" {f=1} END {exit !f}' "$f"; then
+    awk -F'\t' '$2 != "review" && $2 != "retry"' "$f" > "$f.tmp"; mv "$f.tmp" "$f"
+  else answer "$f" task; fi
 }
 content() { opt "repos/$R/contents/$1?ref=$2" | jq -r '.content // empty' 2>/dev/null | base64 --decode 2>/dev/null; }
 field() { sed -n "s/^$1: *//p" | head -1; }
@@ -186,8 +195,15 @@ watch_repo() {
       printf '%s\t%s\tin main, delete\tOperatör\t[branch](https://github.com/%s/tree/%s)\n' "$R" "$name" "$R" "$name" >> "$PARKED"
       continue
     fi
-    d="$(api "repos/$R/commits/$sha" | jq -r '.commit.committer.date | fromdateiso8601')" || continue
+    local commit
+    commit="$(api "repos/$R/commits/$sha")" || continue
+    d="$(jq -r '.commit.committer.date | fromdateiso8601' <<< "$commit")" || continue
     printf '%s\t%s\n' "$name" "$d" >> "$TMP/branchdate"
+    # a Codex CLI review order's branch (team/CODEX-CLI.md [K3]) never gets a PR: listed, no stall
+    if jq -e '.commit.message // "" | test("(^|\n)Hinder: granskning klar"; "i") or test("ingen PR ska öppnas|no PR is to be opened"; "i")' <<< "$commit" >/dev/null 2>&1; then
+      printf '%s\t%s\treview only, delete when read\tOperatör\t[branch](https://github.com/%s/tree/%s)\n' "$R" "$name" "$R" "$name" >> "$PARKED"
+      continue
+    fi
     [ $(( NOW - d )) -ge $DAY ] && stall "$R" branch-idle "$name: no PR, no commit for $(age "$d")" "$(iso "$d")" "https://github.com/$R/tree/$name"
   done < "$TMP/feat"
 
@@ -216,7 +232,8 @@ watch_repo() {
 
   # codex-retry / codex-silent / codex-task: open issues and PRs active in the last 7 days.
   # Requests: a comment, or a new issue's body (templates/codex.md), with a line starting `@codex`.
-  # Answers: a Codex review or review receipt answers the oldest open review request; another
+  # Answers: a Codex review or review receipt answers every open review request (retries too), else
+  # the oldest task; another
   # Codex comment answers the oldest open task, else the oldest review; a 👍 from Codex answers
   # its own request. Codex's summary comment (edited in place) is never an answer.
   # A Codex comment saying its usage limit is reached answers like any comment (so nothing is left
@@ -256,7 +273,7 @@ watch_repo() {
     : > "$TMP/quota"   # time, e (a finished answer) or q (a usage-limit reply); read in time order below
     while IFS=$'\t' read -r t kind cid; do
       case "$kind" in
-        rout) answer "$TMP/pending" review task retry; printf '%s\te\n' "$t" >> "$TMP/quota" ;;
+        rout) answer_reviews "$TMP/pending"; printf '%s\te\n' "$t" >> "$TMP/quota" ;;
         out) answer "$TMP/pending" task review retry; printf '%s\te\n' "$t" >> "$TMP/quota" ;;
         quota) answer "$TMP/pending" review task retry; printf '%s\tq\n' "$t" >> "$TMP/quota" ;;
         review|task)
