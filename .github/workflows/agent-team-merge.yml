@@ -161,6 +161,7 @@ jobs:
           FIND='\\bP[01]\\b|\\b[MS][0-9]+\\b'
           # the Team settings keys that turn this job on or widen it: a line naming one changes only on a card
           KEYS='^#|auto-merge|human-merge paths|human-only paths|guard paths|stories in flight|\*\*merge:\*\*'
+          MARKUP='<!--|-->|^[[:space:]]*(```|~~~)|^[[:space:]]*(=+|-{2,})[[:space:]]*$|<[[:space:]]*/?[[:space:]]*(details|summary|div|span|pre|script|style|template|table|p|section)([[:space:]>/]|$)'
           b64() { gh api "repos/$REPO/contents/$1?ref=$2" --jq .content | base64 -d; }
           has() { # 0: the path exists at the ref; 1: it does not (404); anything else stops the run
             local e
@@ -181,12 +182,12 @@ jobs:
             printf '%s\n' "$out"; }
           # the red zones of team/CLOUD.md (cloud) and team/SETUP.md (setup): K rows name the section boundaries, R rows the red lines
           zone() { awk -v m="$1" '
-            /^## / {sec = $0; sub(/[[:space:]]+$/, "", sec); step = ""; print "K\t" sec}
+            /^[[:space:]]*##[[:space:]]/ {sec = $0; sub(/^[[:space:]]+/, "", sec); sub(/[[:space:]]+$/, "", sec); gsub(/[[:space:]]+/, " ", sec); step = ""; print "K\t" sec}
             m == "cloud" && sec == "## Judge" && /^[0-9]+[a-z]?\. / {step = $1; print "K\tJudge " $1}
             {r = 0
              if (m == "cloud" && (sec == "## Human approval" || sec == "## Walls" || sec == "## Data changes" || sec == "## Rulebook changes" || (sec == "## Judge" && step == "5."))) r = 1
              if (m == "setup" && sec == "## Walls in full") r = 1
-             if (/^## /) r = 1
+             if (/^[[:space:]]*#+([[:space:]]|$)/) r = 1
              if (r) print "R\t" NR}'; }
           value() { sed -n "s/^- \*\*$1:\*\*//p" | sed 's/<!--.*//'; } # every line of one Team settings key, comments off
           globs() { grep -o '`[^`]*`' | tr -d '`' || true; }
@@ -274,7 +275,7 @@ jobs:
                 [ "$no" -gt "$lo" ] && [ "$no" -lt "$hi" ] && [[ $text == '- **Guard paths:**'* ]] || only=""
               done <<<"$ch"
               og=$(settings <<<"$ob" | value 'Guard paths'); ng=$(settings <<<"$nb" | value 'Guard paths')
-              if [ -n "$only" ] && ! notglobs <<<"$ng" && [ -z "$(comm -23 <(globs <<<"$og" | sort -u) <(globs <<<"$ng" | sort -u))" ] \
+              if [ -n "$only" ] && ! notglobs <<<"$og" && ! notglobs <<<"$ng" && [ -z "$(comm -23 <(globs <<<"$og" | sort -u) <(globs <<<"$ng" | sort -u))" ] \
                  && [ "$(globs <<<"$ng" | sort -u | grep -c .)" -gt "$(globs <<<"$og" | sort -u | grep -c .)" ]; then :; else class=rules; fi
             fi
             if [ "$class" = pause ]; then
@@ -292,7 +293,8 @@ jobs:
             # 1. every path is inside the class
             set -f
             while IFS=$'\t' read -r st f prev; do
-              for g in "$f" $prev; do
+              for g in "$f" "$prev"; do # whole names: a path may hold spaces
+                [ -n "$g" ] || continue
                 case "$class" in
                   release)
                     case "$g" in
@@ -321,14 +323,16 @@ jobs:
                       esac
                     fi
                     [ -z "$gbad" ] || red "the Guard paths line in AGENTS.md lists no backticked paths"
-                    for p in $gglobs; do
+                    while IFS= read -r p; do # a glob per line, never split on spaces
+                      [ -n "$p" ] || continue
                       if [[ $g == $p ]] || [[ $p == */ && $g == "$p"* ]] || [[ $g == "$p"/* ]]; then red "$g is on Guard paths ($p)"; fi
-                    done ;;
+                    done <<<"$gglobs" ;;
                 esac
                 [ -z "$hbad" ] || red "the Human-only paths line in AGENTS.md lists no backticked paths"
-                for p in $hglobs; do
+                while IFS= read -r p; do
+                  [ -n "$p" ] || continue
                   if [[ $g == $p ]] || [[ $p == */ && $g == "$p"* ]] || [[ $g == "$p"/* ]]; then red "$g is on Human-only paths ($p)"; fi
-                done
+                done <<<"$hglobs"
               done
             done <<<"$files"
             set +f
@@ -360,6 +364,10 @@ jobs:
                 if [ "$sign" = - ]; then z=$oz; else z=$nz; fi
                 if grep -qx "R"$'\t'"$no" <<<"$z" || grep -qE '\[J(7|8|9|10)\]' <<<"$text"; then
                   red "$1 line $no ($sign) is in a part only a card may change: $(cut -c1-80 <<<"$text")"
+                fi
+                # markup that can hide a section or change where one starts: comments, code fences, raw HTML blocks, underlined headings
+                if grep -qiE "$MARKUP" <<<"$text"; then
+                  red "$1 line $no ($sign) adds or removes markup that can hide a section: $(cut -c1-80 <<<"$text")"
                 fi
               done <<<"$ch"
             }

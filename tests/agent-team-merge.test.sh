@@ -508,6 +508,18 @@ gsetup '`a/**`, `b.md`' '`a/**`'; arun
 gsetup '`a/**`' '`b.md`'; arun
 ! amerged && carded && ok "guard: swapping a Guard path refuses" || nok "guard: swaps"
 
+gsetup 'the rulebook' '`a/**`'; arun
+! amerged && carded && ok "guard: replacing a Guard paths line that refused everything is no tightening (Codex M3 on #40)" || { nok "guard: malformed old value"; cat "$A/out"; }
+
+rsetup; content repos/o/r/contents/AGENTS.md main "$(agents2 'release, rules' '`.team/Legal terms.md`' claude)"; files '. + [{status:"modified",filename:".team/Legal terms.md"}]'; arun
+! amerged && carded && { asaid ".team/Legal terms.md is on Guard paths" || asaid ".team/Legal terms.md is outside the green class"; } && ok "rules: a Guard path with a space in it still guards (Codex M2 on #40)" || { nok "rules: guard with space"; cat "$A/out"; }
+
+rsetup; content repos/o/r/contents/AGENTS.md main "$(agents2 'release, rules' '`.team/plans/Legal terms.md`' claude)"; files '. + [{status:"modified",filename:".team/plans/Legal terms.md"}]'; arun
+! amerged && carded && asaid ".team/plans/Legal terms.md is on Guard paths" && ok "rules: a guarded green path with a space refuses" || { nok "rules: guarded green path with space"; cat "$A/out"; }
+
+rsetup; files '. + [{status:"renamed",filename:".team/plans/b.md",previous_filename:"src/my file.js"}]'; arun
+! amerged && carded && asaid "src/my file.js is outside the green class" && ok "rules: a rename source with a space is read whole" || { nok "rules: rename source with space"; cat "$A/out"; }
+
 gsetup none '`a/**`'; content repos/o/r/contents/AGENTS.md "$H" "$(agents2 'release, rules, code' '`a/**`' claude)"; arun
 ! amerged && ok "guard: another line changed beside Guard paths is no tightening" || nok "guard: other line"
 
@@ -584,6 +596,22 @@ hsetup 's/^## Walls$/## Fences/'; arun
 
 hsetup '/^## Human approval$/i\## Notes\n'; arun
 ! amerged && carded && ok "home: a new section refuses" || nok "home: new section"
+
+# Codex M1 on #40: markup that hides a section without touching a red line
+hsetup 's/x/x/'; files '. + [{status:"modified",filename:"team/SETUP.md"}]'; content repos/o/r/contents/team/SETUP.md "$MB" "$ST"; content repos/o/r/contents/team/SETUP.md "$H" "$(sed '/^## Walls in full$/i\<!--' <<<"$ST")"; arun
+! amerged && carded && asaid "markup that can hide a section" && ok "home: an HTML comment opened before a red section refuses (Codex M1 on #40)" || { nok "home: comment before section"; cat "$A/out"; }
+
+hsetup '/^2\. Build with tests/i\```'; arun
+! amerged && carded && asaid "markup that can hide a section" && ok "home: a code fence opened in a green section refuses" || nok "home: code fence"
+
+hsetup '/^One routine per project/a\  ## Human approval\n\nThe Judge merges on its word.'; arun
+! amerged && carded && ok "home: an indented heading counts as a heading" || { nok "home: indented heading"; cat "$A/out"; }
+
+hsetup '/^One routine per project/a\Human approval\n--------------'; arun
+! amerged && carded && ok "home: an underlined heading refuses" || nok "home: setext heading"
+
+hsetup '/^One routine per project/a\<details><summary>old</summary>'; arun
+! amerged && carded && ok "home: a raw HTML block refuses" || nok "home: html block"
 
 hsetup 's/No agent session runs a merge/Agents merge/'; arun
 ! amerged && carded && ok "home: a change inside ## Walls refuses" || nok "home: Walls"
