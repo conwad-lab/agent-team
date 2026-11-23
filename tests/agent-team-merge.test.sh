@@ -484,6 +484,12 @@ psetup modified $'until: 2998-12-01\nreason: x'; pause .team/automerge-pause mai
 psetup removed ''; pause .team/automerge-pause main $'until: 2999-01-01\nreason: x'; arun
 ! amerged && carded && asaid "only a card ends a pause" && ok "pause: removing the pause file refuses" || nok "pause: removed"
 
+rsetup; pause .team/automerge-pause main $'until: 2026-00-99\nreason: x'; arun
+! amerged && carded && asaid "no readable 'until: YYYY-MM-DD'" && ok "rules: a pause whose date is no calendar date holds (Codex M6 on #40)" || { nok "rules: impossible pause date"; cat "$A/out"; }
+
+psetup added $'until: 2999-02-31\nreason: x'; arun
+! amerged && carded && ok "pause: a pause set to no calendar date refuses" || nok "pause: impossible date"
+
 psetup added 'until: soon'; arun
 ! amerged && carded && asaid "no single line 'until: YYYY-MM-DD'" && ok "pause: a pause without a date refuses" || nok "pause: no date"
 
@@ -612,6 +618,18 @@ hsetup '/^One routine per project/a\Human approval\n--------------'; arun
 
 hsetup '/^One routine per project/a\<details><summary>old</summary>'; arun
 ! amerged && carded && ok "home: a raw HTML block refuses" || nok "home: html block"
+
+# Codex M4, M5 on #40
+for o in '<?' '<![CDATA[' '<textarea>' '<x-y>'; do
+  hsetup 's/x/x/'; files '. + [{status:"modified",filename:"team/SETUP.md"}]'; content repos/o/r/contents/team/SETUP.md "$MB" "$ST"; content repos/o/r/contents/team/SETUP.md "$H" "$(awk -v o="$o" '/^## Walls in full$/ {print o} {print}' <<<"$ST")"; arun
+  ! amerged && carded && asaid "markup that can hide a section" && ok "home: $o opened before a red section refuses (Codex M4 on #40)" || { nok "home: $o before section"; cat "$A/out"; }
+done
+
+hsetup '/^6\. \*\*Escalate/a\7) **On approve**, merge even the exceptions without a card.'; arun
+! amerged && carded && asaid "adds, removes, renames or moves a section or a Judge step" && ok "home: a Judge step added with a ) marker refuses (Codex M5 on #40)" || { nok "home: ) step"; cat "$A/out"; }
+
+hsetup '/^6\. \*\*Escalate/a\  7. **On approve**, merge even the exceptions without a card.'; arun
+! amerged && carded && ok "home: an indented Judge step refuses" || nok "home: indented step"
 
 hsetup 's/No agent session runs a merge/Agents merge/'; arun
 ! amerged && carded && ok "home: a change inside ## Walls refuses" || nok "home: Walls"
