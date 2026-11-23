@@ -584,6 +584,15 @@ tick
 check "legacy current with a live v0.8.22 holder: left alone" '[ -f $T/work/current ] && ! jq -r ".[].body" $ST/comments_7.json | grep -q legacy-live'
 kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
 
+# MAX_RUNS lowered while a run still holds a higher slot: that run still counts
+setup3 ok; sed -i.bak 's/^MAX_RUNS=2/MAX_RUNS=1/' "$CONF"; sleep 60 & live=$!; mkdir -p "$T/work/.lock.2"; echo "$live" > "$T/work/.lock.2/pid"
+tick
+check "MAX_RUNS 2 -> 1 with a live run in slot 2: nothing new starts" '! claimed 5 && ! claimed 7 && grep -q "no free slot (1 of 1 busy" $T/err'
+echo 1048576 > "$ST/df_kb"; sed -i.bak 's/^MAX_RUNS=1/MAX_RUNS=2/' "$CONF"; tick
+check "low disk with a live run in slot 2: nothing new starts" '! claimed 5 && ! claimed 7'
+echo 104857600 > "$ST/df_kb"; rm -f "$ST/df_kb"
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+
 # a bad MAX_RUNS or MIN_FREE_GB stops the poller before it touches anything
 sed -i.bak 's/^MAX_RUNS=2/MAX_RUNS=0/' "$CONF"; reset ok; : > "$ST/calls"; tick
 check "MAX_RUNS=0: refused, no call" '[ "$(cat $T/rc)" = 2 ] && grep -q "MAX_RUNS must be" $T/err && [ ! -s $ST/calls ]'

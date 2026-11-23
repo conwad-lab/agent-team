@@ -98,7 +98,15 @@ take_lock() { # take_lock DIR: 0 when this process holds it now
 }
 repo_lock() { printf '%s/.repo-%s' "$WORK_DIR" "$(printf '%s' "$1" | tr '/' '-')"; }
 slot_lock() { printf '%s/.lock.%s' "$WORK_DIR" "$1"; }
-held_slots() { local i=1 n=0; while [ "$i" -le "$MAX_RUNS" ]; do lock_held "$(slot_lock "$i")" && n=$((n + 1)); i=$((i + 1)); done; echo "$n"; }
+held_slots() { # live slot locks, any number: a run in slot 3 still counts after MAX_RUNS was lowered to 2
+  local d k n=0
+  for d in "$WORK_DIR"/.lock.*; do
+    k="${d##*/.lock.}"
+    case "$k" in ""|*[!0-9]*) continue ;; esac
+    lock_held "$d" && n=$((n + 1))
+  done
+  echo "$n"
+}
 
 # less than MIN_FREE_GB free under WORK_DIR (or df unreadable): one run at a time, so the disk is not filled twice over
 FREE_KB="$(df -Pk "$WORK_DIR" 2>/dev/null | awk 'NR==2 {print $4}' || true)"   # a failing df is an unreadable answer: low
