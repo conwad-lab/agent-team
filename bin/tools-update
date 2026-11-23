@@ -140,6 +140,8 @@ EOF
 done
 
 [ "$DRY" = 1 ] && { echo "then: bin/models > $LOGS/models.txt, posted on $MODELS_REPO when $CONF exists"; exit 0; }
-if [ -f "$CONF" ]; then limit "$LIMIT" "$HERE/models" --post "$MODELS_REPO" > "$LOGS/models.txt" 2>>"$LOG" || line "models failed"
-else limit "$LIMIT" "$HERE/models" > "$LOGS/models.txt" 2>>"$LOG" || line "models failed"; fi
+# not under `limit`: bin/models bounds each of its own commands (MODELS_LIMIT), and an outer limit would kill it and
+# its watchdogs but leave the command it was waiting on running in its own process group
+if [ -f "$CONF" ]; then "$HERE/models" --post "$MODELS_REPO" < /dev/null > "$LOGS/models.txt" 2>>"$LOG" || line "models failed"
+else "$HERE/models" < /dev/null > "$LOGS/models.txt" 2>>"$LOG" || line "models failed"; fi
 exit 0

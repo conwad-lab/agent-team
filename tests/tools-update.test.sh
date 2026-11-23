@@ -112,6 +112,18 @@ reset; run --dry-run
 check "dry run: says what it would run" 'grep -q "codex: would run brew upgrade --formula codex" $T/out && grep -q "agy: would run agy update" $T/out && grep -q "claude: would run brew upgrade --cask claude-code" $T/out'
 check "dry run: no upgrade, no log" '! grep -q "upgrade\|agy update" $ST/calls && [ ! -e $L ]'
 
+# 7b bin/models runs after the updates without an outer limit (Codex S1 on #39): a hanging model query is stopped by
+#    models' own limit, and nothing it started is left running after the run
+reset; cat > "$T/bin/codex" <<'C'
+#!/usr/bin/env bash
+echo "codex $*" >> "$ST/calls"
+case "$1" in --version) cat "$ST/v_codex" ;; debug) sleep 40 ;; esac; exit 0
+C
+chmod +x "$T/bin/codex"
+s=$(date +%s); PATH="$P" HOME="$T/home" AGENT_TEAM_LOGS="$LOGS" CODEX_CLI_ENV="$T/none.env" TOOLS_UPDATE_LIMIT=1 MODELS_LIMIT=2 bash "$SKILL/bin/tools-update" >/dev/null 2>&1; e=$(( $(date +%s) - s ))
+check "hanging model query: stopped by models' limit, nothing left running" '[ "$e" -lt 15 ] && grep -qx "codex offers unknown" $LOGS/models.txt && ! pgrep -f "sleep 40" >/dev/null'
+printf '#!/usr/bin/env bash\necho "codex $*" >> "$ST/calls"\n[ "$1" = --version ] && cat "$ST/v_codex"; exit 0\n' > "$T/bin/codex"; chmod +x "$T/bin/codex"
+
 # 8 syntax: bash -n on the new scripts
 check "bash -n" 'bash -n "$SKILL/bin/tools-update" && bash -n "$SKILL/bin/models" && bash -n "$SKILL/bin/codex-cli-install"'
 
