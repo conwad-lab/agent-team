@@ -235,6 +235,12 @@ amerged && asaid "Merged by agent-team-merge (release bump): head $H" && asaid "
 asetup; content repos/o/r/contents/AGENTS.md main "$(agents_md none none claude)"; arun
 ! amerged && quiet && grep -q "do not say Auto-merge: release" "$A/out" && ok "auto: Auto-merge none does nothing" || nok "auto: Auto-merge none"
 
+asetup; rm -f "$A/repos~o~r~contents~AGENTS.md?ref=main"; arun
+! amerged && quiet && [ "$(cat "$A/rc")" = 0 ] && grep -q "no AGENTS.md on main" "$A/out" && ok "auto: no AGENTS.md on the default branch (agent-team itself) does nothing, green (v0.8.16)" || { nok "auto: no AGENTS.md"; cat "$A/out"; }
+
+asetup; echo 'not json' > "$A/repos~o~r~contents~AGENTS.md?ref=main"; arun
+! amerged && [ "$(cat "$A/rc")" = 1 ] && grep -q "could not read AGENTS.md on main" "$A/out" && ok "auto: an unreadable AGENTS.md (not a 404) stays an error" || { nok "auto: unreadable AGENTS.md"; cat "$A/out"; }
+
 asetup; jq '(.[] | select(.filename == "AGENTS.md") | .patch) = "@@ -9,2 +9,2 @@\n - **Builder:** claude\n-- **Human-only paths:** none\n+- **Human-only paths:** `src/legal/**`"' "$A/repos~o~r~pulls~7~files" > "$A/x" && mv "$A/x" "$A/repos~o~r~pulls~7~files"; arun
 ! amerged && asaid "a line that only a card may change" && ok "auto: a change to Human-only paths in AGENTS.md refuses" || nok "auto: Human-only paths line"
 
