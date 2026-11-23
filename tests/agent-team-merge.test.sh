@@ -427,6 +427,31 @@ rsetup; akey '@@ -8,1 +8,1 @@
 +- **Guard paths:** none'; arun
 ! amerged && carded && asaid "a line that only a card may change" && ok "rules: a change to the Guard paths key beside other changes refuses" || nok "rules: Guard paths key"
 
+# Codex M1 on relationsmodellen-site #80: a guarded key's continuation lines are the key's too
+agents3() { # $1 the Human-merge paths continuation line  $2 an extra line after the key line  $3 the Builder continuation line
+  printf '# r\n\n## Team settings\n\n- **Builder:** claude\n  %s\n- **Human-merge paths:** all. The Judge merges only on\n%s  %s\n- **Human-only paths:** none\n- **Auto-merge:** release, rules\n- **Guard paths:** none\n\n## Papercuts\n\nx\n' "$3" "$2" "$1"
+}
+c3setup() { # $1 $2 $3 at the head, against agents3 'agreement with Codex.' '' 'extra'
+  rsetup
+  content repos/o/r/contents/AGENTS.md main "$(agents3 'agreement with Codex.' '' extra)"
+  content repos/o/r/contents/AGENTS.md "$MB" "$(agents3 'agreement with Codex.' '' extra)"
+  content repos/o/r/contents/AGENTS.md "$H" "$(agents3 "$1" "$2" "$3")"
+  akey "$4"
+}
+c3setup 'its own word.' '' extra '@@ -8,1 +8,1 @@
+-  agreement with Codex.
++  its own word.'; arun
+! amerged && carded && asaid "a key's continuation lines count" && ok "rules: a changed continuation line of a guarded key refuses (Codex M1 on relationsmodellen-site #80)" || { nok "rules: guarded continuation"; cat "$A/out"; }
+
+c3setup 'agreement with Codex.' $'- **Note:** x\n' extra '@@ -7,0 +8,1 @@
++- **Note:** x'; arun
+! amerged && carded && asaid "a key's continuation lines count" && ok "rules: a bullet slipped in between a guarded key and its continuation refuses" || { nok "rules: split guarded entry"; cat "$A/out"; }
+
+c3setup 'agreement with Codex.' '' 'more' '@@ -6,1 +6,1 @@
+-  extra
++  more'; arun
+rgreen && ok "rules: a continuation line of an unguarded key stays green" || { nok "rules: unguarded continuation"; cat "$A/out"; }
+
 rsetup; akey '@@ -5,1 +5,1 @@
 -- **Builder:** claude
 +- **Builder:** codex-cli'; arun

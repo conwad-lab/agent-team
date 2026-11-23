@@ -356,6 +356,10 @@ jobs:
                   red "$1 changes a line that only a card may change: $(cut -c1-80 <<<"$text")"
                 fi
               done <<<"$lines"
+              # a guarded key's whole entry, its continuation lines too (Codex M1 on relationsmodellen-site #80): every top-level
+              # bullet of Team settings whose first line names a key, with all lines up to the next top-level bullet, the same at both ends
+              guarded() { settings | awk '/^[-*+][[:space:]]/ {k = (tolower($0) ~ /auto-merge|human-merge paths|human-only paths|guard paths|stories in flight|\*\*merge:\*\*/)} k'; }
+              [ "$(guarded <<<"$ob")" = "$(guarded <<<"$nb")" ] || red "$1 changes a line of a Team settings entry that only a card may change (a key's continuation lines count)"
             }
             # team/CLOUD.md and team/SETUP.md in agent-team: no changed line in a red zone, no section or Judge step added, removed, renamed or moved
             zoned() {
