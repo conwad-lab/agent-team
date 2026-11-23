@@ -26,7 +26,7 @@ Claude builds and judges, Codex attacks: two model families in every loop. [T1] 
 
 ## Builder
 
-A `codex-cli` story gets a Builder only on: a plan attack (§ Flow 3a, before the order); `bounced` or `blocked`; no `started` in 15 minutes or no outcome in the hour ([K6]); a fix order or Codex finding to answer; a [T2] `claude` reason. On `done` the Coordinator posts `@codex review` and, on a clean head with green checks (step 5), marks the PR ready and asks for the Judge. [B15]
+A `codex-cli` story gets a Builder only on: a plan attack (§ Flow 3a, before the order); `bounced` or `blocked`; no `started` in 15 minutes or no outcome in the hour ([K6]); a fix order or Codex finding to answer; a [T2] `claude` reason. On `done` the Coordinator posts `@codex review` and, on a clean head, marks the PR ready, then asks for the Judge once step 5 holds. [B15]
 
 0. **Plan attack** (§ Flow 3a): post it from `templates/codex.md` on the story's issue `NNN: <story title>`, message the Coordinator `NNN plan attack: <n> findings, <link>`, and build when `## Plan attack` answers every M and S and the Coordinator says go. An error: ask once more; a second failure or no answer in an hour: tell the Coordinator, who notes it under `## Plan attack`; build the plan as it stands. Never edit the plan. [B1]
 1. Branch `feat/NNN-slug` from main, push it at once. Read the story, the plan, `AGENTS.md`, `TEAM.md`, `roles/coder.md` (this section wins). [B2]
