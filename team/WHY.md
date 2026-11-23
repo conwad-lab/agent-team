@@ -204,6 +204,7 @@ Ids [X53]–[X55] are left for story W (v0.8.20), built at the same time.
 
 [X62] [B12] the classifier-skip detail of **Green** — prevents: — still needed if: — — moved unchanged to `team/SETUP.md` § Walls in full (Green), binding as if it stood in `CLOUD.md`. Pays for [B15] and the [F3], [Q1] clauses under [C1]
 [X63] [Q3] "Where Actions minutes are a Signal source, the routine rechecks GitHub's self-hosted pricing." — prevents: — still needed if: — — moved unchanged to `team/RUNNER.md` § Rules (Pricing check), binding as if it stood in `CLOUD.md`. Pays for [B15] under [C1]
+[X64] [H1] "until 72 hours of usage-limit replies on that head"; [D5] "(a failed retry, a timeout, an offline runner)" — prevents: — still needed if: — — dropped as restatements: [R7] says no card before 72 hours, and [D5]'s rule covers any rule that lets a review go on without Codex. Pays for the Coordinator's watch in [Q1] under [C1]
 
 ## Cut or merged in v0.8.21
 
