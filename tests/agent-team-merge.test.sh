@@ -223,6 +223,8 @@ asetup() {
   put "repos/o/r/commits/$H/check-runs?per_page=100" '{"check_runs":[{"id":5,"name":"pr-check","status":"completed","conclusion":"success"}]}'
   put "repos/o/r/commits/$H/status?per_page=100" '{"state":"pending","total_count":0,"statuses":[]}'
   put repos/o/r/git/ref/heads/bump "{\"object\":{\"sha\":\"$H\"}}"
+  content repos/o/r/contents/.team/team.md "$MB" $'mode: cloud\nseats:\n  conny: { claude: max }\nmodels:\n  coder: codex'
+  content repos/o/r/contents/.team/team.md "$H" $'mode: cloud\nseats:\n  conny: { claude: max }\nmodels:\n  coder: codex-cli'
 }
 arun() { : > "$A/calls"; REPO=o/r OWNER=o AGENT_ACCOUNT="${AA:-}" PRS="${APRS-7}" HEAD_SHA="${AHS:-}" AFTER_MERGE_WORKFLOWS="" GH_TOKEN=x PATH="$T/abin:$PATH" bash "$T/auto.sh" > "$A/out" 2>&1; echo $? > "$A/rc"; }
 amerged() { grep -q "^api -X PUT repos/o/r/pulls/7/merge -f sha=$H -f merge_method=squash" "$A/calls"; }
@@ -451,6 +453,21 @@ c3setup 'agreement with Codex.' '' 'more' '@@ -6,1 +6,1 @@
 -  extra
 +  more'; arun
 rgreen && ok "rules: a continuation line of an unguarded key stays green" || { nok "rules: unguarded continuation"; cat "$A/out"; }
+
+# Codex M1 on tb-site #81 and dignami-aos #82: a line nested under a guarded .team/team.md key is the key's
+rsetup; content repos/o/r/contents/.team/team.md "$H" $'mode: cloud\nseats:\n  conny: { claude: pro }\nmodels:\n  coder: codex'
+files '(.[] | select(.filename == ".team/team.md") | .patch) = "@@ -3,1 +3,1 @@\n-  conny: { claude: max }\n+  conny: { claude: pro }"'; arun
+! amerged && carded && asaid "nested under a key that only a card may change" && ok "rules: a changed seat under seats: in .team/team.md refuses (Codex M1 on tb-site #81)" || { nok "rules: seats child"; cat "$A/out"; }
+
+# Codex M2 on mondmodel #963: a comment opened in Team settings can hide a guarded entry
+rsetup; akey '@@ -5,0 +6,1 @@
++<!--'; arun
+! amerged && carded && asaid "markup that can hide a Team settings entry" && ok "rules: an unclosed HTML comment in Team settings refuses (Codex M2 on mondmodel #963)" || { nok "rules: hiding markup"; cat "$A/out"; }
+
+rsetup; akey '@@ -5,1 +5,1 @@
+-- **Builder:** claude
++- **Builder:** claude <!-- story 031 -->'; arun
+rgreen && ok "rules: a whole inline comment on an unguarded line stays green" || { nok "rules: inline comment"; cat "$A/out"; }
 
 rsetup; akey '@@ -5,1 +5,1 @@
 -- **Builder:** claude

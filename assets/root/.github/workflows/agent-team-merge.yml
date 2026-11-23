@@ -355,6 +355,11 @@ jobs:
                 if grep -qiE "$KEYS" <<<"$text"; then
                   red "$1 changes a line that only a card may change: $(cut -c1-80 <<<"$text")"
                 fi
+                # markup that can hide a guarded entry from whoever reads the file (Codex M2 on mondmodel #963): an HTML comment opened
+                # or closed on the line and not both, a raw HTML block, a code fence or a heading underline; a whole inline comment is fine
+                if awk '{o = gsub(/<!--/, "&"); c = gsub(/-->/, "&")} o != c || /^[[:space:]]*</ || /^[[:space:]]*(```|~~~)/ || /^[[:space:]]*(=+|-{2,})[[:space:]]*$/ {f = 1} END {exit !f}' <<<"$text"; then
+                  red "$1 line $no ($sign) adds or removes markup that can hide a Team settings entry: $(cut -c1-80 <<<"$text")"
+                fi
               done <<<"$lines"
               # a guarded key's whole entry, its continuation lines too (Codex M1 on relationsmodellen-site #80): every top-level
               # bullet of Team settings whose first line names a key, with all lines up to the next top-level bullet, the same at both ends
@@ -392,6 +397,12 @@ jobs:
                     red ".team/team.md changes a line that only a card may change: $(cut -c1-80 <<<"$text")"
                   fi
                 done <<<"$(hunks <<<"$patch")"
+                # the same keys with everything nested under them (the seats map), the same at both ends (Codex M1 on tb-site #81, dignami-aos #82)
+                tblocks() { awk '{i = match($0, /[^[:space:]]/) - 1}
+                  tolower($0) ~ /^[[:space:]]*#?[[:space:]]*(human|merge|mode|runner|agent-account|auth|seats)[[:space:]]*:/ {k = 1; ki = i; print; next}
+                  k && (i > ki || $0 ~ /^[[:space:]]*$/) {print; next} {k = 0}'; }
+                ot=$(b64 .team/team.md "$mb") && nt=$(b64 .team/team.md "$head") || { echo "could not read .team/team.md at $mb and $head"; exit 1; }
+                [ "$(tblocks <<<"$ot")" = "$(tblocks <<<"$nt")" ] || red ".team/team.md changes a line nested under a key that only a card may change (human, merge, mode, runner, agent-account, auth, seats)"
               fi
             fi
             if [ "$class" = rules ] && [ -n "$home" ]; then
