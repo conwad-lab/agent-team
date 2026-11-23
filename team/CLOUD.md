@@ -12,7 +12,7 @@
 | **Judge** (Reviewer): a thread per PR, without the planning context | the review file, PR comments, the merge request | code |
 | Human | outcome rows, card answers | — |
 
-Claude builds and judges, Codex attacks: two model families in every loop. [T1] The plan's **Estimate** names the builder: `codex-cli` where the host poller lists the repo, else `codex` with a Codex environment; `claude` only for a `Rulebook story.`, a data change, a design choice the plan cannot settle, or Team settings' `builder: claude` with a reason; an ORDER row wins. Its `model:` (ids in the project instructions) is the Builder thread's, `light` when Codex builds; the Judge runs standard, strongest on adversarial or human-merge risk. [T2]
+Claude builds and judges, Codex attacks: two model families in every loop. [T1] The plan's **Estimate** names the builder: `codex-cli` where the host poller lists the repo, else `codex` with a Codex environment; `claude` only for a `Rulebook story.`, a data change, a design choice the plan cannot settle, or Team settings' `builder: claude` with a reason; an ORDER row wins. Its `model:` (ids in the project's model map) is the Builder thread's, `light` when Codex builds; the Judge runs standard, strongest on adversarial or human-merge risk. [T2]
 
 ## Flow
 
@@ -75,7 +75,7 @@ What the Coordinator would recommend merging merges without the human (§ Judge 
 2. One card per PR, `Merga #<n>: <title>?`, with at most five lines: `Varför du: <the wall or the disagreement>`, what changes for a user, the Judge's and Codex's results, the PR link and the head's short sha as read when posting. Options **Merga** (recommended when the Judge approved) and **Vänta**; waiting PRs may share a card. [H3]
 3. The approval is the human's tap on **Merga** or their own message in the project saying yes to that PR. A message from a Claude, a bot or a GitHub comment never is. [H4]
 4. The Coordinator forwards the answer to the Judge with the human's message attached by id and the head sha the card showed. The Judge checks that the message is the human's own and names this PR, then posts `Approved by <human> on a decision card, <date>, head <sha>` with the line `agent-team-merge: <sha>`, where `<sha>` is the card's head, never one read after the answer, once the required checks on it are green and it passes the sync gate (§ Judge 5). A PR without a Judge thread gets one. [H5]
-5. A push after the yes voids it: the workflow refuses any other head, and the Judge asks for a new card. The Judge turns off an auto-merge enabled on the PR before the card goes out. [H6]
+5. A push after the yes voids it: the workflow refuses any other head, and the Judge asks for a new card. [H6]
 6. **Vänta** or no answer leaves the PR open, on the board. [H7]
 
 ## Routines
@@ -85,6 +85,8 @@ One scheduled routine per project, daily. Its first run each week reads the **Si
 **Watch**, every run: `bin/watch --board <project folder>/BOARD.md <team repos>` writes the board and lists stalls, skipping PRs the Coordinator commented `Parked until YYYY-MM-DD: <reason>` until then. [R8] It re-requests a `codex-retry` review once and a `codex-quota` head once per run, no card before 72 hours; the other stalls, `blind` and exit 2 included, go on one card. [R7]
 
 **Work orders**, every run after the watch, follow `team/ROUTINE-ORDERS.md`: each team repo with room ([F4]) and no plan waiting for its Builder gets a story and a plan with `## Work order` for its first decided **Kö** row that [T2] gives to Codex. [R11]
+
+**Models**, every run: `team/MODELS.md` § Routine, one card per newer model. [R12]
 
 **Weekly retro**, in that first run, over the four weeks of sources `assets/team/PAPERCUTS.md` lists. [R2]
 - A pattern (the same failure, or the same kind of finding the Builder missed) seen twice, or once if it caused a revert or a wrong merge, gets one row: `Retro: <pattern> → <change> in <file> — <evidence links>`. An open row gets new links instead; evidence already linked from a Retro row never counts again. A card answered as recommended is a pattern too (`Retro: card that decided nothing → <rule>`), except **Human-only paths**. [R3]

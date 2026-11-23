@@ -2,13 +2,14 @@
 # codex-cli-install: set up the Codex CLI host poller on this Mac, once (team/CODEX-CLI.md § Install).
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/conwad-lab/agent-team/main/bin/codex-cli-install)
-#   bin/codex-cli-install --uninstall   stop the job, remove the plist, the Keychain item and the config (keeps WORK_DIR)
+#   bin/codex-cli-install --uninstall   stop both jobs, remove the plists, the Keychain item and the config (keeps WORK_DIR)
 #   bin/codex-cli-install --dry-run     print what it would do and the plist it would write; changes nothing
 #
 # It checks codex, gh, git and jq, that `codex login status` is a ChatGPT sign-in, lists old local Codex loops and
 # offers to stop them, stores the fine-grained token in the login Keychain (typed into `security`'s own prompt, never
 # on a command line), asks for the two Codex model ids (Astra and Sol; a re-run keeps the old ones), writes
-# ~/.config/agent-team/codex-cli.env, loads the launchd job and runs one dry tick.
+# ~/.config/agent-team/codex-cli.env, loads the launchd job and runs one dry tick. It also loads the nightly
+# se.agent-team.tools-update job (03:30: update codex, agy and claude, then bin/models; team/MODELS.md).
 set -euo pipefail
 
 MODE=install
@@ -21,6 +22,8 @@ esac
 
 LABEL=se.agent-team.codex-cli
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+UPD_LABEL=se.agent-team.tools-update
+UPD_PLIST="$HOME/Library/LaunchAgents/$UPD_LABEL.plist"
 CONF="$HOME/.config/agent-team/codex-cli.env"
 LOGS="$HOME/Library/Logs/agent-team"
 ITEM=agent-team-codex-cli
@@ -35,10 +38,11 @@ model_ok() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }
 if [ "$MODE" = uninstall ]; then
   [ -f "$CONF" ] && ITEM="$(. "$CONF"; printf '%s' "${KEYCHAIN_ITEM:-$ITEM}")"
   launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
-  rm -f "$PLIST"
+  launchctl bootout "gui/$(id -u)" "$UPD_PLIST" 2>/dev/null || true
+  rm -f "$PLIST" "$UPD_PLIST"
   security delete-generic-password -s "$ITEM" >/dev/null 2>&1 || true
   rm -f "$CONF"
-  say "Avinstallerat: jobbet $LABEL, Keychain-posten $ITEM och $CONF är borta. Arbetsmappen ligger kvar."
+  say "Avinstallerat: jobben $LABEL och $UPD_LABEL, Keychain-posten $ITEM och $CONF är borta. Arbetsmappen ligger kvar."
   exit 0
 fi
 
@@ -46,9 +50,9 @@ fi
 HERE=""
 case "$0" in /dev/fd/*|/proc/*|bash|-bash) ;; *) HERE="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd || true)" ;; esac
 
-render_plist() { # render_plist POLLER PATH LOGS
+render_plist() { # render_plist TEMPLATE SCRIPT PATH LOGS
   local tpl="$1"
-  sed -e "s#__POLLER__#$2#" -e "s#__PATH__#$3#" -e "s#__LOGS__#$4#" "$tpl"
+  sed -e "s#__POLLER__#$2#" -e "s#__SCRIPT__#$2#" -e "s#__PATH__#$3#" -e "s#__LOGS__#$4#" "$tpl"
 }
 
 if [ "$MODE" = dry ]; then
@@ -59,6 +63,8 @@ if [ "$MODE" = dry ]; then
   say "Would store the token in the Keychain item $ITEM, write $CONF from assets/codex-cli/codex-cli.env.example,"
   say "clone $RULEBOOK into WORK_DIR/agent-team and load $PLIST:"
   render_plist "$HERE/assets/codex-cli/$LABEL.plist" "\$HOME/agent-team-builds/agent-team/bin/codex-cli-poll" "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" "$LOGS"
+  say "and the nightly update job $UPD_PLIST (team/MODELS.md):"
+  render_plist "$HERE/assets/codex-cli/$UPD_LABEL.plist" "\$HOME/agent-team-builds/agent-team/bin/tools-update" "\$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" "$LOGS"
   exit 0
 fi
 
@@ -138,6 +144,14 @@ render_plist "$SRC/assets/codex-cli/$LABEL.plist" "$SRC/bin/codex-cli-poll" "$PA
 launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 say "✓ launchd-jobbet $LABEL laddat (var 5:e minut medan Macen är vaken)"
+
+# ---- the nightly update job: codex, agy and claude where they are, Homebrew's bin, then bin/models (team/MODELS.md)
+UPD_PATH="$(for c in brew codex agy claude gh jq; do command -v "$c" >/dev/null && dirname "$(command -v "$c")"; done | awk '!s[$0]++' | paste -sd: -)"
+UPD_PATH="${UPD_PATH:+$UPD_PATH:}$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+render_plist "$SRC/assets/codex-cli/$UPD_LABEL.plist" "$SRC/bin/tools-update" "$UPD_PATH" "$LOGS" > "$UPD_PLIST"
+launchctl bootout "gui/$(id -u)" "$UPD_PLIST" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$UPD_PLIST"
+say "✓ launchd-jobbet $UPD_LABEL laddat (03:30 varje natt: uppdaterar codex, agy och claude, skriver modellistan)"
 
 say ""
 say "Provkörning (skriver inget):"
