@@ -83,6 +83,8 @@ One scheduled routine per project, daily. Its first run each week reads the **Si
 
 **Watch**, every run: `bin/watch --board <project folder>/BOARD.md <team repos>` writes the board and lists stalls, skipping PRs the Coordinator commented `Parked until YYYY-MM-DD: <reason>` until then. [R8] It re-requests a `codex-retry` review once and a `codex-quota` head once per run, no card before 72 hours; the other stalls, `blind` and exit 2 included, go on one card. [R7]
 
+**Work orders**, every run after the watch, follow `team/ROUTINE-ORDERS.md`: each team repo with room ([F4]) and no plan waiting for its Builder gets a story and a plan with `## Work order` for its first decided **Kö** row that [T2] gives to Codex. [R11]
+
 **Weekly retro**, in that first run, over the four weeks of sources `assets/team/PAPERCUTS.md` lists. [R2]
 - A pattern (the same failure, or the same kind of finding the Builder missed) seen twice, or once if it caused a revert or a wrong merge, gets one row: `Retro: <pattern> → <change> in <file> — <evidence links>`. An open row gets new links instead; evidence already linked from a Retro row never counts again. A card answered as recommended is a pattern too (`Retro: card that decided nothing → <rule>`), except **Human-only paths**. [R3]
 - **What can be removed?** At most one row per retro, `Retro: remove [ID] — incident not seen since <date>, <evidence>`, for a rule whose `WHY.md` incident has not come back and that no miss needed. [R4]
@@ -100,7 +102,7 @@ One digest per active day, none on quiet days: merges (on agreement with a link,
 - Only Builder and Judge watch a PR, each its own until it is merged, closed unmerged or escalated, waking on PR events and messages, never polling, and never re-pinging a commit beyond the one retry or the routine's one per run on a `codex-quota` head. An `@codex` task on an issue wakes nobody: the Builder sets two reminders per task, at about 15 minutes and at the hour. [Q1]
 - **Actions minutes.** A PR stays a draft while Codex attacks it. Every workflow with a job that installs dependencies skips its heavy jobs on drafts (`if: github.event.pull_request.draft != true`) and lists `ready_for_review` in its `pull_request` types; a new workflow keeps both. Before ready, **Test before commit** is the gate. [Q2]
 - **Self-hosted runner.** A private repo with `runner: mini` runs CI on the host Mac (`bin/runner-install`) under `team/RUNNER.md` § Rules: never a public repo; one runner per repo, in its own isolated Linux VM, one job at a time; cleanup around every job; no secret on the host but that runner's identity key, revoked by removing the runner. Where Actions minutes are a Signal source, the routine rechecks GitHub's self-hosted pricing. [Q3]
-- **Runner offline.** After marking ready, or pushing after ready, under `runner: mini`, the Builder sets one reminder at **Runner offline after** (default 30 minutes). A required check still queued then, with no other job of the repo on the mini (else check again after the same interval), is reported to the Coordinator: `NNN runner offline: <n> jobs queued since <time>`. The Coordinator's card offers **Vänta** (recommended) or **Kör på GitHub-hosted** (spends the account's minutes). On the second, `team/RUNNER.md` § When it is offline says who does what. [Q4]
+- **Runner offline.** After marking ready, or pushing after ready, under `runner: mini`, the Builder sets one reminder at **Runner offline after** (default 30 minutes) and then acts as `team/RUNNER.md` § When it is offline says. [Q4]
 
 ## Walls
 

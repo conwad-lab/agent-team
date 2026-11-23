@@ -47,9 +47,9 @@ Only if the installer cannot be used. Per repo:
 
 ## When it is offline
 
-Jobs on the `mini` label wait in the queue (GitHub fails them after 24 hours). The Builder reports it after **Runner offline after** and the human gets a decision card: **Vänta** or **Kör på GitHub-hosted** (`CLOUD.md` § Quota). For GitHub-hosted, set the repo variable `RUNS_ON` to `"ubuntu-latest"` (with the quotes: it is read as JSON) under Settings → Secrets and variables → Actions → Variables, and delete the variable again when the host is back. Jobs already queued for `mini` keep waiting for it after the variable changes.
+Jobs on the `mini` label wait in the queue (GitHub fails them after 24 hours). When the Builder's reminder fires (`CLOUD.md` [Q4]), a required check still queued, with no other job of the repo on the mini (else check again after the same interval), is reported to the Coordinator: `NNN runner offline: <n> jobs queued since <time>`. The Coordinator's card offers **Vänta** (recommended) or **Kör på GitHub-hosted** (spends the account's minutes). For GitHub-hosted, set the repo variable `RUNS_ON` to `"ubuntu-latest"` (with the quotes: it is read as JSON) under Settings → Secrets and variables → Actions → Variables, and delete the variable again when the host is back. Jobs already queued for `mini` keep waiting for it after the variable changes.
 
-On **Kör på GitHub-hosted** (`CLOUD.md` § Quota, Runner offline; moved here unchanged in v0.8.6, binding as if it stood there): the human sets the repo variable `RUNS_ON` to `"ubuntu-latest"` (Operatör line), the Builder cancels the queued `mini` runs (`gh run cancel`, checking each reads `cancelled`) and restarts them by toggling the PR to draft and back to ready (answering the new Codex review), and after merge an Operatör line deletes `RUNS_ON`.
+On **Kör på GitHub-hosted** (`CLOUD.md` [Q4]; moved here unchanged in v0.8.6 and v0.8.17, binding as if it stood there): the human sets the repo variable `RUNS_ON` to `"ubuntu-latest"` (Operatör line), the Builder cancels the queued `mini` runs (`gh run cancel`, checking each reads `cancelled`) and restarts them by toggling the PR to draft and back to ready (answering the new Codex review), and after merge an Operatör line deletes `RUNS_ON`.
 
 ## Move to the mini
 
