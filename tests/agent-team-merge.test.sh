@@ -223,6 +223,8 @@ asetup() {
   put "repos/o/r/commits/$H/check-runs?per_page=100" '{"check_runs":[{"id":5,"name":"pr-check","status":"completed","conclusion":"success"}]}'
   put "repos/o/r/commits/$H/status?per_page=100" '{"state":"pending","total_count":0,"statuses":[]}'
   put repos/o/r/git/ref/heads/bump "{\"object\":{\"sha\":\"$H\"}}"
+  content repos/o/r/contents/.team/team.md "$MB" $'mode: cloud\nseats:\n  conny: { claude: max }\nmodels:\n  coder: codex'
+  content repos/o/r/contents/.team/team.md "$H" $'mode: cloud\nseats:\n  conny: { claude: max }\nmodels:\n  coder: codex-cli'
 }
 arun() { : > "$A/calls"; REPO=o/r OWNER=o AGENT_ACCOUNT="${AA:-}" PRS="${APRS-7}" HEAD_SHA="${AHS:-}" AFTER_MERGE_WORKFLOWS="" GH_TOKEN=x PATH="$T/abin:$PATH" bash "$T/auto.sh" > "$A/out" 2>&1; echo $? > "$A/rc"; }
 amerged() { grep -q "^api -X PUT repos/o/r/pulls/7/merge -f sha=$H -f merge_method=squash" "$A/calls"; }
@@ -427,6 +429,77 @@ rsetup; akey '@@ -8,1 +8,1 @@
 +- **Guard paths:** none'; arun
 ! amerged && carded && asaid "a line that only a card may change" && ok "rules: a change to the Guard paths key beside other changes refuses" || nok "rules: Guard paths key"
 
+# Codex M1 on relationsmodellen-site #80: a guarded key's continuation lines are the key's too
+agents3() { # $1 the Human-merge paths continuation line  $2 an extra line after the key line  $3 the Builder continuation line
+  printf '# r\n\n## Team settings\n\n- **Builder:** claude\n  %s\n- **Human-merge paths:** all. The Judge merges only on\n%s  %s\n- **Human-only paths:** none\n- **Auto-merge:** release, rules\n- **Guard paths:** none\n\n## Papercuts\n\nx\n' "$3" "$2" "$1"
+}
+c3setup() { # $1 $2 $3 at the head, against agents3 'agreement with Codex.' '' 'extra'
+  rsetup
+  content repos/o/r/contents/AGENTS.md main "$(agents3 'agreement with Codex.' '' extra)"
+  content repos/o/r/contents/AGENTS.md "$MB" "$(agents3 'agreement with Codex.' '' extra)"
+  content repos/o/r/contents/AGENTS.md "$H" "$(agents3 "$1" "$2" "$3")"
+  akey "$4"
+}
+c3setup 'its own word.' '' extra '@@ -8,1 +8,1 @@
+-  agreement with Codex.
++  its own word.'; arun
+! amerged && carded && asaid "a key's continuation lines count" && ok "rules: a changed continuation line of a guarded key refuses (Codex M1 on relationsmodellen-site #80)" || { nok "rules: guarded continuation"; cat "$A/out"; }
+
+c3setup 'agreement with Codex.' $'- **Note:** x\n' extra '@@ -7,0 +8,1 @@
++- **Note:** x'; arun
+! amerged && carded && asaid "a key's continuation lines count" && ok "rules: a bullet slipped in between a guarded key and its continuation refuses" || { nok "rules: split guarded entry"; cat "$A/out"; }
+
+c3setup 'agreement with Codex.' '' 'more' '@@ -6,1 +6,1 @@
+-  extra
++  more'; arun
+rgreen && ok "rules: a continuation line of an unguarded key stays green" || { nok "rules: unguarded continuation"; cat "$A/out"; }
+
+# Codex M1 on tb-site #81 and dignami-aos #82: a line nested under a guarded .team/team.md key is the key's
+rsetup; content repos/o/r/contents/.team/team.md "$H" $'mode: cloud\nseats:\n  conny: { claude: pro }\nmodels:\n  coder: codex'
+files '(.[] | select(.filename == ".team/team.md") | .patch) = "@@ -3,1 +3,1 @@\n-  conny: { claude: max }\n+  conny: { claude: pro }"'; arun
+! amerged && carded && asaid "changes a line other than the version, builder, project and model lines" && ok "rules: a changed seat under seats: in .team/team.md refuses (Codex M1 on tb-site #81)" || { nok "rules: seats child"; cat "$A/out"; }
+
+# Codex round 2 on tb-site #81, dignami-aos #82, #42: a comment line inside the seats map does not end it
+rsetup; content repos/o/r/contents/.team/team.md "$H" $'mode: cloud\nseats:\n  conny: { claude: max }\n# more seats\n  other: { claude: max }\nmodels:\n  coder: codex-cli'
+files '(.[] | select(.filename == ".team/team.md") | .patch) = "@@ -3,0 +4,2 @@\n+# more seats\n+  other: { claude: max }"'; arun
+! amerged && carded && asaid "changes a line other than the version" && ok "rules: a seat added after a comment line in seats: refuses (Codex round 2 on tb-site #81)" || { nok "rules: seat after comment"; cat "$A/out"; }
+
+# Codex M1 round 2 on relationsmodellen-site #80: a flat seats map (the seat unindented under seats:)
+rsetup; content repos/o/r/contents/.team/team.md "$MB" $'mode: cloud\nseats:\nconny: { claude: max }\nmodels:\ncoder: codex'
+content repos/o/r/contents/.team/team.md "$H" $'mode: cloud\nseats:\nconny: { claude: api }\nmodels:\ncoder: codex'
+files '(.[] | select(.filename == ".team/team.md") | .patch) = "@@ -3,1 +3,1 @@\n-conny: { claude: max }\n+conny: { claude: api }"'; arun
+! amerged && carded && asaid "changes a line other than the version" && ok "rules: a changed seat in a flat seats map refuses (Codex M1 round 2 on relationsmodellen-site #80)" || { nok "rules: flat seat"; cat "$A/out"; }
+
+rsetup; content repos/o/r/contents/.team/team.md "$MB" $'mode: cloud\nseats:\nconny: { claude: max }\nmodels:\ncoder: codex\nteam: x @ v0.8.18'
+content repos/o/r/contents/.team/team.md "$H" $'mode: cloud\nseats:\nconny: { claude: max }\nmodels:\ncoder: codex-cli\nteam: x @ v0.8.19'; arun
+rgreen && ok "rules: the version and model lines of a flat team.md still move green" || { nok "rules: flat team.md green"; cat "$A/out"; }
+
+# Codex M1 round 3 on dignami-aos #82: a model line that already holds a placeholder still moves green
+rsetup; content repos/o/r/contents/.team/team.md "$MB" $'mode: cloud\nmodels:\n  coder: codex — Astra or Sol, issue NNN: <story title>'
+content repos/o/r/contents/.team/team.md "$H" $'mode: cloud\nmodels:\n  coder: codex — Sol, issue NNN: <story title>'; arun
+rgreen && ok "rules: a model line with a <placeholder> still moves green (Codex M1 round 3 on dignami-aos #82)" || { nok "rules: placeholder"; cat "$A/out"; }
+
+rsetup; content repos/o/r/contents/.team/team.md "$H" $'mode: cloud\nseats:\n  conny: { claude: max }\nmodels:\n  coder: codex <!--\n  conny: x'; arun
+! amerged && carded && ok "rules: a model value that opens a comment refuses" || { nok "rules: comment in model value"; cat "$A/out"; }
+
+# Codex M2 round 2 on #42: a guarded last bullet ends with the list item, not at the next heading
+rsetup; content repos/o/r/contents/AGENTS.md "$MB" $'# r\n\n## Team settings\n\n- **Builder:** claude\n- **Guard paths:** none\n\nRulebook version: v0.8.18\n\n## Papercuts\n'
+content repos/o/r/contents/AGENTS.md "$H" $'# r\n\n## Team settings\n\n- **Builder:** claude\n- **Guard paths:** none\n\nRulebook version: v0.8.19\n\n## Papercuts\n'
+akey '@@ -8,1 +8,1 @@
+-Rulebook version: v0.8.18
++Rulebook version: v0.8.19'; arun
+rgreen && ok "rules: a paragraph after a guarded last bullet is not the bullet's (Codex M2 round 2 on #42)" || { nok "rules: paragraph after list"; cat "$A/out"; }
+
+# Codex M2 on mondmodel #963: a comment opened in Team settings can hide a guarded entry
+rsetup; akey '@@ -5,0 +6,1 @@
++<!--'; arun
+! amerged && carded && asaid "markup that can hide a Team settings entry" && ok "rules: an unclosed HTML comment in Team settings refuses (Codex M2 on mondmodel #963)" || { nok "rules: hiding markup"; cat "$A/out"; }
+
+rsetup; akey '@@ -5,1 +5,1 @@
+-- **Builder:** claude
++- **Builder:** claude <!-- story 031 -->'; arun
+rgreen && ok "rules: a whole inline comment on an unguarded line stays green" || { nok "rules: inline comment"; cat "$A/out"; }
+
 rsetup; akey '@@ -5,1 +5,1 @@
 -- **Builder:** claude
 +- **Builder:** codex-cli'; arun
@@ -507,6 +580,15 @@ amerged && asaid "(rules, tightening)" && ok "guard: a PR that only adds a Guard
 
 gsetup '`a/**`' '`a/**`, `b.md`'; arun
 amerged && ok "guard: adding a second Guard path merges" || nok "guard: adds a second"
+
+gsetup '`AGENTS.md`' '`AGENTS.md` `b.md` <!--'; arun
+! amerged && carded && ok "guard: an added Guard path with an unclosed comment is no tightening (Codex round 2 on the install PRs)" || { nok "guard: unclosed comment"; cat "$A/out"; }
+
+gsetup '`AGENTS.md`' '`AGENTS.md` `b.md` <!-- add guard --> <script type="text/plain">'; arun
+! amerged && carded && ok "guard: an added Guard path with a raw HTML block after it is no tightening (Codex M2 round 2 on relationsmodellen-site #80)" || { nok "guard: script"; cat "$A/out"; }
+
+gsetup '`AGENTS.md` <!-- red -->' '`AGENTS.md` `b.md` <!-- red, story 060 -->'; arun
+amerged && asaid "(rules, tightening)" && ok "guard: a closed comment on the Guard paths line stays a tightening" || { nok "guard: closed comment"; cat "$A/out"; }
 
 gsetup '`a/**`, `b.md`' '`a/**`'; arun
 ! amerged && carded && asaid "a line that only a card may change" && ok "guard: removing a Guard path is no tightening: refuses" || { nok "guard: removes"; cat "$A/out"; }
