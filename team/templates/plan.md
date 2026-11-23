@@ -35,7 +35,7 @@ model: light | standard | strongest — <one-line reason>
 
 ## Work order
 <!-- When the builder is codex-cli or codex (team/CODEX-CLI.md [K2], [K7]); omit the section when Claude builds. The
-     Coordinator writes it while planning; the Builder thread posts it unchanged under the header in templates/codex.md.
+     Coordinator writes it while planning; the Coordinator posts it unchanged under the header in templates/codex.md.
      No choice is left to Codex: a step that would need one is settled here, or the story is Claude's. Proof names the
      one new or changed test file that shows the story was built and the command that runs it; the poller reads this
      line from the plan on the default branch, checks the diff holds the file and runs the command. Keep `Proof:` at
