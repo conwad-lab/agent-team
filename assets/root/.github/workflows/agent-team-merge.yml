@@ -157,7 +157,14 @@ jobs:
           hunks() { awk '/^@@/ {match($0, /-[0-9]+/); o = substr($0, RSTART + 1, RLENGTH - 1); match($0, /\+[0-9]+/); n = substr($0, RSTART + 1, RLENGTH - 1); next}
             /^\\/ {next} /^-/ {print "-\t" o "\t" substr($0, 2); o++; next} /^\+/ {print "+\t" n "\t" substr($0, 2); n++; next} {o++; n++}'; }
           defb=$(gh api "repos/$REPO" --jq .default_branch) || { echo "could not read the repo"; exit 1; }
-          agents=$(b64 AGENTS.md "$defb") || { echo "could not read AGENTS.md on $defb"; exit 1; }
+          if ! agents=$(b64 AGENTS.md "$defb"); then
+            # no AGENTS.md (agent-team itself) is Auto-merge off, not an error; any other failure is one
+            err=$(gh api "repos/$REPO/contents/AGENTS.md?ref=$defb" 2>&1 >/dev/null) || true # not in a pipe: pipefail
+            if grep -q 'HTTP 404' <<<"$err"; then
+              echo "no AGENTS.md on $defb, so no Auto-merge: release; nothing to do"; exit 0
+            fi
+            echo "could not read AGENTS.md on $defb"; exit 1
+          fi
           ts=$(settings <<<"$agents") # captured first: grep -q in a pipe can kill the writer under pipefail
           if ! grep -qE '^- \*\*Auto-merge:\*\* release([[:space:]]|<|$)' <<<"$ts"; then
             echo "Team settings on $defb do not say Auto-merge: release; nothing to do"; exit 0
