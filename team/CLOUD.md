@@ -82,7 +82,7 @@ What the Coordinator would recommend merging merges without the human (§ Judge 
 
 One scheduled routine per project, daily. Its first run each week reads the **Signal sources** and writes rows with evidence under **Förslag**, never **Kö** except kinds listed under **Auto-queue**. [R1]
 
-**Watch**, every run: `bin/watch --board <project folder>/BOARD.md <team repos>` writes the board and lists stalls, skipping PRs the Coordinator commented `Parked until YYYY-MM-DD: <reason>` until then. [R8] It re-requests a `codex-retry` review once and a `codex-quota` head once per run, no card before 72 hours; the other stalls, `blind` and exit 2 included, go on one card. [R7]
+**Watch**, every run: `bin/watch --board <project folder>/BOARD.md <team repos>` writes the board, lists stalls, skips PRs commented `Parked until YYYY-MM-DD: <reason>` until then. [R8] It re-requests a `codex-retry` review once, a `codex-quota` head once per run, no card before 72 hours; `poller-down` gets the card in `CODEX-CLI.md` [K8]; other stalls, `blind` and exit 2 included, share one. [R7]
 
 **Work orders**, every run after the watch, follow `team/ROUTINE-ORDERS.md`: each team repo with room ([F4]) and no plan waiting for its Builder gets a story and a plan with `## Work order` for its first decided **Kö** row that [T2] gives to Codex. [R11]
 

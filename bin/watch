@@ -3,7 +3,7 @@
 # GitHub REST only: no GraphQL (cloud sessions get 403) and no clone, so the
 # project routine runs it from any team repo's submodule.
 #
-#   bin/watch [--board FILE] [--estimates FILE] [--now ISO] [--queued-after MIN] owner/repo...
+#   bin/watch [--board FILE] [--estimates FILE] [--now ISO] [--queued-after MIN] [--poller-after MIN] owner/repo...
 #
 # Stdout: one stall per line, tab-separated: repo kind what since link
 #   pr-idle       open PR (board PRs too) with no event for 24 h, unless its card log
@@ -22,6 +22,11 @@
 #   codex-quota   Codex's latest reply on an open PR or issue says its usage limit is reached (since =
 #                 the first such reply in a row). Instead of the other codex kinds there: the routine
 #                 (and of pr-idle for that PR) the routine re-asks once per run, no card before 72 h, no second story for 24 h (CLOUD.md [F4], [R7])
+#   poller-down   a Codex CLI order (first line `codex-cli: build` or `codex-cli: fix`) on an open or closed
+#                 issue, posted in the last 7 days and older than --poller-after (default 20), with no later
+#                 comment in the repo starting `codex-cli: started`, `done`, `blocked` or `bounced` by the same
+#                 author: one stall per repo, the newest such order (the earlier ones named), whatever the
+#                 label says ([K6] removes it). One card per run (CLOUD.md [R7], CODEX-CLI.md § When the poller is down)
 #   blind         a read that failed twice; the watch cannot vouch for that repo
 # Parked (CLOUD.md [R8]): a comment line `Parked until YYYY-MM-DD: <reason>` on an open PR by the
 # repo owner or $AGENT_ACCOUNT (env; the merge workflow's variable) skips pr-idle (and queued runs
@@ -52,20 +57,22 @@
 # `parts:` line; `-` for a plan without the section. The footer counts stories with and without parts separately.
 
 set -uo pipefail
-BOARD=""; ESTIMATES=""; NOW_ISO=""; QUEUED_AFTER=30
+BOARD=""; ESTIMATES=""; NOW_ISO=""; QUEUED_AFTER=30; POLLER_AFTER=20
 while [ $# -gt 0 ]; do
   case "$1" in
     --board) BOARD="$2"; shift 2 ;;
     --estimates) ESTIMATES="$2"; shift 2 ;;
     --now) NOW_ISO="$2"; shift 2 ;;
     --queued-after) QUEUED_AFTER="$2"; shift 2 ;;
+    --poller-after) POLLER_AFTER="$2"; shift 2 ;;
     -h|--help) awk 'NR > 1 && !/^#/ {exit} NR > 1' "$0"; exit 0 ;;
     --) shift; break ;;
     -*) echo "watch: unknown option $1" >&2; exit 2 ;;
     *) break ;;
   esac
 done
-[ $# -gt 0 ] || { echo "usage: bin/watch [--board FILE] [--estimates FILE] [--now ISO] [--queued-after MIN] owner/repo..." >&2; exit 2; }
+[ $# -gt 0 ] || { echo "usage: bin/watch [--board FILE] [--estimates FILE] [--now ISO] [--queued-after MIN] [--poller-after MIN] owner/repo..." >&2; exit 2; }
+[[ "$POLLER_AFTER" =~ ^[0-9]+$ ]] || { echo "watch: --poller-after takes whole minutes" >&2; exit 2; }
 command -v jq >/dev/null || { echo "watch: jq missing" >&2; exit 2; }
 
 if [ -n "$NOW_ISO" ]; then NOW="$(jq -rn --arg t "$NOW_ISO" '$t|fromdateiso8601')" || exit 2
@@ -242,11 +249,24 @@ watch_repo() {
   # Unanswered after an hour: any task → codex-task (never auto-retried); review requests in one
   # batch (within 10 min, e.g. the four angles) → codex-retry; a later batch is the retry, and
   # only when it too has waited an hour → codex-silent.
-  pages "repos/$R/issues?state=open&per_page=100&since=$(iso $(( NOW - 7 * DAY )))" \
-    | jq -r '.[] | [.number, (.pull_request != null | tostring), .html_url, ((.created_at // "1970-01-01T00:00:00Z")|fromdateiso8601),
-        (if ((.user.login // "")|endswith("[bot]")|not) and ((.body // "")|test("^@codex\\b";"m")) then "task" else "-" end)] | @tsv' > "$TMP/issues" || true
-  while IFS=$'\t' read -r num ispr url created bodykind; do
+  # poller-down reads the same comments, and those of issues closed in the window (the Builder's
+  # fallback [K6] removes the label and may close the issue); closed PRs are skipped.
+  : > "$TMP/poller"
+  pages "repos/$R/issues?state=all&per_page=100&since=$(iso $(( NOW - 7 * DAY )))" \
+    | jq -r '.[] | select((.state // "open") == "open" or .pull_request == null) |
+        [.number, (.pull_request != null | tostring), .html_url, ((.created_at // "1970-01-01T00:00:00Z")|fromdateiso8601),
+        (if ((.user.login // "")|endswith("[bot]")|not) and ((.body // "")|test("^@codex\\b";"m")) then "task" else "-" end),
+        (.state // "open")] | @tsv' > "$TMP/issues" || true
+  while IFS=$'\t' read -r num ispr url created bodykind istate; do
     [ -n "$num" ] || continue
+    pages "repos/$R/issues/$num/comments?per_page=100" > "$TMP/comments" || continue
+    # Codex CLI orders and claims (CODEX-CLI.md [K1], [K4]): first line as the poller reads it, people only
+    jq -r --arg u "$url" --arg n "$num" '.[] | select((.user.login // "")|endswith("[bot]")|not)
+        | ((.body // "") | split("\n")[0] | gsub("\r"; "") | gsub("\\s+$"; "")) as $l
+        | (if ($l|test("^codex-cli: (build|fix)$")) then "order"
+           elif ($l|test("^codex-cli: (started|done|blocked|bounced)(\\s|$)")) then "claim" else empty end) as $k
+        | [(.created_at|fromdateiso8601), $k, .user.login, $n, "\($u)#issuecomment-\(.id)"] | @tsv' "$TMP/comments" >> "$TMP/poller" || true
+    [ "$istate" = open ] || continue
     # a new issue's body is a request only when Codex reacted to the issue (it launched the task);
     # an edited body starts nothing (templates/codex.md), and an edit leaves no reaction
     : > "$TMP/ev"
@@ -254,7 +274,7 @@ watch_repo() {
        api "repos/$R/issues/$num/reactions" | jq -e --arg bot "$CODEX_BOT" 'any(.[]; .user.login == $bot)' >/dev/null; then
       printf '%s\ttask\tissue\n' "$created" > "$TMP/ev"
     fi
-    pages "repos/$R/issues/$num/comments?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] |
+    jq -r --arg bot "$CODEX_BOT" '.[] |
         [(.created_at|fromdateiso8601),
          (if .user.login == $bot then (if (.body|test("^\\s*<!-- codex-review-receipt")) then "rout"
                                         elif (.body|test("codex-pull-request-review-summary|codex-review-state:")) then "-"
@@ -263,7 +283,7 @@ watch_repo() {
           elif (.user.login|endswith("[bot]")) then "-"
           elif (.body|test("^@codex( security)? review\\b";"m")) then "review"
           elif (.body|test("^@codex\\b";"m")) then "task" else "-" end),
-         .id] | @tsv' >> "$TMP/ev" || continue
+         .id] | @tsv' "$TMP/comments" >> "$TMP/ev" || continue
     if [ "$ispr" = true ]; then
       pages "repos/$R/pulls/$num/reviews?per_page=100" | jq -r --arg bot "$CODEX_BOT" '.[] | select(.user.login == $bot) |
           [((.submitted_at // "1970-01-01T00:00:00Z")|fromdateiso8601), "rout", .id] | @tsv' >> "$TMP/ev" || continue
@@ -320,6 +340,24 @@ watch_repo() {
     else continue; fi
     stall "$R" "$kind" "#$num: $count @codex request(s) unanswered, oldest $(age "$first") old" "$(iso "$first")" "$url"
   done < "$TMP/issues"
+
+  # poller-down: a claim or outcome by an order's author clears every earlier order of that author in
+  # the repo (a claim at the same second does not); the rest, older than --poller-after, is one stall
+  local down
+  down="$(sort -t$'\t' -k1,1n -k2,2 "$TMP/poller" | awk -F'\t' -v now="$NOW" -v from=$(( NOW - 7 * DAY )) -v after=$(( POLLER_AFTER * 60 )) '
+    $2 == "claim" { for (i = 1; i <= n; i++) if (a[i] == $3 && t[i] < $1) a[i] = ""; next }
+    $2 == "order" && $1 >= from { n++; t[n] = $1; a[n] = $3; num[n] = $4; link[n] = $5 }
+    END {
+      for (i = 1; i <= n; i++) if (a[i] != "" && now - t[i] >= after) last = i
+      if (!last) exit
+      for (i = 1; i < last; i++) if (a[i] != "" && now - t[i] >= after && num[i] != num[last] && !seen[num[i]]++) also = also (also ? ", #" : "#") num[i]
+      print t[last] "\t" num[last] "\t" link[last] "\t" also
+    }')"
+  if [ -n "$down" ]; then
+    local dt dnum dlink dalso
+    IFS=$'\t' read -r dt dnum dlink dalso <<< "$down"
+    stall "$R" poller-down "order #$dnum: not claimed after $(age "$dt")${dalso:+ (also $dalso)}" "$(iso "$dt")" "$dlink"
+  fi
 
   # --- board rows
   tree="$(opt "repos/$R/git/trees/$def?recursive=1" | jq -r '.tree[].path')"

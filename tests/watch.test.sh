@@ -99,7 +99,7 @@ put "repos/o/r/issues/10/comments?per_page=100" <<< "[$(cm 101 conwad-lab $((2*H
 put "repos/o/r/issues/comments/101/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"+1\"}]"
 put "repos/o/r/issues/30/comments?per_page=100" <<< "[$(cm 301 conwad-lab 1800 '@codex fix M1' | sed 's/,$//')]"
 iss() { printf '{"number":%s,"html_url":"https://github.com/o/r/issues/%s"%s},' "$1" "$1" "$2"; }
-put "repos/o/r/issues?state=open&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}')$(iss 9 ',"pull_request":{}')$(iss 10 ',"pull_request":{}')$(iss 40 ',"pull_request":{}')$(iss 41 ',"pull_request":{}')$(iss 42 '')$(iss 43 ',"pull_request":{}')$(iss 44 ',"pull_request":{}')$(iss 46 ',"pull_request":{}')$(iss 30 '')$(iss 48 ',"pull_request":{}')$(printf '{"number":47,"html_url":"u47","user":{"login":"conwad-lab"},"created_at":"%s","body":"@codex build x"},' "$(t $((3*H)))")$(printf '{"number":45,"html_url":"https://github.com/o/r/issues/45","user":{"login":"conwad-lab"},"created_at":"%s","body":"@codex build .team/plans/045-x.md"}' "$(t $((3*H)))")]"
+put "repos/o/r/issues?state=all&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}')$(iss 9 ',"pull_request":{}')$(iss 10 ',"pull_request":{}')$(iss 40 ',"pull_request":{}')$(iss 41 ',"pull_request":{}')$(iss 42 '')$(iss 43 ',"pull_request":{}')$(iss 44 ',"pull_request":{}')$(iss 46 ',"pull_request":{}')$(iss 30 '')$(iss 48 ',"pull_request":{}')$(printf '{"number":47,"html_url":"u47","user":{"login":"conwad-lab"},"created_at":"%s","body":"@codex build x"},' "$(t $((3*H)))")$(printf '{"number":45,"html_url":"https://github.com/o/r/issues/45","user":{"login":"conwad-lab"},"created_at":"%s","body":"@codex build .team/plans/045-x.md"}' "$(t $((3*H)))")]"
 put "repos/o/r/issues/45/reactions" <<< "[{\"user\":{\"login\":\"$BOT\"},\"content\":\"eyes\"}]"
 # 047: an issue whose body got an @codex line by an edit: Codex never reacted, so no task (r3 M3)
 # 048: original review 5 h, its retry 3 h, one result 2 h: the result answers both (v0.8.16; was r3 M2)
@@ -258,8 +258,8 @@ put repos/o/k <<< '{"default_branch":"main"}'
 # PR 2 has been quiet for 30 h and waits only on the quota; PR 3 is quiet too, its quota wait over (#27 r3 M1)
 printf '[{"number":2,"title":"002: quota","state":"open","draft":true,"merged_at":null,"updated_at":"%s","head":{"ref":"feat/002-quota","sha":"k2"},"html_url":"https://github.com/o/k/pull/2"},{"number":3,"title":"003: idle","state":"open","draft":true,"merged_at":null,"updated_at":"%s","head":{"ref":"feat/003-idle","sha":"k3"},"html_url":"https://github.com/o/k/pull/3"}]' "$(t $((30*H)))" "$(t $((30*H)))" | put "repos/o/k/pulls?state=all&per_page=100"
 QUOTA='You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage).'
-put "repos/o/k/issues?state=open&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 1 ',"pull_request":{}')$(iss 2 ',"pull_request":{}')$(iss 3 ',"pull_request":{}')$(iss 4 ',"pull_request":{}')$(iss 5 '')$(iss 6 ',"pull_request":{}')$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}')$(iss 9 ',"pull_request":{}' | sed 's/,$//')]"
-sed -i 's#github.com/o/r/issues#github.com/o/k/issues#g' "$FIX/$(printf '%s' "repos/o/k/issues?state=open&per_page=100&since=$(t $((7*D)))" | tr -c 'A-Za-z0-9' '_')"
+put "repos/o/k/issues?state=all&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 1 ',"pull_request":{}')$(iss 2 ',"pull_request":{}')$(iss 3 ',"pull_request":{}')$(iss 4 ',"pull_request":{}')$(iss 5 '')$(iss 6 ',"pull_request":{}')$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}')$(iss 9 ',"pull_request":{}' | sed 's/,$//')]"
+sed -i 's#github.com/o/r/issues#github.com/o/k/issues#g' "$FIX/$(printf '%s' "repos/o/k/issues?state=all&per_page=100&since=$(t $((7*D)))" | tr -c 'A-Za-z0-9' '_')"
 # 1: asked 3 h ago, the only answer is a usage-limit reply (and the summary) → codex-quota, not codex-retry
 jq -n --arg bot "$BOT" --arg q "$QUOTA" --arg t1 "$(t $((3*H)))" --arg t2 "$(t $((3*H-10)))" '[{id:11,user:{login:"conwad-lab"},created_at:$t1,body:"@codex review"},
   {id:12,user:{login:$bot},created_at:$t2,body:"<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {\"status\":\"failed\"} -->"},
@@ -398,7 +398,7 @@ put "repos/o/u/issues/6/comments?per_page=100" <<< "[$(cm 61 conwad-lab $((5*H))
 put "repos/o/u/issues/7/comments?per_page=100" <<< "[$(cm 71 conwad-lab $((3*H)) '@codex fix M1')$(cm 72 conwad-lab $((3*H-60)) '@codex fix M2')$(cm 73 "$BOT" $((2*H)) 'Pushed a fix for M1.' | sed 's/,$//')]"
 # 8: a receipt with no review open still answers a task
 put "repos/o/u/issues/8/comments?per_page=100" <<< "[$(cm 81 conwad-lab $((3*H)) '@codex fix M1')$(cm 82 "$BOT" $((2*H)) '<!-- codex-review-receipt:v1 --> done' | sed 's/,$//')]"
-put "repos/o/u/issues?state=open&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 5 ',"pull_request":{}')$(iss 6 ',"pull_request":{}')$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}' | sed 's/,$//')]"
+put "repos/o/u/issues?state=all&per_page=100&since=$(t $((7*D)))" <<< "[$(iss 5 ',"pull_request":{}')$(iss 6 ',"pull_request":{}')$(iss 7 ',"pull_request":{}')$(iss 8 ',"pull_request":{}' | sed 's/,$//')]"
 run o/u
 check "review branch: no branch-idle (v0.8.16)"          '! has "feat/900-designgranskning" && ! has "feat/902-review"'
 check "review branch: board row, Operatör"               'grep -qF "| u | feat/900-designgranskning | review only, delete when read | Operatör |" "$T/board.md" && grep -qF "| u | feat/902-review | review only, delete when read | Operatör |" "$T/board.md"'
@@ -409,6 +409,52 @@ check "a review after the last receipt stays open"       'has "codex-retry	#6: 1
 check "tasks still one answer each"                      'has "codex-task	#7: 1 @codex"'
 check "a receipt with no review open answers a task"     '! has "#8:"'
 check "v0.8.16: no blind"                                '! has "	blind	"'
+
+# ---- v0.8.21: poller-down, a Codex CLI order no host claimed (story Y)
+prepo() { # prepo NAME ISSUES-JSON: a repo with nothing else to say
+  put "repos/o/$1" <<< '{"default_branch":"main"}'
+  put "repos/o/$1/issues?state=all&per_page=100&since=$(t $((7*D)))" <<< "$2"
+}
+pc() { put "repos/o/$1/issues/$2/comments?per_page=100"; }
+ORDER='codex-cli: build\nRepo: o/x\nBranch: feat/033-x'
+prepo p1 "[$(iss 1 '' | sed 's/,$//')]"
+pc p1 1 <<< "[$(cm 11 conwad-lab 1800 "$ORDER" | sed 's/,$//')]"
+run o/p1
+check "poller-down: unclaimed after 20 min (Y)"          'has "^o/p1	poller-down	order #1: not claimed after 30 min	$(t 1800)	https://github.com/o/r/issues/1#issuecomment-11$" && [ "$(cat "$T/rc")" = 1 ]'
+prepo p2 "[$(iss 1 '' | sed 's/,$//')]"
+pc p2 1 <<< "[$(cm 11 conwad-lab $((2*H)) "$ORDER")$(cm 12 conwad-lab $((2*H-60)) 'codex-cli: started 20261123T1200Z-1 on mbp for 11' | sed 's/,$//')]"
+run o/p2
+check "poller-down: claimed order is quiet (Y)"          '! has "poller-down" && [ "$(cat "$T/rc")" = 0 ]'
+prepo p3 "[$(iss 1 '' | sed 's/,$//')]"
+pc p3 1 <<< "[$(cm 11 conwad-lab 600 "$ORDER" | sed 's/,$//')]"
+run o/p3
+check "poller-down: 10 min is within the wait (Y)"       '! has "poller-down"'
+run --poller-after 5 o/p3
+check "poller-down: --poller-after sets the wait (Y)"    'has "^o/p3	poller-down	order #1: not claimed after 10 min"'
+prepo p4 "[$(iss 2 ',"state":"closed"')$(iss 3 ',"state":"closed","pull_request":{}' | sed 's/,$//')]"
+pc p4 2 <<< "[$(cm 21 conwad-lab $((40*60)) "$ORDER")$(cm 22 conwad-lab $((23*60)) '@codex build .team/plans/033-x.md' | sed 's/,$//')]"
+run o/p4
+check "poller-down: closed issue, label gone (Y)"        'has "^o/p4	poller-down	order #2: not claimed after 40 min"'
+check "poller-down: closed issue is not a codex request" '! has "codex-task"'
+check "poller-down: closed PRs are not read (Y)"         '! grep -q "issues/3/comments" "$FIX/calls"'
+prepo p5 "[$(iss 1 '')$(iss 2 '')$(iss 3 ',"state":"closed"' | sed 's/,$//')]"
+pc p5 1 <<< "[$(cm 11 conwad-lab $((3*H)) "$ORDER" | sed 's/,$//')]"
+pc p5 2 <<< "[$(cm 21 conwad-lab $((2*H)) "$ORDER" | sed 's/,$//')]"
+pc p5 3 <<< "[$(cm 31 conwad-lab 1800 'codex-cli: started 20261123T1330Z-2 on mbp for 99' | sed 's/,$//')]"
+run o/p5
+check "poller-down: one later claim clears both (Y)"     '! has "poller-down"'
+prepo p6 "[$(iss 1 '' | sed 's/,$//')]"
+pc p6 1 <<< "[$(cm 11 conwad-lab $((2*H)) "$ORDER")$(cm 12 conwad-lab $((H)) 'codex-cli: blocked\nHinder: the plan needs a design choice' | sed 's/,$//')]"
+run o/p6
+check "poller-down: blocked counts as a claim (Y)"       '! has "poller-down"'
+prepo p7 "[$(iss 1 '')$(iss 2 '')$(iss 4 '' | sed 's/,$//')]"
+pc p7 1 <<< "[$(cm 11 conwad-lab $((3*H)) "$ORDER")$(cm 12 mallory $((2*H)) 'codex-cli: started x on y for 11' | sed 's/,$//')]"
+pc p7 2 <<< "[$(cm 21 conwad-lab $((2*H)) "$ORDER" | sed 's/,$//')]"
+pc p7 4 <<< "[$(cm 41 conwad-lab $((8*D)) "$ORDER")$(cm 42 conwad-lab $((H)) 'codex-cli: build please' | sed 's/,$//')]"
+run o/p7
+check "poller-down: one stall per repo, newest order, earlier named" '[ "$(grep -c "poller-down" "$T/out")" = 1 ] && has "^o/p7	poller-down	order #2: not claimed after 2 h (also #1)	$(t $((2*H)))"'
+check "poller-down: a stranger claim, an order older than 7 d and a non-exact first line count for nothing" '! has "#4"'
+check "v0.8.21: no blind"                                '! has "	blind	"'
 
 echo "1..$n"
 exit $fail

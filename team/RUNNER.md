@@ -51,6 +51,8 @@ Jobs on the `mini` label wait in the queue (GitHub fails them after 24 hours). W
 
 On **Kör på GitHub-hosted** (`CLOUD.md` [Q4]; moved here unchanged in v0.8.6 and v0.8.17, binding as if it stood there): the human sets the repo variable `RUNS_ON` to `"ubuntu-latest"` (Operatör line), the Builder cancels the queued `mini` runs (`gh run cancel`, checking each reads `cancelled`) and restarts them by toggling the PR to draft and back to ready (answering the new Codex review), and after merge an Operatör line deletes `RUNS_ON`.
 
+The Codex CLI poller on the same host is a separate job: when it is down the watch says `poller-down`, and `team/CODEX-CLI.md` § When the poller is down has the fix.
+
 ## Move to the mini
 
 Run the install line on the mini (under `ci`), then `--uninstall` on the MacBook. No workflow changes: the label stays `mini`. Keep the mini reachable: System Settings → Energy: prevent automatic sleep, and start up after a power failure. After a restart, `ci` has to be logged in for OrbStack to start (with FileVault on, macOS cannot log in automatically, so log in once after each restart).
