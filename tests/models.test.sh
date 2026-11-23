@@ -18,7 +18,12 @@ cat > "$T/bin/codex" <<'C'
 #!/usr/bin/env bash
 case "$1" in
   --version) echo "codex-cli 0.171.0" ;;
-  debug) [ -f "$ST/codex_hang" ] && sleep 30; cat "$ST/codex.json" ;;
+  debug)
+    # hang: a child that ignores TERM keeps stdout open after the wrapper itself dies (Codex M1 on #39)
+    [ -f "$ST/codex_hang" ] && { ( trap '' TERM; sleep 30 ) & sleep 30; }
+    # leave: the wrapper answers and exits, but leaves that child behind holding stdout
+    [ -f "$ST/codex_leave" ] && ( trap '' TERM; sleep 30 ) &
+    cat "$ST/codex.json" ;;
   *) exit 1 ;;
 esac
 C
@@ -49,7 +54,7 @@ echo "$method $url" >> "$ST/calls"
 [ -n "${GH_TOKEN:-}" ] || echo "NO-TOKEN" >> "$ST/calls"
 out() { if [ -n "$jqf" ]; then jq -r "$jqf"; else cat; fi; }
 case "$method $url" in
-  "GET user") echo '{"login":"poller"}' | out ;;
+  "GET user") [ -f "$ST/gh_hang" ] && sleep 30; echo '{"login":"poller"}' | out ;;
   "GET repos/o/r/issues?"*) cat "$ST/issues.json" | out ;;
   "POST repos/o/r/issues") jq -n --arg t "$title" '[{number: 9, title: $t}]' > "$ST/issues.json"; echo '[]' > "$ST/comments.json"; echo '{"number":9}' | out ;;
   "GET repos/o/r/issues/9/comments"*) cat "$ST/comments.json" | out ;;
@@ -133,11 +138,20 @@ PATH="/usr/bin:/bin" CODEX_CLI_ENV=/nonexistent bash "$SKILL/bin/models" --repor
 check "map wins per role: one in-use astra, the map's, and no Astra card" '[ "$(grep -c "^in-use astra " $T/out)" = 1 ] && grep -qx "in-use astra gpt-6.2-astra" $T/out && ! grep -q "^newer codex astra" $T/out'
 check "History lines are not in use" '! grep -q "in-use haiku" $T/out && ! grep -q "gpt-5.6-astra" $T/out'
 
+# 6c with two maps the last one wins for a role, even when it repeats the config's id (Codex M5 on #39)
+printf -- '- astra: gpt-6.2-astra — since 2026-11-24\n' > "$T/mapA.md"; printf -- '- astra: gpt-6-astra — since 2026-11-25\n' > "$T/mapB.md"
+PATH="/usr/bin:/bin" CODEX_CLI_ENV=/nonexistent bash "$SKILL/bin/models" --report "$T/comment.md" --map "$T/mapA.md" --map "$T/mapB.md" > "$T/out" 2>"$T/err"
+check "last map wins before duplicates are dropped" 'grep -qx "in-use astra gpt-6-astra" $T/out && grep -qx "newer codex astra gpt-6-astra → gpt-6.2-astra" $T/out'
+
 # 7 a hanging tool is stopped and says unknown; stdin is closed
 catalogue gpt-6-astra:list; touch "$ST/codex_hang"
 s=$(date +%s); LIM=2 run; e=$(( $(date +%s) - s ))
 rm -f "$ST/codex_hang"
 check "hanging codex stopped within the limit, offers unknown" '[ "$e" -lt 10 ] && grep -qx "codex offers unknown" $T/out'
+touch "$ST/codex_leave"; catalogue gpt-6-astra:list
+s=$(date +%s); LIM=20 run; e=$(( $(date +%s) - s ))
+rm -f "$ST/codex_leave"
+check "a child left behind holding stdout is stopped when the wrapper exits" '[ "$e" -lt 10 ] && grep -qx "codex offers gpt-6-astra" $T/out'
 
 # 8 a tool not installed
 rm "$T/bin/agy"; run
@@ -153,6 +167,10 @@ catalogue gpt-6.2-astra:list gpt-6-astra:list gpt-6-sol:list gpt-6.2-sol:list
 GH_TOKEN=fake run --post o/r
 check "post again: same comment edited, no new issue or comment" '[ "$(jq length $ST/comments.json)" = 1 ] && grep -q "^PATCH repos/o/r/issues/comments/501" $ST/calls && [ "$(grep -c "^POST repos/o/r/issues$" $ST/calls)" = 1 ] && jq -r ".[0].body" $ST/comments.json | grep -q "newer codex sol"'
 check "post: every gh call had the token" '! grep -q NO-TOKEN $ST/calls'
+
+# 9b a hanging gh is stopped too, so the nightly job cannot hold its lock (Codex M4 on #39)
+touch "$ST/gh_hang"; s=$(date +%s); GH_TOKEN=fake LIM=2 run --post o/r; e=$(( $(date +%s) - s )); rm -f "$ST/gh_hang"
+check "post: hanging gh stopped within the limit, exit 0" '[ "$e" -lt 15 ] && [ "$rc" = 0 ]'
 
 # 10 usage
 PATH="$P" bash "$SKILL/bin/models" --bogus > /dev/null 2>&1; rc=$?

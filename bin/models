@@ -44,17 +44,18 @@ if [ -f "$CONF" ]; then
 fi
 [ -n "$HOST" ] || HOST="$(hostname -s 2>/dev/null | tr 'A-Z' 'a-z' || echo host)"
 
-kill_tree() { # kill_tree SIG PID: the process and everything it started (a wrapper's child keeps our pipe open)
-  local c; for c in $(pgrep -P "$2" 2>/dev/null); do kill_tree "$1" "$c"; done
-  kill -"$1" "$2" 2>/dev/null || true
-}
-# limit SECS CMD...: run with stdin closed, stopped after SECS (bash 3.2 has no timeout and macOS ships none)
+# limit SECS CMD...: stdin closed, in a process group of its own (perl setpgrp; bash 3.2 has no timeout and macOS
+# ships none). The whole group is stopped after SECS, and whatever the command leaves behind in its group when it
+# exits is stopped at once: a wrapper's child that outlives it would otherwise hold our output pipe open.
 limit() {
   local s="$1"; shift
-  "$@" </dev/null & local p=$!
-  ( sleep "$s"; kill_tree TERM "$p"; sleep 2; kill_tree KILL "$p" ) >/dev/null 2>&1 &
+  perl -e 'setpgrp(0, 0); exec { $ARGV[0] } @ARGV or exit 127' "$@" </dev/null & local p=$!
+  ( sleep "$s"; kill -TERM -- "-$p"; sleep 2; kill -KILL -- "-$p" ) >/dev/null 2>&1 &
   local w=$! rc=0
   wait "$p" || rc=$?
+  if kill -0 -- "-$p" 2>/dev/null; then
+    kill -TERM -- "-$p" 2>/dev/null; sleep 1; kill -KILL -- "-$p" 2>/dev/null
+  fi
   kill "$w" 2>/dev/null || true; wait "$w" 2>/dev/null || true
   return "$rc"
 }
@@ -121,10 +122,11 @@ facts="$(
   fi
   if [ "${#MAPS[@]}" -gt 0 ]; then for m in "${MAPS[@]}"; do in_use_map "$m"; done; fi
 )"
-# one in-use line per role, the last one read winning: a map (read last) wins over the poller config in a report
-facts="$(printf '%s\n' "$facts" | awk '!seen[$0]++' | awk '
+# one in-use line per role, the last one read winning (a later map over an earlier one, any map over the poller
+# config in a report), resolved before duplicates are dropped
+facts="$(printf '%s\n' "$facts" | awk '
   $1 == "in-use" { if (!($2 in r)) ord[++k] = $2; r[$2] = $0; next } { print }
-  END { for (i = 1; i <= k; i++) print r[ord[i]] }')"
+  END { for (i = 1; i <= k; i++) print r[ord[i]] }' | awk '!seen[$0]++')"
 report="$(printf '%s\n' "$facts" | grep -v '^declined ' || true)"
 
 offers="$(printf '%s\n' "$facts" | sed -nE 's/^([A-Za-z0-9_-]+) offers (.+)$/\1	\2/p' | grep -v '	unknown$' || true)"
@@ -153,7 +155,7 @@ printf '%s\n' "$out"
 # ---- post: one comment on the host's issue, edited in place; the token is the poller's, from the Keychain
 if [ -n "$POST" ]; then
   if [ -z "${GH_TOKEN:-}" ]; then
-    GH_TOKEN="$(security find-generic-password -s "$KEYCHAIN_ITEM" -w 2>/dev/null || true)"
+    GH_TOKEN="$(limit "$LIMIT" security find-generic-password -s "$KEYCHAIN_ITEM" -w 2>/dev/null || true)"
     [ -n "$GH_TOKEN" ] || { echo "models: no token in the Keychain item $KEYCHAIN_ITEM; not posted" >&2; exit 0; }
   fi
   export GH_TOKEN
@@ -164,19 +166,19 @@ Written by \`bin/models\` after the nightly \`bin/tools-update\` (team/MODELS.md
 \`\`\`
 $out
 \`\`\`"
-  issue="$(gh api "repos/$POST/issues?state=open&per_page=100" \
+  issue="$(limit "$LIMIT" gh api "repos/$POST/issues?state=open&per_page=100" \
     --jq ".[] | select(.pull_request == null and .title == \"$title\") | .number" 2>/dev/null | head -1 || true)"
   if [ -z "$issue" ]; then
-    issue="$(gh api -X POST "repos/$POST/issues" -f title="$title" \
+    issue="$(limit "$LIMIT" gh api -X POST "repos/$POST/issues" -f title="$title" \
       -f body="The host's model list, one comment kept current by \`bin/models --post\` (team/MODELS.md)." --jq .number)" \
       || { echo "models: could not create the issue in $POST" >&2; exit 0; }
   fi
-  me="$(gh api user --jq .login 2>/dev/null || true)"
-  cid="$(gh api "repos/$POST/issues/$issue/comments?per_page=100" \
+  me="$(limit "$LIMIT" gh api user --jq .login 2>/dev/null || true)"
+  cid="$(limit "$LIMIT" gh api "repos/$POST/issues/$issue/comments?per_page=100" \
     --jq ".[] | select(.user.login == \"$me\" and (.body | startswith(\"$MARKER\"))) | .id" 2>/dev/null | head -1 || true)"
-  if [ -n "$cid" ]; then gh api -X PATCH "repos/$POST/issues/comments/$cid" -f body="$body" >/dev/null \
+  if [ -n "$cid" ]; then limit "$LIMIT" gh api -X PATCH "repos/$POST/issues/comments/$cid" -f body="$body" >/dev/null \
       || echo "models: could not edit comment $cid" >&2
-  else gh api -X POST "repos/$POST/issues/$issue/comments" -f body="$body" >/dev/null \
+  else limit "$LIMIT" gh api -X POST "repos/$POST/issues/$issue/comments" -f body="$body" >/dev/null \
       || echo "models: could not post on $POST#$issue" >&2
   fi
 fi

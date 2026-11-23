@@ -11,7 +11,8 @@
 #   <UTC date> <tool> <old> → <new>                 (the same version twice when nothing was newer)
 #   <UTC date> <tool> <old> → <old> error: <reason>  (the update failed: the old version stays, the next tool goes on)
 #   <UTC date> <tool> not installed | skipped: <reason>
-# It touches nothing but these tools: no sudo, no other formula, no network beyond the updaters and `gh`.
+# It touches nothing but these tools: no sudo, no dependents, no global cleanup (a formula whose own dependencies are
+# outdated is skipped and logged), no network beyond the updaters and `gh`.
 # Every command runs with stdin closed and a time limit (TOOLS_UPDATE_LIMIT, default 600 s). A lock keeps two runs
 # from overlapping. Afterwards it runs bin/models into models.txt and, when the poller config exists, posts it on
 # MODELS_REPO (default conwad-lab/agent-team).
@@ -35,16 +36,18 @@ mkdir -p "$LOGS"
 
 now() { date -u +%Y-%m-%dT%H:%MZ; }
 line() { printf '%s %s\n' "$(now)" "$*" >> "$LOG"; }
-kill_tree() { # kill_tree SIG PID: the process and everything it started (a wrapper's child keeps our pipe open)
-  local c; for c in $(pgrep -P "$2" 2>/dev/null); do kill_tree "$1" "$c"; done
-  kill -"$1" "$2" 2>/dev/null || true
-}
-limit() { # limit SECS CMD...: stdin closed, stopped after SECS
+# limit SECS CMD...: stdin closed, in a process group of its own (perl setpgrp; bash 3.2 has no timeout and macOS
+# ships none). The whole group is stopped after SECS, and whatever the command leaves behind in its group when it
+# exits is stopped at once: a wrapper's child that outlives it would otherwise hold our output pipe open.
+limit() {
   local s="$1"; shift
-  "$@" </dev/null & local p=$!
-  ( sleep "$s"; kill_tree TERM "$p"; sleep 2; kill_tree KILL "$p" ) >/dev/null 2>&1 &
+  perl -e 'setpgrp(0, 0); exec { $ARGV[0] } @ARGV or exit 127' "$@" </dev/null & local p=$!
+  ( sleep "$s"; kill -TERM -- "-$p"; sleep 2; kill -KILL -- "-$p" ) >/dev/null 2>&1 &
   local w=$! rc=0
   wait "$p" || rc=$?
+  if kill -0 -- "-$p" 2>/dev/null; then
+    kill -TERM -- "-$p" 2>/dev/null; sleep 1; kill -KILL -- "-$p" 2>/dev/null
+  fi
   kill "$w" 2>/dev/null || true; wait "$w" 2>/dev/null || true
   return "$rc"
 }
@@ -69,18 +72,38 @@ version_of() { # version_of TOOL KIND NAME
   [ -n "$v" ] || v="$(limit 60 "$1" --version 2>/dev/null | semver || true)"
   printf '%s' "${v:-unknown}"
 }
+# Homebrew may otherwise upgrade other formulas that depend on this one and run a cleanup of every package; both off.
+# A formula's own outdated dependencies would be upgraded with it, so such an update is skipped and logged instead.
+export HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ENV_HINTS=1
+outdated_deps() { # outdated_deps KIND NAME → space-separated outdated formulas NAME depends on (nothing for a cask)
+  [ "$1" = formula ] || return 0
+  local deps outdated d r=""
+  deps="$(limit 120 brew deps --installed --formula "$2" 2>/dev/null || true)"
+  [ -n "$deps" ] || return 0
+  outdated="$(limit 120 brew outdated --formula --quiet 2>/dev/null || true)"
+  for d in $deps; do printf '%s\n' "$outdated" | grep -qxF "$d" && r="$r${r:+ }$d"; done
+  printf '%s' "$r"
+}
 has_update_cmd() { limit 60 "$1" --help 2>/dev/null | grep -qE '^[[:space:]]+update([|, ]|[[:space:]]|$)'; }
 
-# ---- lock: a directory with the pid; a lock whose pid is gone is taken over
+# ---- lock: a symlink whose target is the owner's pid, made in one step (`ln -s` fails if it exists), so there is
+# never a lock without an owner. A lock whose pid is gone is taken over under a second, short-lived guard, and only
+# if it still names that same dead pid; the exit trap removes the lock only while it names this run.
 LOCK="$LOGS/tools-update.lock"
+take_lock() {
+  ln -s "$$" "$LOCK" 2>/dev/null && return 0
+  local old; old="$(readlink "$LOCK" 2>/dev/null || true)"
+  if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then line "tools-update already running (pid $old), this run stopped"; return 1; fi
+  mkdir "$LOCK.takeover" 2>/dev/null || { line "tools-update lock being taken over by another run, this run stopped"; return 1; }
+  if [ "$(readlink "$LOCK" 2>/dev/null || true)" = "$old" ]; then rm -f "$LOCK"; fi
+  local got=1; ln -s "$$" "$LOCK" 2>/dev/null && got=0
+  rmdir "$LOCK.takeover" 2>/dev/null || true
+  [ "$got" = 0 ] || line "tools-update could not take the lock, this run stopped"
+  return "$got"
+}
 if [ "$DRY" = 0 ]; then
-  if ! mkdir "$LOCK" 2>/dev/null; then
-    old="$(cat "$LOCK/pid" 2>/dev/null || true)"
-    if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then line "tools-update already running (pid $old), this run stopped"; exit 0; fi
-    rm -rf "$LOCK"; mkdir "$LOCK" || { line "tools-update could not take the lock"; exit 1; }
-  fi
-  echo $$ > "$LOCK/pid"
-  trap 'rm -rf "$LOCK"' EXIT
+  take_lock || exit 0
+  trap '[ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ] && rm -f "$LOCK"' EXIT
 fi
 
 for tool in $TOOLS; do
@@ -92,7 +115,12 @@ for tool in $TOOLS; do
 $(brew_kind "$tool")
 EOF
   if [ -n "${kind:-}" ]; then
-    if [ "$kind" = cask ]; then cmd=(brew upgrade --cask "$name"); else cmd=(brew upgrade "$name"); fi
+    if [ "$kind" = cask ]; then cmd=(brew upgrade --cask "$name"); else cmd=(brew upgrade --formula "$name"); fi
+    others="$(outdated_deps "$kind" "$name")"
+    if [ -n "$others" ]; then
+      [ "$DRY" = 1 ] && echo "$tool: skipped (would also upgrade $others)" || line "$tool skipped: would also upgrade $others"
+      kind=""; name=""; continue
+    fi
   elif has_update_cmd "$tool"; then cmd=("$tool" update)
   else
     [ "$DRY" = 1 ] && echo "$tool: skipped (not from Homebrew, no update command)" || line "$tool skipped: not from Homebrew and no update command"
@@ -112,6 +140,6 @@ EOF
 done
 
 [ "$DRY" = 1 ] && { echo "then: bin/models > $LOGS/models.txt, posted on $MODELS_REPO when $CONF exists"; exit 0; }
-if [ -f "$CONF" ]; then "$HERE/models" --post "$MODELS_REPO" > "$LOGS/models.txt" 2>>"$LOG" || line "models failed"
-else "$HERE/models" > "$LOGS/models.txt" 2>>"$LOG" || line "models failed"; fi
+if [ -f "$CONF" ]; then limit "$LIMIT" "$HERE/models" --post "$MODELS_REPO" > "$LOGS/models.txt" 2>>"$LOG" || line "models failed"
+else limit "$LIMIT" "$HERE/models" > "$LOGS/models.txt" 2>>"$LOG" || line "models failed"; fi
 exit 0
