@@ -474,6 +474,14 @@ rsetup; content repos/o/r/contents/.team/team.md "$MB" $'mode: cloud\nseats:\nco
 content repos/o/r/contents/.team/team.md "$H" $'mode: cloud\nseats:\nconny: { claude: max }\nmodels:\ncoder: codex-cli\nteam: x @ v0.8.19'; arun
 rgreen && ok "rules: the version and model lines of a flat team.md still move green" || { nok "rules: flat team.md green"; cat "$A/out"; }
 
+# Codex M1 round 3 on dignami-aos #82: a model line that already holds a placeholder still moves green
+rsetup; content repos/o/r/contents/.team/team.md "$MB" $'mode: cloud\nmodels:\n  coder: codex — Astra or Sol, issue NNN: <story title>'
+content repos/o/r/contents/.team/team.md "$H" $'mode: cloud\nmodels:\n  coder: codex — Sol, issue NNN: <story title>'; arun
+rgreen && ok "rules: a model line with a <placeholder> still moves green (Codex M1 round 3 on dignami-aos #82)" || { nok "rules: placeholder"; cat "$A/out"; }
+
+rsetup; content repos/o/r/contents/.team/team.md "$H" $'mode: cloud\nseats:\n  conny: { claude: max }\nmodels:\n  coder: codex <!--\n  conny: x'; arun
+! amerged && carded && ok "rules: a model value that opens a comment refuses" || { nok "rules: comment in model value"; cat "$A/out"; }
+
 # Codex M2 round 2 on #42: a guarded last bullet ends with the list item, not at the next heading
 rsetup; content repos/o/r/contents/AGENTS.md "$MB" $'# r\n\n## Team settings\n\n- **Builder:** claude\n- **Guard paths:** none\n\nRulebook version: v0.8.18\n\n## Papercuts\n'
 content repos/o/r/contents/AGENTS.md "$H" $'# r\n\n## Team settings\n\n- **Builder:** claude\n- **Guard paths:** none\n\nRulebook version: v0.8.19\n\n## Papercuts\n'

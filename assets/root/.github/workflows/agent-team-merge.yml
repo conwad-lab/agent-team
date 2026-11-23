@@ -406,7 +406,8 @@ jobs:
                 done <<<"$(hunks <<<"$patch")"
                 # every other line stays as it was: only the values of the version, builder, project and model lines move, in place,
                 # without markup (Codex M1 on tb-site #81, dignami-aos #82, relationsmodellen-site #80, #42: nested, commented and flat seats)
-                tkeep() { sed -E 's/^([[:space:]]*(team|builder|project|product-owner|architect|coder|attacker|reviewer)[[:space:]]*:)[^<>]*$/\1/'; }
+                # a value may hold a placeholder like <story title>, never a comment or a raw-text element that runs past its line
+                tkeep() { awk 'match($0, /^[[:space:]]*(team|builder|project|product-owner|architect|coder|attacker|reviewer)[[:space:]]*:/) && tolower($0) !~ /<!--|-->|<\/?(script|style|pre|textarea)/ {print substr($0, 1, RLENGTH); next} {print}'; }
                 ot=$(b64 .team/team.md "$mb") && nt=$(b64 .team/team.md "$head") || { echo "could not read .team/team.md at $mb and $head"; exit 1; }
                 [ "$(tkeep <<<"$ot")" = "$(tkeep <<<"$nt")" ] || red ".team/team.md changes a line other than the version, builder, project and model lines (human, merge, mode, runner, agent-account, auth and seats take a card)"
               fi
