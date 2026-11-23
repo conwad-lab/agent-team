@@ -21,14 +21,14 @@ What this does not protect against, said plainly: on the MacBook Codex runs unde
 ## Install (Operatör, once per host, about 5 minutes)
 
 1. **Stop old local Codex loops** (the pre-cloud Coder loop posts as the human, signed "Coder (Codex)"). The installer lists any it finds and offers to stop them.
-2. **Create the token** (works from the phone): https://github.com/settings/personal-access-tokens/new. Resource owner: `conwad-lab`. Expiration: 90 days. Repository access: **Only select repositories**, the team repos. Permissions: **Contents** read and write, **Issues** read and write, **Pull requests** read and write (Metadata read is added by itself). Nothing else.
+2. **Create the token** (works from the phone): https://github.com/settings/personal-access-tokens/new. Resource owner: `conwad-lab`. Expiration: 90 days. Repository access: **Only select repositories**, the team repos and `agent-team` (the nightly model list is posted there, `team/MODELS.md`). Permissions: **Contents** read and write, **Issues** read and write, **Pull requests** read and write (Metadata read is added by itself). Nothing else.
 3. **At the Mac, in Terminal**, check `codex login status` says ChatGPT (else `codex login`), then paste:
 
    ```
    bash <(curl -fsSL https://raw.githubusercontent.com/conwad-lab/agent-team/main/bin/codex-cli-install)
    ```
 
-   It checks the tools and the sign-in, asks for the host name, the work folder, the repos and the Codex model ids for Astra and Sol (Enter keeps the defaults; a re-run keeps the ids already in the config), lets `security` prompt for the token twice (hidden), checks it against GitHub, shows the latest comment authors so the allow list is right, writes `~/.config/agent-team/codex-cli.env`, loads the launchd job `se.agent-team.codex-cli` (every 5 minutes while the Mac is awake) and runs one dry tick. Run the same line again to update the poller.
+   It checks the tools and the sign-in, asks for the host name, the work folder, the repos and the Codex model ids for Astra and Sol (Enter keeps the defaults; a re-run keeps the ids already in the config), lets `security` prompt for the token twice (hidden), checks it against GitHub, shows the latest comment authors so the allow list is right, writes `~/.config/agent-team/codex-cli.env`, loads the launchd job `se.agent-team.codex-cli` (every 5 minutes while the Mac is awake) and runs one dry tick. It also loads `se.agent-team.tools-update`, which updates `codex`, `agy` and `claude` every night at 03:30 and posts the models they offer (`team/MODELS.md`). Run the same line again to update the poller.
 
 Afterwards nothing needs the human: the Mac takes orders while it is awake, and `@codex` on GitHub takes over while it sleeps. Logs are in `~/Library/Logs/agent-team/`, one line per run in `WORK_DIR/runs.log`. Do not add `caffeinate`: sleep is what the fallback is for.
 
@@ -43,4 +43,4 @@ No rule, template, plan or story changes: everything host-specific is in `~/.con
 
 ## Remove
 
-`bin/codex-cli-install --uninstall` stops the job and removes the plist, the Keychain item and the config; it leaves `WORK_DIR`. Revoke the token on GitHub (Settings → Developer settings → Fine-grained tokens).
+`bin/codex-cli-install --uninstall` stops both jobs and removes the plists, the Keychain item and the config; it leaves `WORK_DIR`. Revoke the token on GitHub (Settings → Developer settings → Fine-grained tokens).

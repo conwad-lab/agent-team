@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# tools-update: the nightly update of the host's CLIs (codex, agy, claude), then bin/models (team/MODELS.md).
+# Run by the launchd job se.agent-team.tools-update at 03:30 (bin/codex-cli-install loads it; a Mac asleep then runs it
+# on waking).
+#
+#   bin/tools-update             update each tool, log one line per tool, then write models.txt and post it
+#   bin/tools-update --dry-run   print what it would run; changes nothing
+#
+# Per tool: Homebrew where Homebrew installed it (`brew upgrade [--cask] <name>`), else the tool's own `update`
+# command when its --help lists one, else skipped. One line per tool in ~/Library/Logs/agent-team/tools-update.log:
+#   <UTC date> <tool> <old> → <new>                 (the same version twice when nothing was newer)
+#   <UTC date> <tool> <old> → <old> error: <reason>  (the update failed: the old version stays, the next tool goes on)
+#   <UTC date> <tool> not installed | skipped: <reason>
+# It touches nothing but these tools: no sudo, no dependents, no global cleanup (a formula whose own dependencies are
+# outdated is skipped and logged), no network beyond the updaters and `gh`.
+# Every command runs with stdin closed and a time limit (TOOLS_UPDATE_LIMIT, default 600 s). A lock keeps two runs
+# from overlapping. Afterwards it runs bin/models into models.txt and, when the poller config exists, posts it on
+# MODELS_REPO (default conwad-lab/agent-team).
+set -uo pipefail
+
+DRY=0
+case "${1:-}" in --dry-run) DRY=1 ;; "") ;; *) echo "usage: tools-update [--dry-run]" >&2; exit 2 ;; esac
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+LOGS="${AGENT_TEAM_LOGS:-$HOME/Library/Logs/agent-team}"
+LOG="$LOGS/tools-update.log"
+TOOLS="${TOOLS_UPDATE_TOOLS:-codex agy claude}"
+LIMIT="${TOOLS_UPDATE_LIMIT:-600}"
+CONF="${CODEX_CLI_ENV:-$HOME/.config/agent-team/codex-cli.env}"
+MODELS_REPO=conwad-lab/agent-team
+if [ -f "$CONF" ]; then
+  # shellcheck disable=SC1090
+  r="$( (. "$CONF"; printf '%s' "${MODELS_REPO:-}") 2>/dev/null || true)"; [ -n "$r" ] && MODELS_REPO="$r"
+fi
+mkdir -p "$LOGS"
+
+now() { date -u +%Y-%m-%dT%H:%MZ; }
+line() { printf '%s %s\n' "$(now)" "$*" >> "$LOG"; }
+# limit SECS CMD...: stdin closed, in a process group of its own (perl setpgrp; bash 3.2 has no timeout and macOS
+# ships none). The whole group is stopped after SECS, and whatever the command leaves behind in its group when it
+# exits is stopped at once: a wrapper's child that outlives it would otherwise hold our output pipe open.
+limit() {
+  local s="$1"; shift
+  perl -e 'setpgrp(0, 0); exec { $ARGV[0] } @ARGV or exit 127' "$@" </dev/null & local p=$!
+  ( sleep "$s"; kill -TERM -- "-$p"; sleep 2; kill -KILL -- "-$p" ) >/dev/null 2>&1 &
+  local w=$! rc=0
+  wait "$p" || rc=$?
+  if kill -0 -- "-$p" 2>/dev/null; then
+    kill -TERM -- "-$p" 2>/dev/null; sleep 1; kill -KILL -- "-$p" 2>/dev/null
+  fi
+  kill "$w" 2>/dev/null || true; wait "$w" 2>/dev/null || true
+  return "$rc"
+}
+semver() { grep -oE '[0-9]+(\.[0-9]+)+' | head -1; }
+
+# Homebrew names per tool (formula or cask); the first one Homebrew has installed wins
+brew_names() { case "$1" in claude) echo "claude-code claude" ;; agy) echo "agy antigravity-cli" ;; *) echo "$1" ;; esac; }
+brew_kind() { # brew_kind TOOL → "formula NAME" | "cask NAME" | nothing
+  command -v brew >/dev/null || return 0
+  local n
+  for n in $(brew_names "$1"); do
+    limit 60 brew list --formula --versions "$n" >/dev/null 2>&1 && { echo "formula $n"; return 0; }
+    limit 60 brew list --cask --versions "$n" >/dev/null 2>&1 && { echo "cask $n"; return 0; }
+  done
+}
+version_of() { # version_of TOOL KIND NAME
+  local v=""
+  case "$2" in
+    formula) v="$(limit 60 brew list --formula --versions "$3" 2>/dev/null | awk '{print $NF}')" ;;
+    cask) v="$(limit 60 brew list --cask --versions "$3" 2>/dev/null | awk '{print $NF}')" ;;
+  esac
+  [ -n "$v" ] || v="$(limit 60 "$1" --version 2>/dev/null | semver || true)"
+  printf '%s' "${v:-unknown}"
+}
+# Homebrew may otherwise upgrade other formulas that depend on this one and run a cleanup of every package; both off.
+# A formula's own outdated dependencies would be upgraded with it, so such an update is skipped and logged instead.
+export HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ENV_HINTS=1
+outdated_deps() { # outdated_deps KIND NAME → space-separated outdated formulas NAME depends on (nothing for a cask)
+  [ "$1" = formula ] || return 0
+  local deps outdated d r=""
+  deps="$(limit 120 brew deps --installed --formula "$2" 2>/dev/null || true)"
+  [ -n "$deps" ] || return 0
+  outdated="$(limit 120 brew outdated --formula --quiet 2>/dev/null || true)"
+  for d in $deps; do printf '%s\n' "$outdated" | grep -qxF "$d" && r="$r${r:+ }$d"; done
+  printf '%s' "$r"
+}
+has_update_cmd() { limit 60 "$1" --help 2>/dev/null | grep -qE '^[[:space:]]+update([|, ]|[[:space:]]|$)'; }
+
+# ---- lock: a symlink whose target is the owner's pid, made in one step (`ln -s` fails if it exists), so there is
+# never a lock without an owner. A lock whose pid is gone is taken over under a second, short-lived guard, and only
+# if it still names that same dead pid; the exit trap removes the lock only while it names this run.
+LOCK="$LOGS/tools-update.lock"
+take_lock() {
+  ln -s "$$" "$LOCK" 2>/dev/null && return 0
+  local old; old="$(readlink "$LOCK" 2>/dev/null || true)"
+  if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then line "tools-update already running (pid $old), this run stopped"; return 1; fi
+  mkdir "$LOCK.takeover" 2>/dev/null || { line "tools-update lock being taken over by another run, this run stopped"; return 1; }
+  if [ "$(readlink "$LOCK" 2>/dev/null || true)" = "$old" ]; then rm -f "$LOCK"; fi
+  local got=1; ln -s "$$" "$LOCK" 2>/dev/null && got=0
+  rmdir "$LOCK.takeover" 2>/dev/null || true
+  [ "$got" = 0 ] || line "tools-update could not take the lock, this run stopped"
+  return "$got"
+}
+if [ "$DRY" = 0 ]; then
+  take_lock || exit 0
+  trap '[ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ] && rm -f "$LOCK"' EXIT
+fi
+
+for tool in $TOOLS; do
+  if ! command -v "$tool" >/dev/null; then
+    [ "$DRY" = 1 ] && echo "$tool: not installed" || line "$tool not installed"
+    continue
+  fi
+  read -r kind name <<EOF
+$(brew_kind "$tool")
+EOF
+  if [ -n "${kind:-}" ]; then
+    if [ "$kind" = cask ]; then cmd=(brew upgrade --cask "$name"); else cmd=(brew upgrade --formula "$name"); fi
+    others="$(outdated_deps "$kind" "$name")"
+    if [ -n "$others" ]; then
+      [ "$DRY" = 1 ] && echo "$tool: skipped (would also upgrade $others)" || line "$tool skipped: would also upgrade $others"
+      kind=""; name=""; continue
+    fi
+  elif has_update_cmd "$tool"; then cmd=("$tool" update)
+  else
+    [ "$DRY" = 1 ] && echo "$tool: skipped (not from Homebrew, no update command)" || line "$tool skipped: not from Homebrew and no update command"
+    continue
+  fi
+  if [ "$DRY" = 1 ]; then echo "$tool: would run ${cmd[*]}"; continue; fi
+  before="$(version_of "$tool" "${kind:-}" "${name:-}")"
+  out="$(limit "$LIMIT" "${cmd[@]}" 2>&1)"; rc=$?
+  after="$(version_of "$tool" "${kind:-}" "${name:-}")"
+  if [ "$rc" = 0 ]; then line "$tool $before → $after"
+  else
+    why="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1 | cut -c1-200)"
+    [ "$rc" -ge 128 ] && why="stopped after ${LIMIT}s"
+    line "$tool $before → $after error: ${why:-exit $rc}"
+  fi
+  kind=""; name=""
+done
+
+[ "$DRY" = 1 ] && { echo "then: bin/models > $LOGS/models.txt, posted on $MODELS_REPO when $CONF exists"; exit 0; }
+# not under `limit`: bin/models bounds each of its own commands (MODELS_LIMIT), and an outer limit would kill it and
+# its watchdogs but leave the command it was waiting on running in its own process group
+if [ -f "$CONF" ]; then "$HERE/models" --post "$MODELS_REPO" < /dev/null > "$LOGS/models.txt" 2>>"$LOG" || line "models failed"
+else "$HERE/models" < /dev/null > "$LOGS/models.txt" 2>>"$LOG" || line "models failed"; fi
+exit 0

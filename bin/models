@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# models: each host tool's version and the model ids it offers, the ids the team uses, and the newer ones (team/MODELS.md).
+#
+#   bin/models                      ask codex, agy and claude on this host; in-use ids from the poller config
+#   bin/models --map FILE           also read in-use ids (and `declined:` ids) from a model map; repeatable
+#   bin/models --report FILE        read a report (the posted comment, or the Coordinator's own list) instead of
+#                                   asking the tools; repeatable, and the tools are then not asked
+#   bin/models --post OWNER/REPO    also post the report as one comment on the open issue
+#                                   `agent-team: models on <host>` there, edited in place (created if missing)
+#
+# Output, one fact per line (an id may hold spaces, so it is always the rest of the line):
+#   models <host> <UTC time>
+#   <tool> version <version | unknown | not-installed>
+#   <tool> offers <id | unknown>
+#   in-use <role> <id>
+#   newer <tool> <role> <in-use id> → <offered id>
+# A tool is asked with stdin closed and a time limit (MODELS_LIMIT, default 60 s); a tool without a non-interactive
+# listing says `offers unknown`, and no `newer` line can come from it. Exit 0; 2 on a usage error.
+set -euo pipefail
+
+CONF="${CODEX_CLI_ENV:-$HOME/.config/agent-team/codex-cli.env}"
+LIMIT="${MODELS_LIMIT:-60}"
+FAMILIES="${MODEL_FAMILIES:-astra sol luna terra argon carbon hydrogen opus sonnet haiku fable}"
+MARKER='<!-- agent-team-models -->'
+MAPS=(); REPORTS=(); POST=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --map) MAPS+=("${2:?--map needs a file}"); shift 2 ;;
+    --report) REPORTS+=("${2:?--report needs a file}"); shift 2 ;;
+    --post) POST="${2:?--post needs OWNER/REPO}"; shift 2 ;;
+    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "usage: models [--map FILE]... [--report FILE]... [--post OWNER/REPO]" >&2; exit 2 ;;
+  esac
+done
+
+HOST=""; MODELS=""; KEYCHAIN_ITEM=agent-team-codex-cli
+if [ -f "$CONF" ]; then
+  # shellcheck disable=SC1090
+  HOST="$( (. "$CONF"; printf '%s' "${HOST:-}") 2>/dev/null || true)"
+  # shellcheck disable=SC1090
+  MODELS="$( (. "$CONF"; printf '%s' "${MODELS:-}") 2>/dev/null || true)"
+  # shellcheck disable=SC1090
+  KEYCHAIN_ITEM="$( (. "$CONF"; printf '%s' "${KEYCHAIN_ITEM:-agent-team-codex-cli}") 2>/dev/null || true)"
+fi
+[ -n "$HOST" ] || HOST="$(hostname -s 2>/dev/null | tr 'A-Z' 'a-z' || echo host)"
+
+# limit SECS CMD...: stdin closed, in a process group of its own (perl setpgrp; bash 3.2 has no timeout and macOS
+# ships none). The whole group is stopped after SECS, and whatever the command leaves behind in its group when it
+# exits is stopped at once: a wrapper's child that outlives it would otherwise hold our output pipe open.
+limit() {
+  local s="$1"; shift
+  perl -e 'setpgrp(0, 0); exec { $ARGV[0] } @ARGV or exit 127' "$@" </dev/null & local p=$!
+  ( sleep "$s"; kill -TERM -- "-$p"; sleep 2; kill -KILL -- "-$p" ) >/dev/null 2>&1 &
+  local w=$! rc=0
+  wait "$p" || rc=$?
+  if kill -0 -- "-$p" 2>/dev/null; then
+    kill -TERM -- "-$p" 2>/dev/null; sleep 1; kill -KILL -- "-$p" 2>/dev/null
+  fi
+  kill "$w" 2>/dev/null || true; wait "$w" 2>/dev/null || true
+  return "$rc"
+}
+semver() { grep -oE '[0-9]+(\.[0-9]+)+' | head -1; }   # first dotted version in the text
+
+# ---- what each tool offers (the methods are in team/MODELS.md § How each tool is asked)
+ask_codex() {
+  command -v codex >/dev/null || { echo "codex version not-installed"; return; }
+  local v ids
+  v="$(limit "$LIMIT" codex --version 2>/dev/null | semver || true)"
+  echo "codex version ${v:-unknown}"
+  ids="$(limit "$LIMIT" codex debug models 2>/dev/null \
+    | jq -r '.models[]? | select((.visibility // "list") == "list") | .slug // empty' 2>/dev/null || true)"
+  if [ -n "$ids" ]; then printf '%s\n' "$ids" | sed 's/^/codex offers /'; else echo "codex offers unknown"; fi
+}
+ask_agy() {
+  command -v agy >/dev/null || { echo "agy version not-installed"; return; }
+  local v ids
+  v="$(limit "$LIMIT" agy --version 2>/dev/null | semver || true)"
+  echo "agy version ${v:-unknown}"
+  # `agy models` prints one model per line, maybe with a bullet, a marker in brackets or a note after two spaces
+  ids="$(limit "$LIMIT" agy models 2>/dev/null | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g' \
+    | sed -E 's/^[[:space:]]*[-*•>]*[[:space:]]*//; s/[[:space:]]*\(.*$//; s/[[:space:]]{2,}.*$//; s/[[:space:]]+$//' \
+    | grep -E '[0-9]' | grep -vE ':$' || true)"
+  if [ -n "$ids" ]; then printf '%s\n' "$ids" | sed 's/^/agy offers /'; else echo "agy offers unknown"; fi
+}
+ask_claude() {
+  command -v claude >/dev/null || { echo "claude version not-installed"; return; }
+  local v
+  v="$(limit "$LIMIT" claude --version 2>/dev/null | semver || true)"
+  echo "claude version ${v:-unknown}"
+  echo "claude offers unknown"   # Claude Code has no model listing; the Coordinator's own list stands in (MODELS.md)
+}
+
+# ---- in-use ids: the poller config's MODELS (name=id ...) and each map's `role: id — since … — source` lines
+in_use_conf() { local kv; for kv in $MODELS; do case "$kv" in *=*) echo "in-use ${kv%%=*} ${kv#*=}" ;; esac; done; }
+in_use_map() { # in_use_map FILE: `role: id — …` above `## History`; a `declined:` line is printed as `declined <id>`
+  awk '/^##[[:space:]]+History/ { exit } { print }' "$1" | sed -nE 's/^[[:space:]]*[-*]?[[:space:]]*`?([a-z][a-z0-9_-]*)`?:[[:space:]]+(.+)$/\1	\2/p' \
+    | while IFS='	' read -r role rest; do
+        id="$(printf '%s' "$rest" | sed -E 's/[[:space:]]+—.*$//; s/`//g; s/[[:space:]]+$//')"
+        [ -n "$id" ] || continue
+        if [ "$role" = declined ]; then echo "declined $id"; else echo "in-use $role $id"; fi
+      done
+}
+
+# ---- comparison: same line of models (the id with its numbers taken out) and a higher version number
+template() { printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -E 's/(^|[^0-9])[0-9]{8}([^0-9]|$)/\1\2/g; s/[0-9]+//g; s/[._ -]+/-/g; s/^-+//; s/-+$//'; }
+version() { printf '%s' "$1" | grep -oE '[0-9]+' | awk 'length($0) != 8' | paste -sd. - ; }
+newer_than() { # newer_than A B: true when version B > A
+  awk -v a="$1" -v b="$2" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); k = n > m ? n : m
+    for (i = 1; i <= k; i++) { p = (i <= n ? x[i] + 0 : 0); q = (i <= m ? y[i] + 0 : 0); if (q > p) exit 0; if (q < p) exit 1 }
+    exit 1 }'
+}
+family() { local w low; low="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"; for w in $FAMILIES; do case "$low" in *"$w"*) echo "$w"; return 0 ;; esac; done; return 1; }
+
+# ---- collect
+facts="$(
+  if [ "${#REPORTS[@]}" -gt 0 ]; then   # a report keeps its own `models <host> <time>` line, so its age shows
+    for r in "${REPORTS[@]}"; do grep -E '^(models |[A-Za-z0-9_-]+ (version|offers) |in-use )' "$r" || true; done
+  else
+    echo "models $HOST $(date -u +%Y-%m-%dT%H:%MZ)"
+    ask_codex; ask_agy; ask_claude
+    in_use_conf
+  fi
+  if [ "${#MAPS[@]}" -gt 0 ]; then for m in "${MAPS[@]}"; do in_use_map "$m"; done; fi
+)"
+# one in-use line per role, the last one read winning (a later map over an earlier one, any map over the poller
+# config in a report), resolved before duplicates are dropped
+facts="$(printf '%s\n' "$facts" | awk '
+  $1 == "in-use" { if (!($2 in r)) ord[++k] = $2; r[$2] = $0; next } { print }
+  END { for (i = 1; i <= k; i++) print r[ord[i]] }' | awk '!seen[$0]++')"
+report="$(printf '%s\n' "$facts" | grep -v '^declined ' || true)"
+
+offers="$(printf '%s\n' "$facts" | sed -nE 's/^([A-Za-z0-9_-]+) offers (.+)$/\1	\2/p' | grep -v '	unknown$' || true)"
+declined="$(printf '%s\n' "$facts" | sed -n 's/^declined //p')"
+newer="$(
+  printf '%s\n' "$facts" | sed -nE 's/^in-use ([^ ]+) (.+)$/\1	\2/p' | while IFS='	' read -r role id; do
+    family "$id" >/dev/null || continue
+    t="$(template "$id")"; v="$(version "$id")"; [ -n "$v" ] || continue
+    best=""; bestv="$v"; besttool=""
+    while IFS='	' read -r tool oid; do
+      [ -n "$oid" ] || continue
+      [ "$(template "$oid")" = "$t" ] || continue
+      ov="$(version "$oid")"; [ -n "$ov" ] || continue
+      printf '%s\n' "$declined" | grep -qxF -- "$oid" && continue
+      if newer_than "$bestv" "$ov"; then best="$oid"; bestv="$ov"; besttool="$tool"; fi
+    done <<EOF
+$offers
+EOF
+    if [ -n "$best" ]; then echo "newer $besttool $role $id → $best"; fi
+  done | awk '!seen[$0]++'
+)"
+out="$report"; [ -n "$newer" ] && out="$out
+$newer"
+printf '%s\n' "$out"
+
+# ---- post: one comment on the host's issue, edited in place; the token is the poller's, from the Keychain
+if [ -n "$POST" ]; then
+  if [ -z "${GH_TOKEN:-}" ]; then
+    GH_TOKEN="$(limit "$LIMIT" security find-generic-password -s "$KEYCHAIN_ITEM" -w 2>/dev/null || true)"
+    [ -n "$GH_TOKEN" ] || { echo "models: no token in the Keychain item $KEYCHAIN_ITEM; not posted" >&2; exit 0; }
+  fi
+  export GH_TOKEN
+  title="agent-team: models on $HOST"
+  body="$MARKER
+Written by \`bin/models\` after the nightly \`bin/tools-update\` (team/MODELS.md). Edited in place.
+
+\`\`\`
+$out
+\`\`\`"
+  issue="$(limit "$LIMIT" gh api --paginate "repos/$POST/issues?state=open&per_page=100" \
+    --jq ".[] | select(.pull_request == null and .title == \"$title\") | .number" 2>/dev/null | head -1 || true)"
+  if [ -z "$issue" ]; then
+    issue="$(limit "$LIMIT" gh api -X POST "repos/$POST/issues" -f title="$title" \
+      -f body="The host's model list, one comment kept current by \`bin/models --post\` (team/MODELS.md)." --jq .number)" \
+      || { echo "models: could not create the issue in $POST" >&2; exit 0; }
+  fi
+  me="$(limit "$LIMIT" gh api user --jq .login 2>/dev/null || true)"
+  cid="$(limit "$LIMIT" gh api --paginate "repos/$POST/issues/$issue/comments?per_page=100" \
+    --jq ".[] | select(.user.login == \"$me\" and (.body | startswith(\"$MARKER\"))) | .id" 2>/dev/null | head -1 || true)"
+  if [ -n "$cid" ]; then limit "$LIMIT" gh api -X PATCH "repos/$POST/issues/comments/$cid" -f body="$body" >/dev/null \
+      || echo "models: could not edit comment $cid" >&2
+  else limit "$LIMIT" gh api -X POST "repos/$POST/issues/$issue/comments" -f body="$body" >/dev/null \
+      || echo "models: could not post on $POST#$issue" >&2
+  fi
+fi
+exit 0
