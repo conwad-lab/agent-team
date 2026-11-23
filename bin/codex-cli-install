@@ -2,13 +2,14 @@
 # codex-cli-install: set up the Codex CLI host poller on this Mac, once (team/CODEX-CLI.md § Install).
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/conwad-lab/agent-team/main/bin/codex-cli-install)
-#   bin/codex-cli-install --uninstall   stop both jobs, remove the plists, the Keychain item and the config (keeps WORK_DIR)
+#   bin/codex-cli-install --uninstall   stop all jobs, remove the plists, the Keychain item and the config (keeps WORK_DIR)
 #   bin/codex-cli-install --dry-run     print what it would do and the plist it would write; changes nothing
 #
 # It checks codex, gh, git and jq, that `codex login status` is a ChatGPT sign-in, lists old local Codex loops and
 # offers to stop them, stores the fine-grained token in the login Keychain (typed into `security`'s own prompt, never
 # on a command line), asks for the two Codex model ids (Astra and Sol; a re-run keeps the old ones), writes
-# ~/.config/agent-team/codex-cli.env, loads the launchd job and runs one dry tick. It also loads the nightly
+# ~/.config/agent-team/codex-cli.env, loads the launchd jobs (one per run slot, MAX_RUNS, default 2: a job's tick lasts as
+# long as its run, so a second job is what starts a second run) and runs one dry tick. It also loads the nightly
 # se.agent-team.tools-update job (03:30: update codex, agy and claude, then bin/models; team/MODELS.md).
 set -euo pipefail
 
@@ -37,12 +38,16 @@ model_ok() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }
 
 if [ "$MODE" = uninstall ]; then
   [ -f "$CONF" ] && ITEM="$(. "$CONF"; printf '%s' "${KEYCHAIN_ITEM:-$ITEM}")"
-  launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
+  for pl in "$HOME/Library/LaunchAgents/$LABEL"*.plist; do   # the slot jobs: se.agent-team.codex-cli and .codex-cli.2, .3 ...
+    [ -f "$pl" ] || continue
+    launchctl bootout "gui/$(id -u)" "$pl" 2>/dev/null || true
+    rm -f "$pl"
+  done
   launchctl bootout "gui/$(id -u)" "$UPD_PLIST" 2>/dev/null || true
-  rm -f "$PLIST" "$UPD_PLIST"
+  rm -f "$UPD_PLIST"
   security delete-generic-password -s "$ITEM" >/dev/null 2>&1 || true
   rm -f "$CONF"
-  say "Avinstallerat: jobben $LABEL och $UPD_LABEL, Keychain-posten $ITEM och $CONF är borta. Arbetsmappen ligger kvar."
+  say "Avinstallerat: jobben $LABEL (alla platser) och $UPD_LABEL, Keychain-posten $ITEM och $CONF är borta. Arbetsmappen ligger kvar."
   exit 0
 fi
 
@@ -50,9 +55,10 @@ fi
 HERE=""
 case "$0" in /dev/fd/*|/proc/*|bash|-bash) ;; *) HERE="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd || true)" ;; esac
 
-render_plist() { # render_plist TEMPLATE SCRIPT PATH LOGS
-  local tpl="$1"
-  sed -e "s#__POLLER__#$2#" -e "s#__SCRIPT__#$2#" -e "s#__PATH__#$3#" -e "s#__LOGS__#$4#" "$tpl"
+render_plist() { # render_plist TEMPLATE SCRIPT PATH LOGS [SLOT]: SLOT 2 and up gets the label <label>.<slot>
+  local tpl="$1" lbl="${5:+.$5}"
+  sed -e "s#__POLLER__#$2#" -e "s#__SCRIPT__#$2#" -e "s#__PATH__#$3#" -e "s#__LOGS__#$4#" \
+      -e "s#<string>$LABEL</string>#<string>$LABEL$lbl</string>#" "$tpl"
 }
 
 if [ "$MODE" = dry ]; then
@@ -61,8 +67,10 @@ if [ "$MODE" = dry ]; then
   say "Would check: macOS, codex, gh, git, jq on PATH; 'codex login status' signed in with ChatGPT; old local Codex loops."
   say "Would ask for the Codex model ids for Astra and Sol (Enter keeps the config's, else gpt-6-astra and gpt-6-sol)."
   say "Would store the token in the Keychain item $ITEM, write $CONF from assets/codex-cli/codex-cli.env.example,"
-  say "clone $RULEBOOK into WORK_DIR/agent-team and load $PLIST:"
+  say "clone $RULEBOOK into WORK_DIR/agent-team and load $PLIST, one job per run slot (MAX_RUNS, default 2; a re-run keeps the config's):"
   render_plist "$HERE/assets/codex-cli/$LABEL.plist" "\$HOME/agent-team-builds/agent-team/bin/codex-cli-poll" "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" "$LOGS"
+  say "and, for run slot 2, the same job with the label $LABEL.2 (a job's tick lasts as long as its run; the second job starts the second run, never in a repo the first holds):"
+  render_plist "$HERE/assets/codex-cli/$LABEL.plist" "\$HOME/agent-team-builds/agent-team/bin/codex-cli-poll" "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" "$LOGS" 2 | grep "<string>$LABEL.2</string>"
   say "and the nightly update job $UPD_PLIST (team/MODELS.md):"
   render_plist "$HERE/assets/codex-cli/$UPD_LABEL.plist" "\$HOME/agent-team-builds/agent-team/bin/tools-update" "\$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" "$LOGS"
   exit 0
@@ -95,8 +103,12 @@ WORK_DIR="$(ask 'Arbetsmapp' "$HOME/agent-team-builds")"
 case "$WORK_DIR" in "$HOME/WebProjects"|"$HOME/WebProjects/"*|*[Vv]ault*) die "arbetsmappen får inte ligga under ~/WebProjects eller i en vault." ;; esac
 REPOS="$(ask 'Repon' "$TEAM_REPOS")"
 # the two Codex models an order may name (`Model: astra|sol`); a re-run offers the config's own values
-OLD_MODELS=""; OLD_MODEL=""
+OLD_MODELS=""; OLD_MODEL=""; OLD_MAX=""; OLD_FREE=""
 if [ -f "$CONF" ]; then
+  # shellcheck disable=SC1090
+  OLD_MAX="$( (. "$CONF"; printf '%s' "${MAX_RUNS:-}") 2>/dev/null || true)"
+  # shellcheck disable=SC1090
+  OLD_FREE="$( (. "$CONF"; printf '%s' "${MIN_FREE_GB:-}") 2>/dev/null || true)"
   # shellcheck disable=SC1090
   OLD_MODELS="$( (. "$CONF"; printf '%s' "${MODELS:-}") 2>/dev/null || true)"
   # shellcheck disable=SC1090
@@ -110,6 +122,9 @@ ASTRA_ID="$(ask 'Codex modell-id för Astra (som /model i codex visar det)' "$DE
 SOL_ID="$(ask 'Codex modell-id för Sol' "$DEF_SOL")"
 model_ok "$ASTRA_ID" && model_ok "$SOL_ID" || die "ett modell-id får bara ha bokstäver, siffror, punkt, bindestreck och understreck."
 MODELS_LINE="astra=$ASTRA_ID sol=$SOL_ID"
+# run slots and the disk guard: a re-run keeps the config's values; the example's defaults (2 and 10) when absent or not whole numbers
+MAX_RUNS_V="$OLD_MAX"; [[ "$MAX_RUNS_V" =~ ^[1-9][0-9]?$ ]] || MAX_RUNS_V=""
+MIN_FREE_V="$OLD_FREE"; [[ "$MIN_FREE_V" =~ ^[0-9]+$ ]] || MIN_FREE_V=""
 
 # ---- token: typed into security's own prompt, then checked against GitHub
 say ""
@@ -134,16 +149,31 @@ esc() { printf '%s' "$1" | sed -e 's/[#&\\]/\\&/g'; }   # a typed value may hold
 sed -e "s#^HOST=.*#HOST=$(esc "$HOST")#" -e "s#^WORK_DIR=.*#WORK_DIR=\"$(esc "$WORK_DIR")\"#" \
     -e "s#^REPOS=.*#REPOS=\"$(esc "$REPOS")\"#" -e "s#^ALLOW=.*#ALLOW=\"$(esc "$ALLOW")\"#" \
     -e "s#^KEYCHAIN_ITEM=.*#KEYCHAIN_ITEM=$ITEM#" \
-    -e "s#^MODEL=.*#MODEL=$ASTRA_ID#" -e "s#^MODELS=.*#MODELS=\"$MODELS_LINE\"#" "$SRC/assets/codex-cli/codex-cli.env.example" > "$CONF"
+    -e "s#^MODEL=.*#MODEL=$ASTRA_ID#" -e "s#^MODELS=.*#MODELS=\"$MODELS_LINE\"#" \
+    ${MAX_RUNS_V:+-e "s#^MAX_RUNS=.*#MAX_RUNS=$MAX_RUNS_V#"} ${MIN_FREE_V:+-e "s#^MIN_FREE_GB=.*#MIN_FREE_GB=$MIN_FREE_V#"} \
+    "$SRC/assets/codex-cli/codex-cli.env.example" > "$CONF"
 chmod 600 "$CONF"
 say "✓ $CONF"
 say "✓ MODELS=\"$MODELS_LINE\" (en order utan Model-rad kör $ASTRA_ID)"
 
 PATH_FOR_JOB="$(for c in codex gh git jq node; do command -v "$c" >/dev/null && dirname "$(command -v "$c")"; done | awk '!s[$0]++' | paste -sd: -):/usr/bin:/bin:/usr/sbin:/sbin"
-render_plist "$SRC/assets/codex-cli/$LABEL.plist" "$SRC/bin/codex-cli-poll" "$PATH_FOR_JOB" "$LOGS" > "$PLIST"
-launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
-say "✓ launchd-jobbet $LABEL laddat (var 5:e minut medan Macen är vaken)"
+MAX_NOW="$( (. "$CONF"; printf '%s' "$MAX_RUNS") )"
+say "✓ MAX_RUNS=$MAX_NOW MIN_FREE_GB=$( (. "$CONF"; printf '%s' "$MIN_FREE_GB") ) (en körning per repo; en enda när disken har mindre ledigt)"
+# one launchd job per run slot: launchd never starts a job again while its last run is going, so a second job is what
+# lets a second order start. Jobs above MAX_RUNS from an earlier run of this line are stopped.
+for pl in "$HOME/Library/LaunchAgents/$LABEL"*.plist; do
+  [ -f "$pl" ] || continue
+  launchctl bootout "gui/$(id -u)" "$pl" 2>/dev/null || true
+  rm -f "$pl"
+done
+slot=1
+while [ "$slot" -le "$MAX_NOW" ]; do
+  if [ "$slot" = 1 ]; then JOB_PLIST="$PLIST"; JOB_ARG=""; else JOB_PLIST="$HOME/Library/LaunchAgents/$LABEL.$slot.plist"; JOB_ARG="$slot"; fi
+  render_plist "$SRC/assets/codex-cli/$LABEL.plist" "$SRC/bin/codex-cli-poll" "$PATH_FOR_JOB" "$LOGS" $JOB_ARG > "$JOB_PLIST"
+  launchctl bootstrap "gui/$(id -u)" "$JOB_PLIST"
+  slot=$((slot + 1))
+done
+say "✓ launchd-jobben $LABEL (ett per körplats, $MAX_NOW st) laddade (var 5:e minut medan Macen är vaken)"
 
 # ---- the nightly update job: codex, agy and claude where they are, Homebrew's bin, then bin/models (team/MODELS.md)
 UPD_PATH="$(for c in brew codex agy claude gh jq; do command -v "$c" >/dev/null && dirname "$(command -v "$c")"; done | awk '!s[$0]++' | paste -sd: -)"

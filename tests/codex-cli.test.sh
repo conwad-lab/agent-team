@@ -16,7 +16,8 @@ export ST FAKE_TOKEN FAKE_ME=conwad-lab GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_N
 
 cat > "$T/bin/gh" <<'G'
 #!/usr/bin/env bash
-# fake gh api: state in $ST (issue_<n>.json, comments_<n>.json, pulls.json), every call logged to $ST/calls
+# fake gh api: state in $ST (issue_<n>.json, comments_<n>.json, pulls.json; repo_<n> names an issue's repo, o/r by default,
+# pulls_r2.json for o/r2), every call logged to $ST/calls
 set -u
 [ "$1" = api ] || { echo "fake gh: only api" >&2; exit 1; }
 shift
@@ -37,14 +38,17 @@ out() { if [ -n "$jqf" ]; then jq -r "$jqf"; else cat; fi; }
 num() { printf '%s' "$url" | sed -E 's#^repos/[^/]+/[^/]+/issues/([0-9]+).*#\1#'; }
 case "$method $url" in
   "GET search/issues"*)
-    for f in "$ST"/issue_*.json; do [ -f "$f" ] && jq -c 'select(.state=="open" and ([.labels[].name]|index("codex-cli")))' "$f"; done \
-      | jq -s '{items: map({repository_url: "https://api.github.com/repos/o/r", number})}' | out ;;
+    for f in "$ST"/issue_*.json; do
+      [ -f "$f" ] || continue
+      n="${f##*/issue_}"; n="${n%.json}"; rp=o/r; [ -f "$ST/repo_$n" ] && rp="$(cat "$ST/repo_$n")"
+      jq -c --arg rp "$rp" 'select(.state=="open" and ([.labels[].name]|index("codex-cli"))) | . + {rp: $rp}' "$f"
+    done | jq -s '{items: map({repository_url: ("https://api.github.com/repos/" + .rp), number})}' | out ;;
   "GET user") echo "{\"login\":\"$FAKE_ME\"}" | out ;;
-  "GET repos/o/r") echo '{"default_branch":"main"}' | out ;;
-  "GET repos/o/r/issues/"*"/comments"*)
+  "GET repos/o/r"|"GET repos/o/r2") echo '{"default_branch":"main"}' | out ;;
+  "GET repos/o/"*"/issues/"*"/comments"*)
     if [ -f "$ST/hook_fail_reread" ] && grep -q "codex-cli: started" "$ST/comments_$(num).json"; then echo "HTTP 502" >&2; exit 1; fi
     cat "$ST/comments_$(num).json" | out ;;
-  "POST repos/o/r/issues/"*"/comments")
+  "POST repos/o/"*"/issues/"*"/comments")
     i="$(num)"; c="$ST/comments_$i.json"
     first="$(printf '%s\n' "$body" | head -1)"
     if [ -f "$ST/hook_fail_outcome" ] && [ "$first" = "codex-cli: done" ]; then rm -f "$ST/hook_fail_outcome"; echo "HTTP 503" >&2; exit 1; fi
@@ -59,15 +63,17 @@ case "$method $url" in
     jq --argjson id "$id" --arg b "$body" --arg u "$FAKE_ME" '. + [{id: $id, user: {login: $u}, body: $b}]' "$c" > "$c.n" && mv "$c.n" "$c"
     if [ -f "$ST/hook_lose_claim" ] && [[ "$first" == "codex-cli: started "* ]]; then rm -f "$ST/hook_lose_claim"; echo "HTTP 502" >&2; exit 1; fi
     echo "{\"id\":$id}" | out ;;
-  "DELETE repos/o/r/issues/comments/"*)
+  "DELETE repos/o/"*"/issues/comments/"*)
     id="${url##*/}"
     for c in "$ST"/comments_*.json; do jq --argjson id "$id" 'map(select(.id != $id))' "$c" > "$c.n" && mv "$c.n" "$c"; done ;;
-  "GET repos/o/r/issues/"*) cat "$ST/issue_$(num).json" | out ;;
-  "GET repos/o/r/pulls?"*) cat "$ST/pulls.json" 2>/dev/null | jq '[.[] | select(.state=="open")]' | out ;;
-  "POST repos/o/r/pulls")
-    jq '. + {state: "open", html_url: "https://github.com/o/r/pull/77", number: 77}' "$input" > "$ST/pr_new.json"
-    jq -s '.' "$ST/pr_new.json" > "$ST/pulls.json"
-    out < "$ST/pr_new.json" ;;
+  "GET repos/o/"*"/issues/"*) cat "$ST/issue_$(num).json" | out ;;
+  "GET repos/o/"*"/pulls?"*) pf="$ST/pulls.json"; case "$url" in repos/o/r2/*) pf="$ST/pulls_r2.json" ;; esac
+    cat "$pf" 2>/dev/null | jq '[.[] | select(.state=="open")]' | out ;;
+  "POST repos/o/"*"/pulls")
+    pf="$ST/pulls.json"; pn=77; case "$url" in repos/o/r2/*) pf="$ST/pulls_r2.json"; pn=78 ;; esac
+    jq --argjson n "$pn" --arg u "https://github.com/o/r/pull/$pn" '. + {state: "open", html_url: $u, number: $n}' "$input" > "$ST/pr_new_$pn.json"
+    jq -s '.' "$ST/pr_new_$pn.json" > "$pf"
+    out < "$ST/pr_new_$pn.json" ;;
   *) echo "fake gh: unhandled $method $url" >&2; exit 1 ;;
 esac
 G
@@ -93,6 +99,8 @@ case "$mode" in
   listed)   echo hi > hello.txt; mkdir -p .github/workflows; echo x > .github/workflows/ci.yml; printf 'Hinder: inga\n' > "$last" ;;
   red)      echo bye > other.txt; printf 'Hinder: inga\n' > "$last" ;;
   stall)    sleep 30 ;;
+  slow)     n=0; while [ ! -f "$ST/release" ] && [ "$n" -lt 40 ]; do echo x >> "$sess"; sleep 1; n=$((n+1)); done
+            echo hi > hello.txt; printf 'Hinder: inga\n' > "$last" ;;
   crash)    echo hi > hello.txt; exit 7 ;;
   failexit) echo hi > hello.txt; printf 'Hinder: inga\n' > "$last"; exit 7 ;;
   hindertok) echo hi > hello.txt; printf 'Hinder: saw %s in the env\n' "$FAKE_TOKEN" > "$last" ;;
@@ -106,6 +114,12 @@ case "$mode" in
   fixonly)  echo again >> hello.txt; printf -- '- M1: fixed\n\nHinder: inga\n' > "$last" ;;
 esac
 C
+cat > "$T/bin/df" <<'D'
+#!/usr/bin/env bash
+# fake df -Pk DIR: free kilobytes from $ST/df_kb (default 100 GB); df_kb "garbage" shows an unreadable answer
+kb="$(cat "$ST/df_kb" 2>/dev/null || echo 104857600)"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/x 999999999 1 %s 1%% /\n' "$kb"
+D
 cat > "$T/bin/security" <<'S'
 #!/usr/bin/env bash
 echo "security $*" >> "$ST/calls"
@@ -122,13 +136,15 @@ printf -- '- **Test before commit:** `test -f hello.txt` and `test -z "${GH_ENTE
 printf '# Plan\n\n## Files\n- `hello.txt` — new\n- `.github/workflows/ci.yml` — the job\n\n## Steps\n1. x\n' > "$SEED/.team/plans/001-x.md"
 git -C "$SEED" add -A && git -C "$SEED" -c user.name=t -c user.email=t@t commit -qm seed
 git -C "$SEED" push -q "$REMOTE/o/r.git" main
+git init -q --bare -b main "$REMOTE/o/r2.git"
+git -C "$SEED" push -q "$REMOTE/o/r2.git" main
 
 CONF="$T/codex-cli.env"
 cat > "$CONF" <<E
 ENABLED=1
 HOST=testmac
 WORK_DIR=$T/work
-REPOS="o/r"
+REPOS="o/r o/r2"
 ALLOW="Conwad-Lab"
 HUMAN=Conny
 GIT_BASE=file://$REMOTE
@@ -136,6 +152,8 @@ MODELS="astra=gpt-6-astra sol=gpt-6-sol-test broken=bad;id"
 STALL_SEC=2
 POLL_SEC=1
 RUN_LIMIT_SEC=60
+MAX_RUNS=2
+MIN_FREE_GB=10
 E
 export CODEX_CLI_ENV="$CONF" HOME="$T/home"
 
@@ -172,7 +190,7 @@ check "done: draft PR with title, head, base and Codex's answer" 'jq -e ".[0] | 
 check "done: codex got model, sandbox and the order on stdin" 'grep -q -- "exec -m gpt-6-astra -s workspace-write -o .* -$" $ST/codex_args && grep -q "^PR title: 001: say hello$" $ST/prompt'
 check "done: no GitHub token in codex env" '! grep -v "^FAKE_TOKEN=" $ST/codex_env | grep -qF "$FAKE_TOKEN" && ! grep -Eq "^(GH_|GITHUB_)(ENTERPRISE_)?TOKEN=" $ST/codex_env'
 check "done: every gh call carried the token" '! grep -q NO-TOKEN $ST/calls'
-check "done: worktree removed, run logged, no current file" '[ -z "$(ls -A $T/work/wt 2>/dev/null)" ] && grep -q "done" $T/work/runs.log && [ ! -f $T/work/current ] && [ ! -d $T/work/.lock ]'
+check "done: worktree removed, run logged, no current file" '[ -z "$(ls -A $T/work/wt 2>/dev/null)" ] && grep -q "done" $T/work/runs.log && [ ! -f $T/work/current.1 ] && [ ! -d $T/work/.lock.1 ] && [ ! -d $T/work/.repo-o-r ]'
 check "done: token never in logs or output" '! grep -rqF "$FAKE_TOKEN" $T/work $T/out $T/err'
 
 # 1b the same order again: the outcome follows it, nothing runs
@@ -219,7 +237,7 @@ check "stall: bounced as stalled" 'last_comment | grep -q "^Reason: stalled"'
 check "stall: nothing pushed" '! remote_has feat/001-x'
 
 # 10 a started run with no outcome (host slept) → bounced on the next tick
-reset ok; mkdir -p "$T/work/repos" "$T/work/wt"; echo "o/r 5 old-run" > "$T/work/current"
+reset ok; mkdir -p "$T/work/repos" "$T/work/wt"; echo "o/r 5 old-run" > "$T/work/current.1"
 git clone -q "$REMOTE/o/r.git" "$T/work/repos/o_r"
 git -C "$T/work/repos/o_r" worktree add -q -b cli/old-run "$T/work/wt/old-run" origin/main
 echo half > "$T/work/wt/old-run/half.txt"
@@ -253,7 +271,7 @@ check "Test before commit is read from main, not from Codex's diff" '[ ! -e $T/w
 # 13b Codex exits without a last message → bounced, cleaned up, not "host slept" next tick
 reset crash; tick
 check "crash: bounced with no Hinder line and the exit code" 'last_comment | grep -q "^Reason: no Hinder line, codex exited 7"'
-check "crash: worktree removed, no current file" '[ -z "$(ls -A $T/work/wt 2>/dev/null)" ] && [ ! -f $T/work/current ]'
+check "crash: worktree removed, no current file" '[ -z "$(ls -A $T/work/wt 2>/dev/null)" ] && [ ! -f $T/work/current.1 ]'
 
 # 13b2 Codex exits non-zero after writing a Hinder line → bounced, nothing pushed
 reset failexit; tick
@@ -261,7 +279,7 @@ check "non-zero exit with Hinder: bounced, no push" 'last_comment | grep -q "^Re
 
 # 13b3 re-reading the issue after the claim fails → claim withdrawn, no recovery state left, codex not run
 reset ok; touch "$ST/hook_fail_reread"; tick
-check "re-read fails: claim deleted, no current file, codex not run" '! bodies | grep -q "codex-cli: started" && [ ! -f $T/work/current ] && [ ! -f $ST/codex_args ]'
+check "re-read fails: claim deleted, no current file, codex not run" '! bodies | grep -q "codex-cli: started" && [ ! -f $T/work/current.1 ] && [ ! -f $ST/codex_args ]'
 
 # 13b4 a late outcome for an old order does not hide a newer order
 reset ok
@@ -286,7 +304,7 @@ tick
 check "forged claim ignored: order built" 'last_comment | head -1 | grep -qx "codex-cli: done"'
 
 # 13b8 the host-slept outcome is kept when GitHub refuses it
-reset ok; mkdir -p "$T/work"; echo "o/r 5 old-run 1001" > "$T/work/current"; touch "$ST/hook_fail_bounce"
+reset ok; mkdir -p "$T/work"; echo "o/r 5 old-run 1001" > "$T/work/current.1"; touch "$ST/hook_fail_bounce"
 jq '. + [{id: 1002, user: {login: "conwad-lab"}, body: "codex-cli: started old-run on testmac for 1001"}]' "$ST/comments_5.json" > "$T/c.json" && mv "$T/c.json" "$ST/comments_5.json"
 tick; tick
 check "slept outcome retried on the next tick" 'bodies | grep -q "^Reason: host slept or stopped (run old-run" && [ -z "$(ls -A $T/work/pending 2>/dev/null)" ]'
@@ -306,7 +324,7 @@ check "token in the answer: redacted in the PR body" '[ -f $ST/pulls.json ] && !
 
 # 13b11 the claim is saved but its answer is lost → the next tick bounces the order
 reset ok; touch "$ST/hook_lose_claim"; tick
-check "lost claim answer: recovery state kept, codex not run" '[ -f $T/work/current ] && [ ! -f $ST/codex_args ]'
+check "lost claim answer: recovery state kept, codex not run" '[ -f $T/work/current.1 ] && [ ! -f $ST/codex_args ]'
 tick
 check "lost claim answer: bounced on the next tick, not built" 'bodies | grep -q "^Reason: host slept or stopped" && [ ! -f $ST/codex_args ]'
 
@@ -429,6 +447,110 @@ check "installer: # and & in a typed value survive the config sed" '[ "$(echo "H
 
 # v0.8.22 (story Z): the Coordinator, not a Builder thread, posts the order on the issue
 check "Flow 3 and CODEX-CLI.md both name the Coordinator as poster of the order" 'grep -Eq "^3\. .*codex-cli., where the Coordinator posts the plan.s .## Work order. on the story.s issue" "$SKILL/team/CLOUD.md" && grep -q "Way in.\*\* The Coordinator posts a work order" "$SKILL/team/CODEX-CLI.md" && ! grep -q "Way in.\*\* The Builder posts" "$SKILL/team/CODEX-CLI.md"'
+
+# ---- v0.8.23 (story AA): up to MAX_RUNS runs at once per host, one per repo, one when the disk is low
+# issues 5 (o/r, the first order), 6 (o/r, a second order) and 7 (o/r2); `slow` holds a run until $ST/release exists
+setup3() { # setup3 MODE
+  reset "$1"
+  git -C "$SEED" push -q -f "$REMOTE/o/r2.git" main
+  git --git-dir="$REMOTE/o/r2.git" branch -D feat/002-y >/dev/null 2>&1 || true
+  git --git-dir="$REMOTE/o/r.git" branch -D feat/002-y >/dev/null 2>&1 || true
+  ORDER2="$(printf '%s' "$ORDER" | sed -e 's#feat/001-x#feat/002-y#' -e 's#001: say hello#002: say hello again#')"
+  for iss in 6 7; do
+    echo '{"number":'$iss',"state":"open","labels":[{"name":"codex-cli"}]}' > "$ST/issue_$iss.json"
+    jq -n --arg b "$ORDER2" '[{id: 1000, user: {login: "someone"}, body: "story text"}, {id: 1001, user: {login: "conwad-lab"}, body: $b}]' > "$ST/comments_$iss.json"
+  done
+  echo o/r2 > "$ST/repo_7"
+}
+tickbg() { # tickbg N [args]: a tick in the background, output in $T/outN, $T/errN, $T/rcN
+  local n="$1"; shift
+  ( PATH="$T/bin:$PATH" bash "$SKILL/bin/codex-cli-poll" "$@" > "$T/out$n" 2> "$T/err$n"; echo $? > "$T/rc$n" ) &
+}
+waitfor() { local i=0; while ! eval "$1"; do i=$((i+1)); [ "$i" -lt 150 ] || return 1; sleep 0.2; done; }
+claimed() { jq -e 'any(.[]; .body | startswith("codex-cli: started"))' "$ST/comments_$1.json" >/dev/null; }
+outcome_of() { jq -r '[.[] | select(.body | test("^codex-cli: (done|blocked|bounced)"))] | last | (.body // "") | split("\n")[0]' "$ST/comments_$1.json"; }
+
+setup3 slow; rm -f "$T"/rc1 "$T"/rc2
+tickbg 1
+waitfor 'claimed 5 && [ -f $ST/codex_args ]'
+check "parallel: the first tick holds slot 1 and the repo lock of o/r, and has a recovery file" '[ -d $T/work/.lock.1 ] && [ -d $T/work/.repo-o-r ] && [ -f $T/work/current.1 ]'
+tickbg 2
+waitfor 'claimed 7'
+check "parallel: a second order in the other repo is claimed while the first run is going" 'claimed 7 && ! [ -f $T/rc1 ]'
+check "parallel: the second tick holds slot 2 and o/r2; the order in the busy repo o/r is skipped (not claimed)" '[ -d $T/work/.lock.2 ] && [ -d $T/work/.repo-o-r2 ] && [ -f $T/work/current.2 ] && ! claimed 6'
+tickbg 3
+waitfor '[ -f $T/rc3 ]'
+check "parallel: both slots busy, a third tick starts nothing and says why" '[ "$(cat $T/rc3)" = 0 ] && ! claimed 6 && grep -q "no free slot (2 of 2 busy" $T/err3'
+touch "$ST/release"
+waitfor '[ -f $T/rc1 ] && [ -f $T/rc2 ]'
+check "parallel: both runs finish done, each on its own PR" '[ "$(outcome_of 5)" = "codex-cli: done" ] && [ "$(outcome_of 7)" = "codex-cli: done" ] && jq -e ".[0].title == \"002: say hello again\"" $ST/pulls_r2.json >/dev/null && jq -e ".[0].title == \"001: say hello\"" $ST/pulls.json >/dev/null'
+check "parallel: runs.log has both runs" '[ "$(grep -c "done" $T/work/runs.log)" = 2 ]'
+check "parallel: locks and recovery files are gone" '[ -z "$(ls -A $T/work | grep -E "^(\.lock|\.repo|current)" || true)" ] && [ -z "$(ls -A $T/work/wt 2>/dev/null)" ]'
+: > "$ST/calls"; rm -f "$ST/release" "$ST/codex_args" "$T"/rc*
+echo ok > "$ST/mode"; tick
+check "same repo, one after the other: the order that waited is claimed by the next tick" 'claimed 6 && [ "$(outcome_of 6)" = "codex-cli: done" ] && [ "$(cat $T/rc)" = 0 ]'
+
+# MAX_RUNS=1 keeps today's behaviour: the second tick waits although another repo has an order
+setup3 slow; sed -i.bak 's/^MAX_RUNS=2/MAX_RUNS=1/' "$CONF"; rm -f "$T"/rc*
+tickbg 1; waitfor 'claimed 5 && [ -f $ST/codex_args ]'
+tickbg 2; waitfor '[ -f $T/rc2 ]'
+check "MAX_RUNS=1: the second tick starts nothing, o/r2's order waits" '[ "$(cat $T/rc2)" = 0 ] && ! claimed 7 && ! [ -d $T/work/.lock.2 ] && grep -q "no free slot (1 of 1 busy" $T/err2'
+touch "$ST/release"; waitfor '[ -f $T/rc1 ]'
+sed -i.bak 's/^MAX_RUNS=1/MAX_RUNS=2/' "$CONF"
+
+# the disk guard: under MIN_FREE_GB one run at a time, whatever MAX_RUNS says
+setup3 slow; echo 1048576 > "$ST/df_kb"; rm -f "$T"/rc*   # 1 GB free, MIN_FREE_GB is 10
+tickbg 1; waitfor 'claimed 5 && [ -f $ST/codex_args ]'
+tickbg 2; waitfor '[ -f $T/rc2 ]'
+check "low disk: a run goes, the second tick waits although MAX_RUNS is 2" '[ "$(cat $T/rc2)" = 0 ] && ! claimed 7 && ! [ -d $T/work/.lock.2 ] && grep -q "no free slot (1 of 2 busy, 1048576 KB free" $T/err2'
+touch "$ST/release"; waitfor '[ -f $T/rc1 ]'
+setup3 ok; echo garbage > "$ST/df_kb"; rm -f "$T"/rc*; tick
+check "low disk: a df answer nobody can read counts as low; the run still goes, in slot 1" '[ "$(outcome_of 5)" = "codex-cli: done" ] && [ -z "$(ls -A $T/work | grep -E "^\.lock" || true)" ]'
+setup3 ok; echo 1048576 > "$ST/df_kb"; sed -i.bak 's/^MIN_FREE_GB=10/MIN_FREE_GB=1/' "$CONF"; tick
+check "disk exactly at MIN_FREE_GB is enough" '[ "$(outcome_of 5)" = "codex-cli: done" ]'
+sed -i.bak 's/^MIN_FREE_GB=1$/MIN_FREE_GB=10/' "$CONF"
+
+# stale locks: a dead holder's slot and repo are taken over, a live holder's are not
+setup3 ok; mkdir -p "$T/work/.lock.1" "$T/work/.repo-o-r"; echo 999999 > "$T/work/.lock.1/pid"; echo 999999 > "$T/work/.repo-o-r/pid"
+tick
+check "stale: a dead holder's slot and repo lock are taken over, the order in o/r is built" '[ "$(outcome_of 5)" = "codex-cli: done" ]'
+setup3 ok; sleep 60 & live=$!; mkdir -p "$T/work/.lock.1" "$T/work/.repo-o-r"; echo "$live" > "$T/work/.lock.1/pid"; echo "$live" > "$T/work/.repo-o-r/pid"
+tick
+check "live slot 1 and live o/r lock: the tick takes slot 2 and o/r2's order, leaves o/r alone" '[ "$(outcome_of 7)" = "codex-cli: done" ] && ! claimed 5 && ! claimed 6 && [ -d $T/work/.lock.1 ] && kill -0 $live'
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+setup3 ok; mkdir -p "$T/work/.lock.1"; tick
+check "a lock whose pid is not written yet is young, not stale: slot 1 is left alone, slot 2 is used" '[ -d $T/work/.lock.1 ] && [ "$(outcome_of 5)" = "codex-cli: done" ]'
+
+# recovery per slot: a dead run's current.N is bounced by whichever tick comes first; a live run's is left alone
+setup3 ok; mkdir -p "$T/work/repos" "$T/work/wt"
+echo "o/r2 7 dead-run 1001" > "$T/work/current.2"
+jq '. + [{id: 1002, user: {login: "conwad-lab"}, body: "codex-cli: started dead-run on testmac for 1001"}]' "$ST/comments_7.json" > "$T/c.json" && mv "$T/c.json" "$ST/comments_7.json"
+sleep 60 & live=$!; mkdir -p "$T/work/.lock.1"; echo "$live" > "$T/work/.lock.1/pid"; echo "o/r 5 live-run 1001" > "$T/work/current.1"
+tick
+check "recovery: the dead slot 2 run is bounced, the live slot 1 run's recovery file is untouched" 'jq -r ".[].body" $ST/comments_7.json | grep -q "^Reason: host slept or stopped (run dead-run on testmac never finished)" && [ -f $T/work/current.1 ] && grep -q live-run $T/work/current.1 && ! bodies | grep -q live-run'
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+setup3 ok; mkdir -p "$T/work/pending"; echo "o/r2 7 dead-run 1001" > "$T/work/current.2"; printf 'o/r 5\ncodex-cli: done\nlate\n' > "$T/work/pending/old-run"
+tick
+check "recovery: a dead slot's file is bounced although another slot ran this tick; a kept outcome is delivered once" '[ ! -f $T/work/current.2 ] && [ "$(bodies | grep -c "^late$")" = 1 ] && [ ! -f $T/work/pending/old-run ]'
+
+# a bad MAX_RUNS or MIN_FREE_GB stops the poller before it touches anything
+sed -i.bak 's/^MAX_RUNS=2/MAX_RUNS=0/' "$CONF"; reset ok; : > "$ST/calls"; tick
+check "MAX_RUNS=0: refused, no call" '[ "$(cat $T/rc)" = 2 ] && grep -q "MAX_RUNS must be" $T/err && [ ! -s $ST/calls ]'
+sed -i.bak 's/^MAX_RUNS=0/MAX_RUNS=2/; s/^MIN_FREE_GB=10/MIN_FREE_GB=ten/' "$CONF"; tick
+check "MIN_FREE_GB=ten: refused" '[ "$(cat $T/rc)" = 2 ] && grep -q "MIN_FREE_GB must be" $T/err'
+sed -i.bak 's/^MIN_FREE_GB=ten/MIN_FREE_GB=10/' "$CONF"
+
+# the dry run reports a repo another run holds and a full host without posting anything
+setup3 ok; sleep 60 & live=$!; mkdir -p "$T/work/.lock.1" "$T/work/.repo-o-r"; echo "$live" > "$T/work/.lock.1/pid"; echo "$live" > "$T/work/.repo-o-r/pid"
+tick --dry-run
+check "dry-run: skips the busy repo, names o/r2's order" 'grep -q "would take build order 1001 on o/r2#7" $T/err && ! grep -q "^POST" $ST/calls'
+mkdir -p "$T/work/.lock.2"; echo "$live" > "$T/work/.lock.2/pid"; tick --dry-run
+check "dry-run: both slots held, no free slot" 'grep -q "no free slot (2 of 2 busy" $T/err && ! grep -q "would take" $T/err'
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+
+# the installer: one launchd job per slot, MAX_RUNS and MIN_FREE_GB with defaults in the config it writes
+check "installer: the example config has MAX_RUNS=2 and MIN_FREE_GB=10" 'grep -qx "MAX_RUNS=2" "$SKILL/assets/codex-cli/codex-cli.env.example" && grep -qx "MIN_FREE_GB=10" "$SKILL/assets/codex-cli/codex-cli.env.example"'
+check "installer dry-run: says there is one job per slot and the second job's label" 'grep -q "se.agent-team.codex-cli.2" $T/inst && grep -qi "MAX_RUNS" $T/inst'
 
 echo
 [ "$fail" = 0 ] && echo "all $n passed" || echo "FAILED"

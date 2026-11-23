@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # codex-cli-poll: one tick of the host poller for `builder: codex-cli` (team/CODEX-CLI.md).
 #
-# launchd runs this every 5 minutes on the host Mac. Each tick: find one open issue labelled `codex-cli` in the
-# configured repos with an unclaimed `codex-cli: build` or `codex-cli: fix` order from an allowed author, claim it,
+# launchd runs this every 5 minutes on the host Mac, as one job per run slot (bin/codex-cli-install: MAX_RUNS jobs, a
+# job's tick blocks while its run lasts). Each tick: take a free slot, find one open issue labelled `codex-cli` in the
+# configured repos, in a repo no other run holds, with an unclaimed `codex-cli: build` or `codex-cli: fix` order from
+# an allowed author, claim it,
 # run `codex exec` on it in a fresh worktree (sandbox workspace-write, no GitHub token in its environment), check
 # the `Hinder:` line, Test before commit and the plan's Proof, guard the diff, push, open the draft PR (build) and
 # post one outcome comment: done, blocked or bounced. An order's `Model: <name>` line picks the model from MODELS.
@@ -37,6 +39,8 @@ ALLOW="${ALLOW:?ALLOW missing in $CONF}"
 HUMAN="${HUMAN:-Conny}"
 MODEL="${MODEL:-gpt-6-astra}"
 MODELS="${MODELS:-}"   # "name=id ..." an order's `Model: <name>` line may pick from; no line: MODEL
+MAX_RUNS="${MAX_RUNS:-2}"           # runs at once on this host, one per repo (CODEX-CLI.md § Rules, Run limits)
+MIN_FREE_GB="${MIN_FREE_GB:-10}"    # less than this free under WORK_DIR: one run at a time
 RUN_LIMIT_SEC="${RUN_LIMIT_SEC:-$(( ${RUN_LIMIT_MIN:-45} * 60 ))}"
 STALL_SEC="${STALL_SEC:-$(( ${STALL_MIN:-10} * 60 ))}"
 POLL_SEC="${POLL_SEC:-10}"
@@ -46,6 +50,8 @@ SESSIONS_DIR="${SESSIONS_DIR:-${CODEX_HOME:-$HOME/.codex}/sessions}"
 LABEL=codex-cli
 SIGN="— Coder (Codex CLI, $HOST) on behalf of $HUMAN"
 
+[[ "$MAX_RUNS" =~ ^[1-9][0-9]*$ ]] || { echo "codex-cli-poll: MAX_RUNS must be a whole number of 1 or more, not '$MAX_RUNS'" >&2; exit 2; }
+[[ "$MIN_FREE_GB" =~ ^[0-9]+$ ]] || { echo "codex-cli-poll: MIN_FREE_GB must be a whole number, not '$MIN_FREE_GB'" >&2; exit 2; }
 case "$WORK_DIR" in
   "$HOME/WebProjects"|"$HOME/WebProjects/"*|*[Vv]ault*) echo "codex-cli-poll: WORK_DIR $WORK_DIR is not allowed (team/CODEX-CLI.md § Rules)" >&2; exit 2 ;;
 esac
@@ -53,25 +59,56 @@ mkdir -p "$WORK_DIR"
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
 dur() { if [ "$1" -ge 60 ]; then echo "$(( $1 / 60 )) min"; else echo "$1 s"; fi; }
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }   # GNU stat first: BSD (macOS) stat has no -c, and GNU stat -f means something else
 
-# ---- lock: one run per host; a dead holder or one past the run limit is stale
-LOCK="$WORK_DIR/.lock"
-take_lock() {
-  if mkdir "$LOCK" 2>/dev/null; then echo $$ > "$LOCK/pid"; return 0; fi
-  local pid age
-  pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
-  age=$(( $(date +%s) - $(mtime "$LOCK") ))
+# ---- locks: MAX_RUNS slots per host (.lock.1 ... .lock.N) and one lock per repo (.repo-<owner>-<repo>). A dead holder,
+# or one past the run limit, is stale. A lock whose pid file is not written yet is young, not stale.
+lock_held() { # lock_held DIR: 0 when a live holder has it within the run limit
+  local d="$1" pid age
+  [ -d "$d" ] || return 1
+  pid="$(cat "$d/pid" 2>/dev/null || true)"
+  age=$(( $(date +%s) - $(mtime "$d" 2>/dev/null || date +%s) ))
+  if [ -z "$pid" ]; then [ "$age" -lt 30 ]; return; fi
+  kill -0 "$pid" 2>/dev/null || return 1
+  [ "$age" -le $(( RUN_LIMIT_SEC + 300 )) ]
+}
+take_lock() { # take_lock DIR: 0 when this process holds it now
+  local d="$1" pid age
+  if mkdir "$d" 2>/dev/null; then echo $$ > "$d/pid"; return 0; fi
+  ! lock_held "$d" || return 1
+  pid="$(cat "$d/pid" 2>/dev/null || true)"
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    [ "$age" -gt $(( RUN_LIMIT_SEC + 300 )) ] || return 1
-    log "lock held by $pid for ${age}s, past the run limit: stopping it"
+    age=$(( $(date +%s) - $(mtime "$d") ))
+    log "lock $d held by $pid for ${age}s, past the run limit: stopping it"
     kill -TERM "$pid" 2>/dev/null || true; sleep 2; kill -KILL "$pid" 2>/dev/null || true
   fi
-  rm -rf "$LOCK"; mkdir "$LOCK" && echo $$ > "$LOCK/pid"
+  rm -rf "$d"; mkdir "$d" 2>/dev/null && echo $$ > "$d/pid"
 }
+repo_lock() { printf '%s/.repo-%s' "$WORK_DIR" "$(printf '%s' "$1" | tr '/' '-')"; }
+slot_lock() { printf '%s/.lock.%s' "$WORK_DIR" "$1"; }
+held_slots() { local i=1 n=0; while [ "$i" -le "$MAX_RUNS" ]; do lock_held "$(slot_lock "$i")" && n=$((n + 1)); i=$((i + 1)); done; echo "$n"; }
+
+# less than MIN_FREE_GB free under WORK_DIR (or df unreadable): one run at a time, so the disk is not filled twice over
+FREE_KB="$(df -Pk "$WORK_DIR" 2>/dev/null | awk 'NR==2 {print $4}')"
+LOW_DISK=1
+if [[ "$FREE_KB" =~ ^[0-9]+$ ]] && [ "$FREE_KB" -ge $(( MIN_FREE_GB * 1048576 )) ]; then LOW_DISK=0; fi
+
+SLOT=0; REPO_LOCK=""
+HELD="$(held_slots)"
+if [ "$HELD" -ge "$MAX_RUNS" ] || { [ "$LOW_DISK" = 1 ] && [ "$HELD" -ge 1 ]; }; then
+  # every slot busy, or one run and the disk low
+  log "no free slot ($HELD of $MAX_RUNS busy, ${FREE_KB:-?} KB free under $WORK_DIR, MIN_FREE_GB $MIN_FREE_GB)"
+  exit 0
+fi
 if [ "$DRY" = 0 ]; then
-  take_lock || exit 0
-  trap 'rm -rf "$LOCK"' EXIT
+  i=1
+  while [ "$i" -le "$MAX_RUNS" ]; do
+    if take_lock "$(slot_lock "$i")"; then SLOT="$i"; break; fi
+    [ "$LOW_DISK" = 0 ] || break   # low disk: slot 1 only
+    i=$((i + 1))
+  done
+  [ "$SLOT" != 0 ] || exit 0
+  trap 'rm -rf "$(slot_lock "$SLOT")"; [ -z "$REPO_LOCK" ] || rm -rf "$REPO_LOCK"' EXIT
 fi
 
 # ---- token: only for gh and git transport; never exported, never in Codex's environment
@@ -97,45 +134,58 @@ comments() { ghx api --paginate "repos/$1/issues/$2/comments?per_page=100" | jq 
 has_label() { ghx api "repos/$1/issues/$2" | jq -e --arg l "$LABEL" '.state == "open" and ([.labels[].name] | index($l)) != null' >/dev/null; }
 
 RUNS_LOG="$WORK_DIR/runs.log"
-CURRENT="$WORK_DIR/current"
+CURRENT="$WORK_DIR/current.$SLOT"
 PENDING="$WORK_DIR/pending"
 
 # ---- outcomes a GitHub error kept from posting: deliver them first, keep them until GitHub takes them
+# (a file is renamed out of the way while it is posted, so two ticks do not both post it)
 if [ "$DRY" = 0 ] && [ -d "$PENDING" ]; then
   for f in "$PENDING"/*; do
     [ -f "$f" ] || continue
-    read -r p_repo p_issue < "$f" || continue
-    if post "$p_repo" "$p_issue" "$(sed 1d "$f")" >/dev/null 2>&1; then rm -f "$f"; else log "outcome $f still not posted"; fi
+    mine="$PENDING/.sending.$$.$(basename "$f")"
+    mv "$f" "$mine" 2>/dev/null || continue
+    read -r p_repo p_issue < "$mine" || true
+    if [ -n "${p_repo:-}" ] && post "$p_repo" "$p_issue" "$(sed 1d "$mine")" >/dev/null 2>&1; then rm -f "$mine"
+    else log "outcome $f still not posted"; mv "$mine" "$f"; fi
   done
 fi
 
-# ---- a run this host started and never finished (the Mac slept or the job stopped): mark it bounced
-if [ "$DRY" = 0 ] && [ -f "$CURRENT" ]; then
-  read -r c_repo c_issue c_run c_order < "$CURRENT" || true
-  if [ -n "${c_repo:-}" ] && [ -n "${c_issue:-}" ]; then
-    c_body="codex-cli: bounced
+# ---- a run this host started and never finished (the Mac slept or the job stopped): mark it bounced.
+# Each slot has its own current.N; this tick's own slot and any slot with no live holder are recovered, one tick each.
+if [ "$DRY" = 0 ]; then
+  for cf in "$WORK_DIR"/current.*; do
+    [ -f "$cf" ] || continue
+    cn="${cf##*.}"
+    if [ "$cn" != "$SLOT" ] && lock_held "$(slot_lock "$cn")"; then continue; fi
+    cmine="$WORK_DIR/.recovering.$$.$cn"
+    mv "$cf" "$cmine" 2>/dev/null || continue
+    c_repo=""; c_issue=""; c_run=""; c_order=""
+    read -r c_repo c_issue c_run c_order < "$cmine" || true
+    if [ -n "$c_repo" ] && [ -n "$c_issue" ]; then
+      c_body="codex-cli: bounced
 Reason: host slept or stopped (run ${c_run:-?} on $HOST never finished)
 Run: ${c_run:-?}, order ${c_order:-?}
 Hinder: —
 
 $SIGN"
-    if ! post "$c_repo" "$c_issue" "$c_body" >/dev/null 2>&1; then
-      mkdir -p "$PENDING"; printf '%s %s\n%s' "$c_repo" "$c_issue" "$c_body" > "$PENDING/${c_run:-recovered-$$}"
+      if ! post "$c_repo" "$c_issue" "$c_body" >/dev/null 2>&1; then
+        mkdir -p "$PENDING"; printf '%s %s\n%s' "$c_repo" "$c_issue" "$c_body" > "$PENDING/${c_run:-recovered-$$}"
+      fi
+      printf '%s\t%s\t%s\tbounced: host slept\t-\n' "$(date -u +%Y-%m-%dT%H:%MZ)" "$c_repo" "$c_issue" >> "$RUNS_LOG"
     fi
-    printf '%s\t%s\t%s\tbounced: host slept\t-\n' "$(date -u +%Y-%m-%dT%H:%MZ)" "$c_repo" "$c_issue" >> "$RUNS_LOG"
-  fi
-  # remove the interrupted run's worktree and its cli/<run> branch, as finish() would have
-  case "${c_run:-}" in
-    *[!A-Za-z0-9-]*|"") ;;
-    *) c_clone="$WORK_DIR/repos/$(printf '%s' "${c_repo:-}" | tr '/' '_')"
-       if [ -d "$c_clone/.git" ] || [ -f "$c_clone/HEAD" ]; then
-         git -C "$c_clone" worktree remove --force "$WORK_DIR/wt/$c_run" >/dev/null 2>&1 || true
-         git -C "$c_clone" worktree prune >/dev/null 2>&1 || true
-         git -C "$c_clone" branch -D "cli/$c_run" >/dev/null 2>&1 || true
-       fi
-       rm -rf "$WORK_DIR/wt/$c_run" "$WORK_DIR/wt/$c_run".* ;;
-  esac
-  rm -f "$CURRENT"
+    # remove the interrupted run's worktree and its cli/<run> branch, as finish() would have
+    case "$c_run" in
+      *[!A-Za-z0-9-]*|"") ;;
+      *) c_clone="$WORK_DIR/repos/$(printf '%s' "$c_repo" | tr '/' '_')"
+         if [ -d "$c_clone/.git" ] || [ -f "$c_clone/HEAD" ]; then
+           git -C "$c_clone" worktree remove --force "$WORK_DIR/wt/$c_run" >/dev/null 2>&1 || true
+           git -C "$c_clone" worktree prune >/dev/null 2>&1 || true
+           git -C "$c_clone" branch -D "cli/$c_run" >/dev/null 2>&1 || true
+         fi
+         rm -rf "$WORK_DIR/wt/$c_run" "$WORK_DIR/wt/$c_run".* ;;
+    esac
+    rm -f "$cmine"
+  done
 fi
 
 # ---- find one order. Orders count only from ALLOW; claims only from ALLOW or the token's own login (the poller)
@@ -165,8 +215,16 @@ while IFS=$'\t' read -r s_repo s_num; do
   [ -n "$s_repo" ] || continue
   ok=0; for r in $REPOS; do [ "$r" = "$s_repo" ] && ok=1; done
   [ "$ok" = 1 ] || continue
+  # one run per repo: a repo another run holds is skipped, the next order in another repo is taken
+  ! lock_held "$(repo_lock "$s_repo")" || continue
   o="$(comments "$s_repo" "$s_num" | order_of)"
-  if [ -n "$o" ]; then REPO="$s_repo"; ISSUE="$s_num"; ORDER="$o"; break; fi
+  if [ -n "$o" ]; then
+    if [ "$DRY" = 0 ]; then
+      take_lock "$(repo_lock "$s_repo")" || continue
+      REPO_LOCK="$(repo_lock "$s_repo")"
+    fi
+    REPO="$s_repo"; ISSUE="$s_num"; ORDER="$o"; break
+  fi
 done < <(printf '%s' "$search" | jq -r '.items[]? | [(.repository_url | sub("^.*/repos/"; "")), (.number|tostring)] | @tsv')
 
 [ -n "$REPO" ] || { [ "$DRY" = 1 ] && log "dry-run: no pending order"; exit 0; }
