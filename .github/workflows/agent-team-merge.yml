@@ -277,6 +277,11 @@ jobs:
                 [ -n "$sign" ] || continue
                 if [ "$sign" = - ]; then lo=$os; hi=$oe; else lo=$ns; hi=$ne; fi
                 [ "$no" -gt "$lo" ] && [ "$no" -lt "$hi" ] && [[ $text == '- **Guard paths:**'* ]] || only=""
+                # nothing beside the globs: an added line holds backticked globs and at most one closed comment without markup in it,
+                # a removed line no markup that hid what followed (Codex round 2 on the six install PRs: the class skips agents_check)
+                if [ "$sign" = + ]; then
+                  grep -qE '^- \*\*Guard paths:\*\*([[:space:]]*`[^`<>]+`[[:space:],]*)+(<!--[^<>]*-->)?[[:space:]]*$' <<<"$text" || only=""
+                elif awk '{o = gsub(/<!--/, "&"); c = gsub(/-->/, "&")} o != c || /</ && !/^[^<]*<!--[^<>]*-->[^<]*$/ {f = 1} END {exit !f}' <<<"$text"; then only=""; fi
               done <<<"$ch"
               og=$(settings <<<"$ob" | value 'Guard paths'); ng=$(settings <<<"$nb" | value 'Guard paths')
               if [ -n "$only" ] && ! notglobs <<<"$og" && ! notglobs <<<"$ng" && [ -z "$(comm -23 <(globs <<<"$og" | sort -u) <(globs <<<"$ng" | sort -u))" ] \
@@ -363,7 +368,9 @@ jobs:
               done <<<"$lines"
               # a guarded key's whole entry, its continuation lines too (Codex M1 on relationsmodellen-site #80): every top-level
               # bullet of Team settings whose first line names a key, with all lines up to the next top-level bullet, the same at both ends
-              guarded() { settings | awk '/^[-*+][[:space:]]/ {k = (tolower($0) ~ /auto-merge|human-merge paths|human-only paths|guard paths|stories in flight|\*\*merge:\*\*/)} k'; }
+              # the entry ends where Markdown ends the list item: after a blank line, at the first line that is not indented (Codex M2 on #42)
+              guarded() { settings | awk '/^[-*+][[:space:]]/ {k = (tolower($0) ~ /auto-merge|human-merge paths|human-only paths|guard paths|stories in flight|\*\*merge:\*\*/); b = 0; if (k) print; next}
+                /^[[:space:]]*$/ {b = 1; if (k) print; next} b && /^[^[:space:]]/ {k = 0} {b = 0} k'; }
               [ "$(guarded <<<"$ob")" = "$(guarded <<<"$nb")" ] || red "$1 changes a line of a Team settings entry that only a card may change (a key's continuation lines count)"
             }
             # team/CLOUD.md and team/SETUP.md in agent-team: no changed line in a red zone, no section or Judge step added, removed, renamed or moved
@@ -397,12 +404,11 @@ jobs:
                     red ".team/team.md changes a line that only a card may change: $(cut -c1-80 <<<"$text")"
                   fi
                 done <<<"$(hunks <<<"$patch")"
-                # the same keys with everything nested under them (the seats map), the same at both ends (Codex M1 on tb-site #81, dignami-aos #82)
-                tblocks() { awk '{i = match($0, /[^[:space:]]/) - 1}
-                  tolower($0) ~ /^[[:space:]]*#?[[:space:]]*(human|merge|mode|runner|agent-account|auth|seats)[[:space:]]*:/ {k = 1; ki = i; print; next}
-                  k && (i > ki || $0 ~ /^[[:space:]]*$/) {print; next} {k = 0}'; }
+                # every other line stays as it was: only the values of the version, builder, project and model lines move, in place,
+                # without markup (Codex M1 on tb-site #81, dignami-aos #82, relationsmodellen-site #80, #42: nested, commented and flat seats)
+                tkeep() { sed -E 's/^([[:space:]]*(team|builder|project|product-owner|architect|coder|attacker|reviewer)[[:space:]]*:)[^<>]*$/\1/'; }
                 ot=$(b64 .team/team.md "$mb") && nt=$(b64 .team/team.md "$head") || { echo "could not read .team/team.md at $mb and $head"; exit 1; }
-                [ "$(tblocks <<<"$ot")" = "$(tblocks <<<"$nt")" ] || red ".team/team.md changes a line nested under a key that only a card may change (human, merge, mode, runner, agent-account, auth, seats)"
+                [ "$(tkeep <<<"$ot")" = "$(tkeep <<<"$nt")" ] || red ".team/team.md changes a line other than the version, builder, project and model lines (human, merge, mode, runner, agent-account, auth and seats take a card)"
               fi
             fi
             if [ "$class" = rules ] && [ -n "$home" ]; then
