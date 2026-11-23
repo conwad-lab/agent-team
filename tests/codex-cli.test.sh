@@ -412,6 +412,7 @@ check "dry-run: names the order, posts nothing" 'grep -q "would take build order
 PATH="$T/bin:$PATH" bash "$SKILL/bin/codex-cli-install" --dry-run > "$T/inst" 2>&1; irc=$?
 check "installer dry-run: rc 0" '[ "$irc" = 0 ]'
 check "installer dry-run: plist with label, interval and poller" 'grep -q "<string>se.agent-team.codex-cli</string>" $T/inst && grep -q "<integer>300</integer>" $T/inst && grep -q "codex-cli-poll</string>" $T/inst'
+check "installer dry-run: nightly tools-update plist at 03:30" 'grep -q "<string>se.agent-team.tools-update</string>" $T/inst && grep -q "<key>Hour</key><integer>3</integer><key>Minute</key><integer>30</integer>" $T/inst && grep -q "bin/tools-update</string>" $T/inst'
 check "installer dry-run: wrote nothing" '[ ! -e $T/home/Library ] && [ ! -e $T/home/.config/agent-team ]'
 
 # installer: the old-loop match leaves Conny's own Codex alone; typed values with # or & survive the config sed

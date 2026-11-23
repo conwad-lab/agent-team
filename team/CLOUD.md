@@ -12,7 +12,7 @@
 | **Judge** (Reviewer): a thread per PR, without the planning context | the review file, PR comments, the merge request | code |
 | Human | outcome rows, card answers | — |
 
-Claude builds and judges, Codex attacks: two model families in every loop. [T1] The plan's **Estimate** names the builder: `codex-cli` where the host poller lists the repo, else `codex` with a Codex environment; `claude` only for a `Rulebook story.`, a data change, a design choice the plan cannot settle, or Team settings' `builder: claude` with a reason; an ORDER row wins. Its `model:` (ids in the project instructions) is the Builder thread's, `light` when Codex builds; the Judge runs standard, strongest on adversarial or human-merge risk. [T2]
+Claude builds and judges, Codex attacks: two model families in every loop. [T1] The plan's **Estimate** names the builder: `codex-cli` where the host poller lists the repo, else `codex` with a Codex environment; `claude` only for a `Rulebook story.`, a data change, a design choice the plan cannot settle, or Team settings' `builder: claude` with a reason; an ORDER row wins. Its `model:` (ids in the project's model map) is the Builder thread's, `light` when Codex builds; the Judge runs standard, strongest on adversarial or human-merge risk. [T2]
 
 ## Flow
 
@@ -85,6 +85,8 @@ One scheduled routine per project, daily. Its first run each week reads the **Si
 
 **Work orders**, every run after the watch, follow `team/ROUTINE-ORDERS.md`: each team repo with room ([F4]) and no plan waiting for its Builder gets a story and a plan with `## Work order` for its first decided **Kö** row that [T2] gives to Codex. [R11]
 
+**Models**, every run, follow `team/MODELS.md` § Routine: the host's nightly model list and the Coordinator's against the project's model map; one card per newer model in a family in use, never again for an id answered no. [R12]
+
 **Weekly retro**, in that first run, over the four weeks of sources `assets/team/PAPERCUTS.md` lists. [R2]
 - A pattern (the same failure, or the same kind of finding the Builder missed) seen twice, or once if it caused a revert or a wrong merge, gets one row: `Retro: <pattern> → <change> in <file> — <evidence links>`. An open row gets new links instead; evidence already linked from a Retro row never counts again. A card answered as recommended is a pattern too (`Retro: card that decided nothing → <rule>`), except **Human-only paths**. [R3]
 - **What can be removed?** At most one row per retro, `Retro: remove [ID] — incident not seen since <date>, <evidence>`, for a rule whose `WHY.md` incident has not come back and that no miss needed. [R4]
@@ -101,7 +103,7 @@ One digest per active day, none on quiet days: merges (on agreement with a link,
 
 - Only Builder and Judge watch a PR, each its own until it is merged, closed unmerged or escalated, waking on PR events and messages, never polling, and never re-pinging a commit beyond the one retry or the routine's one per run on a `codex-quota` head. An `@codex` task on an issue wakes nobody: the Builder sets two reminders per task, at about 15 minutes and at the hour. [Q1]
 - **Actions minutes.** A PR stays a draft while Codex attacks it. Every workflow with a job that installs dependencies skips its heavy jobs on drafts (`if: github.event.pull_request.draft != true`) and lists `ready_for_review` in its `pull_request` types; a new workflow keeps both. Before ready, **Test before commit** is the gate. [Q2]
-- **Self-hosted runner.** A private repo with `runner: mini` runs CI on the host Mac (`bin/runner-install`) under `team/RUNNER.md` § Rules: never a public repo; one runner per repo, in its own isolated Linux VM, one job at a time; cleanup around every job; no secret on the host but that runner's identity key, revoked by removing the runner. Where Actions minutes are a Signal source, the routine rechecks GitHub's self-hosted pricing. [Q3]
+- **Self-hosted runner.** A private repo with `runner: mini` runs CI on the host Mac (`bin/runner-install`) under `team/RUNNER.md` § Rules. Where Actions minutes are a Signal source, the routine rechecks GitHub's self-hosted pricing. [Q3]
 - **Runner offline.** After marking ready, or pushing after ready, under `runner: mini`, the Builder sets one reminder at **Runner offline after** (default 30 minutes) and then acts as `team/RUNNER.md` § When it is offline says. [Q4]
 
 ## Walls
