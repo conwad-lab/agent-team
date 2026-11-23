@@ -454,6 +454,15 @@ pc p7 4 <<< "[$(cm 41 conwad-lab $((8*D)) "$ORDER")$(cm 42 conwad-lab $((H)) 'co
 run o/p7
 check "poller-down: one stall per repo, newest order, earlier named" '[ "$(grep -c "poller-down" "$T/out")" = 1 ] && has "^o/p7	poller-down	order #2: not claimed after 2 h (also #1)	$(t $((2*H)))"'
 check "poller-down: a stranger claim, an order older than 7 d and a non-exact first line count for nothing" '! has "#4"'
+prepo p8 "[$(iss 1 '')$(iss 2 '' | sed 's/,$//')]"
+pc p8 1 <<< "[$(cm 11 builder $((2*H)) "$ORDER")$(cm 12 macbot $((2*H-60)) 'codex-cli: started r on mbp for 11')$(cm 13 macbot $((H)) 'codex-cli: done' | sed 's/,$//')]"
+pc p8 2 <<< "[$(cm 21 builder $((H)) "$ORDER")$(cm 22 o $((H-60)) 'codex-cli: started r on mbp for 21' | sed 's/,$//')]"
+AGENT_ACCOUNT=MacBot run o/p8
+check "poller-down: claims by the agent account or the repo owner count (r1 Codex P2)" '! has "poller-down"'
+prepo p9 "[$(iss 1 '' | sed 's/,$//')]"
+pc p9 1 <<< "[$(cm 11 conwad-lab 1800 "$ORDER")$(cm 12 conwad-lab 1800 'codex-cli: started r on mbp for 11' | sed 's/,$//')]"
+run o/p9
+check "poller-down: a claim in the same second counts, by comment id (r1 Codex P2)" '! has "poller-down"'
 check "v0.8.21: no blind"                                '! has "	blind	"'
 
 echo "1..$n"

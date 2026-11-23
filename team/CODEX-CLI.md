@@ -20,7 +20,7 @@ What this does not protect against, said plainly: on the MacBook Codex runs unde
 
 ## When the poller is down
 
-`bin/watch` lists `poller-down` when an order (first line `codex-cli: build` or `fix`) has no later `codex-cli: started`, `done`, `blocked` or `bounced` by the same author after 20 minutes, whatever the label says: the Builder's fallback ([K6]) keeps the story moving and would otherwise hide that Astra and Sol have not run. The routine puts one card per run to the human, asked again at most once a day, titled **Pollern nere** with the repo, the order's link and age and these lines; the answers are **Klart** (fixed) or **Vänta** (the host is off on purpose). The stall clears only when the host claims the next order, so after **Klart** the card comes back only for a newer unclaimed order. [K8]
+`bin/watch` lists `poller-down` when an order (first line `codex-cli: build` or `fix`) has no later `codex-cli: started`, `done`, `blocked` or `bounced` by the order's author, the repo owner or the agent account after 20 minutes (the poller's token must be one of these), whatever the label says: the Builder's fallback ([K6]) keeps the story moving and would otherwise hide that Astra and Sol have not run. The routine puts one card per run to the human, asked again at most once a day, titled **Pollern nere** with the repo, the order's link and age and these lines; the answers are **Klart** (fixed) or **Vänta** (the host is off on purpose). The stall clears only when the host claims the next order, so after **Klart** the card comes back only for a newer unclaimed order. [K8]
 
 Likely causes: the Mac is asleep or off; the token was overwritten in the Keychain or has expired; the install line was not run again after a model change. To fix, at the Mac:
 
