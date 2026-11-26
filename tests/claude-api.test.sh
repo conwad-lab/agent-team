@@ -53,6 +53,7 @@ case "$method $url" in
   "DELETE repos/o/r/issues/1/labels/"*) echo '{}' ;;
   "GET repos/o/r/pulls/1/reviews"*) cat "$ST/pr_reviews.json" 2>/dev/null || echo '[]' ;;
   "GET repos/o/r/pulls/1/comments"*) [ ! -f "$ST/fail_inline" ] || { echo "HTTP 502" >&2; exit 1; }; cat "$ST/pr_inline.json" 2>/dev/null || echo '[]' ;;
+  "GET repos/o/r2/pulls?"*) echo "HTTP 502" >&2; exit 1 ;;
   "GET repos/o/r/pulls?"*) echo '[]' | out ;;
   "POST repos/o/r/pulls") echo '{"number":7}' | out ;;
   "POST repos/o/r/issues/7/labels") echo '[]' ;;
@@ -251,6 +252,22 @@ for m in planfile plancommit plantoken planrename; do
   echo '{"items":[]}' > "$ST/search.json"; echo "$m" > "$ST/claude_mode"; out="$(ptick)"
   check "planner refuses $m" '[ -z "$(boards)" ] && ! grep -q "^POST repos/o/r/pulls$" "$ST/calls"'
 done
+
+# 7g. a broken GitHub answer for one repo is logged with repo and phase and the other repos go on
+cat > "$T/plan2.env" <<ENVEOF
+ENABLED=1
+HOST=testmac
+WORK_DIR="$T/work"
+REPOS="o/r2 o/r"
+PLAN_REPOS="o/r2 o/r"
+ALLOW="conwad-lab"
+POLL_SEC=1
+ENVEOF
+reset; echo '{"items":[]}' > "$ST/search.json"; echo plan > "$ST/claude_mode"; for b in $(boards); do git -C "$T/gh/o/r.git" update-ref -d "$b"; done
+out="$(CLAUDE_API_ENV="$T/plan2.env" bash "$SKILL/bin/claude-api-poll" 2>&1)"
+check "failure logged with repo and phase (orders)" 'echo "$out" | grep -q "o/r2 orders: GitHub request failed"'
+check "failure logged with repo and phase (plan)" 'echo "$out" | grep -q "o/r2 plan: GitHub request failed"'
+check "the next repo is still planned" 'boards | grep -q one'
 
 # 8. an order from a stranger is ignored
 reset; echo '[{"id":10,"user":{"login":"mallory"},"body":"judge-claude: review"}]' > "$ST/comments.json"; out="$(tick)"
