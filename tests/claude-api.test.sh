@@ -51,6 +51,8 @@ case "$method $url" in
   "GET repos/o/r/pulls/1") cat "$ST/pr.json" | out ;;
   "POST repos/o/r/pulls/1/reviews") echo "$body" > "$ST/review_posted"; echo '{}' ;;
   "DELETE repos/o/r/issues/1/labels/"*) echo '{}' ;;
+  "GET repos/o/r/pulls/1/reviews"*) cat "$ST/pr_reviews.json" 2>/dev/null || echo '[]' ;;
+  "GET repos/o/r/pulls/1/comments"*) cat "$ST/pr_inline.json" 2>/dev/null || echo '[]' ;;
   "GET repos/o/r/pulls?"*) echo '[]' | out ;;
   "POST repos/o/r/pulls") echo '{"number":7}' | out ;;
   "POST repos/o/r/issues/7/labels") echo '[]' ;;
@@ -75,10 +77,11 @@ case "$(cat "$ST/claude_mode")" in plan*)
   echo '{"total_cost_usd": 1.5}'; exit 0 ;;
 esac
 dir="$(printf '%s' "$prompt" | grep -o '[^ ]*/review\.md' | head -1)"; dir="${dir%/review.md}"
-echo "$ANTHROPIC_API_KEY" > "$ST/key_seen"; [ -z "${GH_TOKEN:-}" ] || echo leaked > "$ST/gh_leak"
+echo "$ANTHROPIC_API_KEY" > "$ST/key_seen"; cp -r "$dir/context" "$ST/context_seen" 2>/dev/null; [ -z "${GH_TOKEN:-}" ] || echo leaked > "$ST/gh_leak"
 case "$(cat "$ST/claude_mode")" in
   approve) printf -- '---\nverdict: approve\n---\nok\n' > "$dir/review.md"; echo '{"verdict":"approve","needs_human":"","summary":"fine"}' > "$dir/result.json" ;;
   human)   printf -- '---\nverdict: approve\n---\nok\n' > "$dir/review.md"; echo '{"verdict":"approve","needs_human":"Human-merge path","summary":"fine"}' > "$dir/result.json" ;;
+  leak)    printf -- '---\nverdict: approve\n---\ngithub_pat_FAKE0123456789abcdefghijkl\n' > "$dir/review.md"; echo '{"verdict":"approve","needs_human":"","summary":"fine"}' > "$dir/result.json" ;;
   nocredit) echo "Your credit balance is too low to access the Anthropic API" >&2; exit 1 ;;
   nofile)  : ;;
 esac
@@ -104,7 +107,9 @@ reset() {
   rm -rf "${T:?}/work" "${ST:?}"/*; echo approve > "$ST/claude_mode"
   echo '{"items":[{"repository_url":"https://api.github.com/repos/o/r","number":1}]}' > "$ST/search.json"
   echo '[{"id":10,"user":{"login":"conwad-lab"},"body":"judge-claude: review"}]' > "$ST/comments.json"
-  jq -n --arg s "$HEAD0" '{head:{sha:$s,ref:"feat/1-x",repo:{full_name:"o/r"}},base:{ref:"main"},mergeable_state:"clean",updated_at:"2026-11-26T00:00:00Z"}' > "$ST/pr.json"
+  jq -n --arg s "$HEAD0" '{title:"1: x",head:{sha:$s,ref:"feat/1-x",repo:{full_name:"o/r"}},base:{ref:"main"},mergeable_state:"clean",updated_at:"2026-11-26T00:00:00Z"}' > "$ST/pr.json"
+  # Codex's finished review of the feature commit, as its summary comment shows it
+  jq --arg s "$HEAD0" '. + [{id: 12, user: {login: "chatgpt-codex-connector[bot]"}, body: ("<!-- codex-review-state:v1 &#123;\"code_review\":&#123;\"commit_sha\":\"" + $s + "\",\"has_any_findings\":false,\"has_unresolved_findings\":false,\"status\":\"completed\"&#125;&#125; -->")}]' "$ST/comments.json" > "$ST/c.n" && mv "$ST/c.n" "$ST/comments.json"
 }
 tick() { bash "$SKILL/bin/claude-api-poll" "$@" 2>&1; }
 
@@ -147,6 +152,21 @@ check "needs-human is not an approval" '! jq -e "any(.[]; .body | test(\"^judge-
 # 6. claude writes nothing: bounced
 reset; echo nofile > "$ST/claude_mode"; out="$(tick)"
 check "missing result bounces" 'jq -e "any(.[]; .body | test(\"^judge-claude: bounced\"))" "$ST/comments.json" >/dev/null'
+
+# 6c. a token-shaped string in review.md stops the run before anything is committed or posted
+reset; echo leak > "$ST/claude_mode"; out="$(tick)"
+check "token in review.md bounces" 'jq -e "any(.[]; .body | test(\"^judge-claude: bounced\"))" "$ST/comments.json" >/dev/null'
+check "token never reached the branch" '! git -C "$T/gh/o/r.git" ls-tree -r --name-only feat/1-x | grep -q "^.team/reviews/"'
+check "token never reached GitHub" '[ ! -s "$ST/review_posted" ]'
+
+# 6d. the Judge is handed Codex's reviews, findings and status as files; no finished Codex review means needs_human
+reset; echo '[{"id":3,"state":"COMMENTED","body":"P1 finding"}]' > "$ST/pr_reviews.json"; out="$(tick)"
+check "context: PR title and Codex review handed over" 'jq -e ".title == \"1: x\"" "$ST/context_seen/pr.json" >/dev/null && grep -q "P1 finding" "$ST/context_seen/reviews.json"'
+check "context: Codex status handed over" 'grep -q "completed" "$ST/context_seen/codex-status.txt"'
+reset; jq 'map(select(.user.login != "chatgpt-codex-connector[bot]"))' "$ST/comments.json" > "$ST/c.n" && mv "$ST/c.n" "$ST/comments.json"; out="$(tick)"
+check "no Codex review: approve becomes needs-the-human" 'jq -e "any(.[]; .body | test(\"^judge-claude: approve [0-9a-f]{40} needs the human: no finished Codex review\"))" "$ST/comments.json" >/dev/null'
+check "no Codex review: not an approval" '! jq -e "any(.[]; .body | test(\"^judge-claude: approved\"))" "$ST/comments.json" >/dev/null'
+rm -f "$ST/pr_reviews.json"
 
 # 6b. credits gone: stop stamp, then nothing runs and nothing is retried
 reset; echo nocredit > "$ST/claude_mode"; out="$(tick)"
