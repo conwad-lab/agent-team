@@ -52,7 +52,7 @@ case "$method $url" in
   "POST repos/o/r/pulls/1/reviews") echo "$body" > "$ST/review_posted"; echo '{}' ;;
   "DELETE repos/o/r/issues/1/labels/"*) echo '{}' ;;
   "GET repos/o/r/pulls/1/reviews"*) cat "$ST/pr_reviews.json" 2>/dev/null || echo '[]' ;;
-  "GET repos/o/r/pulls/1/comments"*) cat "$ST/pr_inline.json" 2>/dev/null || echo '[]' ;;
+  "GET repos/o/r/pulls/1/comments"*) [ ! -f "$ST/fail_inline" ] || { echo "HTTP 502" >&2; exit 1; }; cat "$ST/pr_inline.json" 2>/dev/null || echo '[]' ;;
   "GET repos/o/r/pulls?"*) echo '[]' | out ;;
   "POST repos/o/r/pulls") echo '{"number":7}' | out ;;
   "POST repos/o/r/issues/7/labels") echo '[]' ;;
@@ -167,6 +167,23 @@ reset; jq 'map(select(.user.login != "chatgpt-codex-connector[bot]"))' "$ST/comm
 check "no Codex review: approve becomes needs-the-human" 'jq -e "any(.[]; .body | test(\"^judge-claude: approve [0-9a-f]{40} needs the human: no finished Codex review\"))" "$ST/comments.json" >/dev/null'
 check "no Codex review: not an approval" '! jq -e "any(.[]; .body | test(\"^judge-claude: approved\"))" "$ST/comments.json" >/dev/null'
 rm -f "$ST/pr_reviews.json"
+
+# 6e. the review context cannot be read: the run bounces without Claude and without a review
+reset; touch "$ST/fail_inline"; out="$(tick)"
+check "failed inline fetch bounces" 'jq -e "any(.[]; .body | test(\"^judge-claude: bounced\"))" "$ST/comments.json" >/dev/null'
+check "failed inline fetch: Claude never ran" '[ ! -f "$ST/key_seen" ]'
+check "failed inline fetch: no review posted" '[ ! -s "$ST/review_posted" ]'
+
+# 6f. the head is a merge of main: Codex's finished review of an ancestor does not cover it
+( cd "$T/seed" && git checkout -q main && echo m > main.txt && git add -A && git commit -qm main2 && git push -q origin main \
+  && git checkout -q feat/1-x && git merge -q --no-ff -m "merge main" main && git push -q origin feat/1-x )
+MERGEHEAD="$(git -C "$T/seed" rev-parse HEAD)"
+reset; git -C "$T/gh/o/r.git" update-ref refs/heads/feat/1-x "$MERGEHEAD"
+jq --arg s "$MERGEHEAD" '.head.sha = $s' "$ST/pr.json" > "$ST/p" && mv "$ST/p" "$ST/pr.json"
+out="$(tick)"
+check "merge head: Codex's review of an ancestor does not count" 'grep -q "none for $MERGEHEAD" "$ST/context_seen/codex-status.txt"'
+check "merge head: needs the human" 'jq -e "any(.[]; .body | test(\"needs the human: no finished Codex review\"))" "$ST/comments.json" >/dev/null'
+git -C "$T/gh/o/r.git" update-ref refs/heads/feat/1-x "$HEAD0"
 
 # 6b. credits gone: stop stamp, then nothing runs and nothing is retried
 reset; echo nocredit > "$ST/claude_mode"; out="$(tick)"

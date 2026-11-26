@@ -282,13 +282,25 @@ $SIGN_J" >/dev/null; note "$run	$r#$n	judge	bounced: $1"; drop_wt "$r" "$wt"; }
     # everything the Judge needs from GitHub is fetched here and handed over as files (it has no GitHub access)
     ctx="$rundir/context"; mkdir -p "$ctx"
     jq '{title, head: .head.sha, base: .base.ref, draft}' <<< "$pr" > "$ctx/pr.json"
-    redact "$(ghx api --paginate "repos/$r/pulls/$n/reviews?per_page=100" | jq -s 'add // []')" > "$ctx/reviews.json" || true
-    redact "$(ghx api --paginate "repos/$r/pulls/$n/comments?per_page=100" | jq -s 'add // []')" > "$ctx/inline-comments.json" || true
+    # a failed or non-array answer must not become an empty list the Judge reads as "no findings": bounce instead
+    fetch_array() { # fetch_array URL OUTFILE
+      local raw arr
+      raw="$(ghx api --paginate "$1")" || return 1
+      arr="$(jq -s 'add // []' <<< "$raw")" || return 1
+      jq -e 'type == "array"' <<< "$arr" >/dev/null || return 1
+      redact "$arr" > "$2"
+    }
+    if ! fetch_array "repos/$r/pulls/$n/reviews?per_page=100" "$ctx/reviews.json" \
+       || ! fetch_array "repos/$r/pulls/$n/comments?per_page=100" "$ctx/inline-comments.json"; then
+      bounce "could not read the PR's reviews and inline comments from GitHub"; continue
+    fi
     redact "$c" > "$ctx/comments.json"
     # Codex's status for the last commit that changed anything outside .team/reviews/ (a review commit does not reset it)
     codex_sha=""
     for cm in $(git -C "$wt" rev-list -n 30 "$head"); do
-      if [ -n "$(git -C "$wt" diff-tree --no-commit-id --name-only -r "$cm" | grep -v '^\.team/reviews/' || true)" ]; then codex_sha="$cm"; break; fi
+      # a merge commit always counts (it brings in what its parents did not have together); a review commit touches only .team/reviews/
+      if [ "$(git -C "$wt" rev-list --parents -n 1 "$cm" | wc -w | tr -d ' ')" -gt 2 ] \
+         || [ -n "$(git -C "$wt" diff-tree --no-commit-id --name-only -r "$cm" | grep -v '^\.team/reviews/' || true)" ]; then codex_sha="$cm"; break; fi
     done
     cstat="$(jq -r --arg sha "$codex_sha" '
       [.[] | select((.user.login | ascii_downcase | startswith("chatgpt-codex-connector")) and (.body | test("codex-review-state")))] | sort_by(.id) | last | .body // ""
