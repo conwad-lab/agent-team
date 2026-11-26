@@ -71,6 +71,7 @@ case "$(cat "$ST/claude_mode")" in plan*)
   case "$(cat "$ST/claude_mode")" in
     planfile)  echo x > code.py ;;
     plancommit) echo x > code.py; git add code.py; git -c user.email=a@b -c user.name=t commit -qm sneaky ;;
+    planrename) git mv README .team/plans/readme.md ;;
     plantoken) echo "github_pat_FAKE0123456789abcdefghijkl" >> .team/plans/one.md ;;
   esac
   echo '{"plan":true,"slug":"one","pr_title":"board: one","issue_title":"1: one","order":"codex-cli: build\nPlan: .team/plans/one.md"}' > "$d/result.json"
@@ -185,6 +186,16 @@ check "merge head: Codex's review of an ancestor does not count" 'grep -q "none 
 check "merge head: needs the human" 'jq -e "any(.[]; .body | test(\"needs the human: no finished Codex review\"))" "$ST/comments.json" >/dev/null'
 git -C "$T/gh/o/r.git" update-ref refs/heads/feat/1-x "$HEAD0"
 
+# 6g. the same evidence the merge workflow accepts: a receipt review naming the commit counts, a failed summary does not
+reset; jq 'map(select(.user.login != "chatgpt-codex-connector[bot]"))' "$ST/comments.json" > "$ST/c.n" && mv "$ST/c.n" "$ST/comments.json"
+jq -n --arg s "${HEAD0:0:10}" '[{id: 3, commit_id: "x", user: {login: "chatgpt-codex-connector[bot]"}, body: ("<!-- codex-review-receipt:v1 -->\n**Reviewed commit:** `" + $s + "`")}]' > "$ST/pr_reviews.json"
+out="$(tick)"
+check "a receipt review on the head counts as a finished review" 'jq -e "any(.[]; .body | test(\"^judge-claude: approved\"))" "$ST/comments.json" >/dev/null'
+reset; jq --arg s "$HEAD0" 'map(if .user.login == "chatgpt-codex-connector[bot]" then .body = ("<!-- codex-review-state:v1 &#123;\"code_review\":&#123;\"commit_sha\":\"" + $s + "\",\"has_any_findings\":false,\"has_unresolved_findings\":false,\"status\":\"failed\"&#125;&#125; -->") else . end)' "$ST/comments.json" > "$ST/c.n" && mv "$ST/c.n" "$ST/comments.json"
+out="$(tick)"
+check "a failed Codex review does not count" 'grep -q "failed" "$ST/context_seen/codex-status.txt" && jq -e "any(.[]; .body | test(\"needs the human: no finished Codex review\"))" "$ST/comments.json" >/dev/null'
+rm -f "$ST/pr_reviews.json"
+
 # 6b. credits gone: stop stamp, then nothing runs and nothing is retried
 reset; echo nocredit > "$ST/claude_mode"; out="$(tick)"
 check "credit refusal leaves a stop stamp" '[ -f "$T/work/.credits-out" ]'
@@ -231,7 +242,7 @@ boards() { git -C "$T/gh/o/r.git" for-each-ref --format='%(refname)' 'refs/heads
 reset; echo '{"items":[]}' > "$ST/search.json"; echo plan > "$ST/claude_mode"; out="$(ptick)"
 check "planner pushes a board branch" 'boards | grep -q one'
 check "planner opens the PR" 'grep -q "^POST repos/o/r/pulls$" "$ST/calls"'
-for m in planfile plancommit plantoken; do
+for m in planfile plancommit plantoken planrename; do
   reset; for b in $(boards); do git -C "$T/gh/o/r.git" update-ref -d "$b"; done
   echo '{"items":[]}' > "$ST/search.json"; echo "$m" > "$ST/claude_mode"; out="$(ptick)"
   check "planner refuses $m" '[ -z "$(boards)" ] && ! grep -q "^POST repos/o/r/pulls$" "$ST/calls"'

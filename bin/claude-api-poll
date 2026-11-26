@@ -300,12 +300,23 @@ $SIGN_J" >/dev/null; note "$run	$r#$n	judge	bounced: $1"; drop_wt "$r" "$wt"; }
     for cm in $(git -C "$wt" rev-list -n 30 "$head"); do
       # a merge commit always counts (it brings in what its parents did not have together); a review commit touches only .team/reviews/
       if [ "$(git -C "$wt" rev-list --parents -n 1 "$cm" | wc -w | tr -d ' ')" -gt 2 ] \
-         || [ -n "$(git -C "$wt" diff-tree --no-commit-id --name-only -r "$cm" | grep -v '^\.team/reviews/' || true)" ]; then codex_sha="$cm"; break; fi
+         || [ -n "$(git -C "$wt" diff-tree --no-commit-id --no-renames --name-only -r "$cm" | grep -v '^\.team/reviews/' || true)" ]; then codex_sha="$cm"; break; fi
     done
-    cstat="$(jq -r --arg sha "$codex_sha" '
-      [.[] | select((.user.login | ascii_downcase | startswith("chatgpt-codex-connector")) and (.body | test("codex-review-state")))] | sort_by(.id) | last | .body // ""
-      | capture("code_review.:(&#123;|[{]).commit_sha.:.(?<s>[0-9a-f]{40}).[^}&]*status.:.(?<st>[a-z_]+)") // {s: "", st: "none"}
-      | if .s == $sha then .st else "none for " + $sha + " (latest review is for " + (if .s == "" then "no commit" else .s end) + ")" end' <<< "$c" 2>/dev/null || echo none)"
+    # the same evidence agent-team-merge.yml accepts: Codex's status summary for the commit (running or failed beat the rest),
+    # else a review receipt naming it, else a Codex review on it
+    cstat="$(jq -n -r --arg sha "$codex_sha" --slurpfile cm "$ctx/comments.json" --slurpfile rv "$ctx/reviews.json" '
+      def bot: ((.user.login // "") | ascii_downcase | startswith("chatgpt-codex-connector"));
+      ($cm[0] // []) as $cm | ($rv[0] // []) as $rv
+      | ([$cm[] | select(bot and ((.body // "") | test("codex-review-state")))] | sort_by(.id) | last | .body // ""
+         | (capture("code_review.:(&#123;|[{]).commit_sha.:.(?<s>[0-9a-f]{40}).[^}&]*status.:.(?<st>[a-z_]+)") // {s: "", st: ""})) as $sum
+      | ([($cm + $rv)[] | select(bot and ((.body // "") | test("codex-review-receipt")))
+          | ((.body | capture("Reviewed commit:..\\s*`(?<x>[0-9a-f]{7,40})`").x) // "-")] | any(. != "-" and ($sha | startswith(.)))) as $rec
+      | ([$rv[] | select(bot and .commit_id == $sha)] | length > 0) as $rvon
+      | if $sha == "" then "none (no commit)"
+        elif ($sum.s == $sha and ($sum.st | IN("running", "queued", "pending", "in_progress"))) then $sum.st
+        elif ($sum.s == $sha and $sum.st != "completed") then "failed (" + $sum.st + ")"
+        elif ($sum.s == $sha and $sum.st == "completed") or $rec or $rvon then "completed"
+        else "none for " + $sha end' 2>/dev/null || echo "none (unreadable)")"
     printf 'codex status for %s: %s\n' "${codex_sha:-?}" "$cstat" > "$ctx/codex-status.txt"
     # shellcheck disable=SC2059
     prompt="$(printf "$JUDGE_PROMPT" "$n" "$r" "$head" "$base" "$rundir" "$rundir" "$ctx")"
@@ -394,10 +405,10 @@ plan_phase() {
     # and the whole staged diff is read to a file before it is tested, so a match cannot end a pipe early
     if [ "$(git -C "$wt" rev-parse HEAD)" != "$startrev" ]; then note "$run	$r	plan	dropped: Claude moved HEAD"; drop_wt "$r" "$wt"; continue; fi
     git -C "$wt" add -A
-    changed="$(git -C "$wt" diff --cached --name-only "$startrev")"
+    changed="$(git -C "$wt" diff --cached --no-renames --name-only "$startrev")"
     bad="$(printf '%s\n' "$changed" | grep -v -E '^(\.team/(backlog|plans)/|\.team/ORDER\.md$|\.team/PAPERCUTS\.md$)' || true)"
     if [ -z "$changed" ] || [ -n "$bad" ]; then note "$run	$r	plan	dropped: ${bad:-no changes}"; drop_wt "$r" "$wt"; continue; fi
-    git -C "$wt" diff --cached "$startrev" > "$rundir/staged.diff"
+    git -C "$wt" diff --cached --no-renames "$startrev" > "$rundir/staged.diff"
     if grep -q -E 'github_pat_|gh[pousr]_[A-Za-z0-9]{30,}|sk-ant-' "$rundir/staged.diff"; then note "$run	$r	plan	dropped: token-shaped text in diff"; drop_wt "$r" "$wt"; continue; fi
     branch="board/$(date -u +%F)-$slug"
     git -C "$wt" -c user.name="$HUMAN (planner-claude)" -c user.email="noreply@users.noreply.github.com" commit --quiet -m "$title"
