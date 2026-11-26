@@ -218,7 +218,7 @@ orders_phase() {
   local r pr n body order title iss lines="$WORK_DIR/.orders.lines"
   for r in $PLAN_REPOS; do
     in_repos "$r" || continue
-    gh_lines orders "$r" "repos/$r/pulls?state=closed&per_page=20&sort=updated&direction=desc" \
+    gh_lines orders "$r" "repos/$r/pulls?state=closed&per_page=30&sort=updated&direction=desc" \
       '.[] | select(.merged_at != null and ([.labels[].name] | index("plan-claude")) != null) | {number, body} | tojson' "$lines" || continue
     while read -r pr; do
       n="$(jq -r '.number // empty' <<< "$pr" 2>/dev/null)" || n=""
