@@ -100,7 +100,9 @@ in_repos() { local r; for r in $REPOS; do [ "$r" = "$1" ] && return 0; done; ret
 # ---- spend ledger: the sum of today's (UTC) runs against DAILY_CAP_USD
 LEDGER="$WORK_DIR/claude-spend.log"
 spent_today() { [ -f "$LEDGER" ] && awk -F'\t' -v d="$(date -u +%F)" '$1==d {s+=$3} END {printf "%.4f", s+0}' "$LEDGER" || echo 0; }
-under_cap() { awk -v s="$(spent_today)" -v c="$DAILY_CAP_USD" 'BEGIN {exit !(s < c)}'; }
+# a run starts only when its whole budget fits in what is left of today's cap; budget_for prints that budget
+remaining() { awk -v s="$(spent_today)" -v c="$DAILY_CAP_USD" 'BEGIN {r = c - s; printf "%.4f", (r > 0 ? r : 0)}'; }
+under_cap() { awk -v r="$(remaining)" -v b="$1" 'BEGIN {exit !(r >= b)}'; }   # under_cap BUDGET
 
 # run_claude MODEL BUDGET DIR PROMPT OUTFILE -> runs claude headless in DIR, JSON result in OUTFILE; 0 when it finished
 run_claude() {
@@ -128,9 +130,9 @@ credits_gone() { # credits_gone OUTFILE: 0 (and stamp) when claude's output says
   fi
   return 1
 }
-ledger() { # ledger ROLE OUTFILE
-  local usd; usd="$(jq -r '.total_cost_usd // 0' "$2" 2>/dev/null || echo 0)"
-  [[ "$usd" =~ ^[0-9.]+$ ]] || usd=0
+ledger() { # ledger ROLE OUTFILE BUDGET: the reported cost, else (killed, crashed, no report) the whole run budget
+  local usd; usd="$(jq -r '.total_cost_usd // empty' "$2" 2>/dev/null || true)"
+  [[ "$usd" =~ ^[0-9]+(\.[0-9]+)?$ ]] || usd="$3"
   printf '%s\t%s\t%s\n' "$(date -u +%F)" "$1" "$usd" >> "$LEDGER"
   echo "$usd"
 }
@@ -236,7 +238,7 @@ You have no GitHub access and must not push, merge or comment. Write two files o
 Edit nothing inside the repo.'
 
 judge_phase() {
-  local q r n c ord oid pr head ref base slug run wt rundir out rc usd verdict human summ nh claim
+  local mine winner q r n c ord oid pr head ref base slug run wt rundir out rc usd verdict human summ nh claim
   q="is:open is:pr label:judge-claude"; for r in $REPOS; do q="$q repo:$r"; done
   ghx api "search/issues?q=$(jq -rn --arg q "$q" '$q|@uri')&sort=created&order=asc&per_page=50" \
     --jq '.items[] | [(.repository_url | sub("^.*/repos/"; "")), .number] | @tsv' > "$WORK_DIR/.judge-candidates" 2>/dev/null || true
@@ -253,13 +255,17 @@ Reason: the branch is from a fork; the loop judges same-repo branches only.
 $SIGN_J" >/dev/null; continue
     fi
     [[ "$ref" =~ ^[A-Za-z0-9._/-]+$ ]] && [[ "$head" =~ ^[0-9a-f]{40}$ ]] || continue
-    under_cap || { log "daily cap ${DAILY_CAP_USD} USD reached ($(spent_today) spent): no judging until tomorrow"; return 0; }
+    under_cap "$JUDGE_BUDGET_USD" || { log "daily cap ${DAILY_CAP_USD} USD: $(spent_today) spent, a judge run needs $JUDGE_BUDGET_USD; no judging until tomorrow"; return 0; }
     if [ "$DRY" = 1 ]; then log "dry-run: would judge $r#$n head $head on $JUDGE_MODEL (order $oid)"; return 0; fi
     run="j$(date -u +%y%m%d%H%M%S)-$$"
-    post "$r" "$n" "claude-api: started $run on $HOST for $oid" >/dev/null
+    mine="$(post "$r" "$n" "claude-api: started $run on $HOST for $oid")"
     claim="$(comments "$r" "$n")"
-    if [ "$(jq --arg id "$oid" '[.[] | select(.body | test("^claude-api: started .* for " + $id + "$"))] | length' <<< "$claim")" != 1 ]; then
-      log "$r#$n: another claim for order $oid; leaving it"; continue
+    # the earliest trusted claim for this order wins; a loser withdraws its own claim
+    winner="$(jq -r --arg id "$oid" --arg trust "$TRUST_LC" '[.[] | select(((.user.login | ascii_downcase) as $u | ($trust | split(" ") | index($u)) != null)
+        and (.body | test("^claude-api: started .* for " + $id + "$")))] | sort_by(.id) | .[0].id // empty' <<< "$claim")"
+    if [ "$winner" != "$mine" ]; then
+      ghx api "repos/$r/issues/comments/$mine" -X DELETE >/dev/null 2>&1 || true
+      log "$r#$n: another claim ($winner) won order $oid"; continue
     fi
     rundir="$WORK_DIR/run/$run"; wt="$WORK_DIR/wt/$run"; mkdir -p "$rundir" "$WORK_DIR/wt"; out="$rundir/claude.json"
     note "$run	$r#$n	judge	start"
@@ -274,7 +280,7 @@ $SIGN_J" >/dev/null; note "$run	$r#$n	judge	bounced: $1"; drop_wt "$r" "$wt"; }
     # shellcheck disable=SC2059
     prompt="$(printf "$JUDGE_PROMPT" "$n" "$r" "$head" "$base" "$rundir" "$rundir")"
     rc=0; run_claude "$JUDGE_MODEL" "$JUDGE_BUDGET_USD" "$wt" "$prompt" "$out" || rc=$?
-    usd="$(ledger judge "$out")"
+    usd="$(ledger judge "$out" "$JUDGE_BUDGET_USD")"
     if [ "$rc" != 0 ] && credits_gone "$out"; then bounce "the API credits are spent or billing was refused; the loop stops until topped up"; return 0; fi
     [ "$rc" = 0 ] || { bounce "claude exited $rc (spent $usd USD)"; continue; }
     [ -s "$rundir/review.md" ] && [ -s "$rundir/result.json" ] || { bounce "no review.md and result.json written (spent $usd USD)"; continue; }
@@ -319,14 +325,14 @@ $SIGN_J" >/dev/null
 PLAN_PROMPT='You are the Coordinator (PO + Architect) for the repo %s, in a fresh checkout of its default branch. Follow team/CLOUD.md § Flow steps 1-2 and team/ROUTINE-ORDERS.md (in a product repo under .claude/skills/agent-team/team/): read .team/ORDER.md and the backlog, take the first decided Kö row that has room (Stories in flight, open PR cap) and no story yet, and write ONE story in .team/backlog/ and ONE plan in .team/plans/ from the templates, including the plan'"'"'s ## Work order for Codex CLI when its Estimate says builder: codex-cli. You write only board files (.team/backlog/, .team/plans/, .team/ORDER.md, your lines in .team/PAPERCUTS.md): never code, never reviews. If the row needs a decision, a plan attack (CLOUD.md § Flow 3a), a data change or the human, write nothing and say why. You have no GitHub access. Write %s/result.json: {"plan":true|false,"reason":"<why not, when false>","slug":"<kebab-case, at most 40 chars>","pr_title":"board: <what>","issue_title":"<NNN: story title>","order":"<the work order comment for the story issue: first line codex-cli: build, then the header lines and plan from team/templates/codex.md, unchanged from the plan'"'"'s ## Work order>"}.'
 
 plan_phase() {
-  local r stamp last open run wt rundir out rc usd slug title ititle order branch n body changed bad
+  local startrev r stamp last open run wt rundir out rc usd slug title ititle order branch n body changed bad
   for r in $PLAN_REPOS; do
     in_repos "$r" || continue
     stamp="$WORK_DIR/.planned.$(printf '%s' "$r" | tr '/' '_')"
     if [ -f "$stamp" ] && [ $(( $(date +%s) - $(mtime "$stamp") )) -lt $(( PLAN_EVERY_HOURS * 3600 )) ]; then continue; fi
     open="$(ghx api "repos/$r/pulls?state=open&per_page=50" 2>/dev/null | jq '[.[] | select(([.labels[].name] | index("plan-claude")) != null)] | length' || echo 1)"
     [ "$open" = 0 ] || continue
-    under_cap || { log "daily cap reached: no planning until tomorrow"; return 0; }
+    under_cap "$PLAN_BUDGET_USD" || { log "daily cap ${DAILY_CAP_USD} USD: $(spent_today) spent, a planner run needs $PLAN_BUDGET_USD; no planning until tomorrow"; return 0; }
     if [ "$DRY" = 1 ]; then log "dry-run: would plan for $r on $PLAN_MODEL"; continue; fi
     touch "$stamp"
     run="p$(date -u +%y%m%d%H%M%S)-$$"; rundir="$WORK_DIR/run/$run"; wt="$WORK_DIR/wt/$run"; mkdir -p "$rundir" "$WORK_DIR/wt"; out="$rundir/claude.json"
@@ -335,9 +341,10 @@ plan_phase() {
     base="$(ghx api "repos/$r" --jq .default_branch)"
     git -C "$(clone_of "$r")" worktree add --detach "$wt" "origin/$base" >/dev/null 2>&1 || { log "$r: worktree failed"; continue; }
     ( cd "$wt" && gitc submodule update --init --quiet 2>/dev/null ) || true
+    startrev="$(git -C "$wt" rev-parse HEAD)"
     # shellcheck disable=SC2059
     rc=0; run_claude "$PLAN_MODEL" "$PLAN_BUDGET_USD" "$wt" "$(printf "$PLAN_PROMPT" "$r" "$rundir")" "$out" || rc=$?
-    usd="$(ledger plan "$out")"
+    usd="$(ledger plan "$out" "$PLAN_BUDGET_USD")"
     if [ "$rc" != 0 ] && credits_gone "$out"; then note "$run	$r	plan	credits gone"; drop_wt "$r" "$wt"; return 0; fi
     if [ "$rc" != 0 ] || [ ! -s "$rundir/result.json" ]; then note "$run	$r	plan	failed rc=$rc	$usd"; drop_wt "$r" "$wt"; continue; fi
     if [ "$(jq -r '.plan // false' "$rundir/result.json")" != true ]; then
@@ -347,12 +354,15 @@ plan_phase() {
     ititle="$(jq -r '.issue_title // ""' "$rundir/result.json")"; order="$(jq -r '.order // ""' "$rundir/result.json")"
     [[ "$slug" =~ ^[a-z0-9-]{1,40}$ ]] && [ -n "$title" ] && [ -n "$ititle" ] && [ -n "$order" ] || { note "$run	$r	plan	bad result.json"; drop_wt "$r" "$wt"; continue; }
     case "$title" in "board: "*) ;; *) title="board: $title" ;; esac
-    # board files only: anything else and the run is dropped
+    # board files only, against the revision the run started from: Claude may not commit (a changed HEAD drops the run),
+    # and the whole staged diff is read to a file before it is tested, so a match cannot end a pipe early
+    if [ "$(git -C "$wt" rev-parse HEAD)" != "$startrev" ]; then note "$run	$r	plan	dropped: Claude moved HEAD"; drop_wt "$r" "$wt"; continue; fi
     git -C "$wt" add -A
-    changed="$(git -C "$wt" diff --cached --name-only)"
+    changed="$(git -C "$wt" diff --cached --name-only "$startrev")"
     bad="$(printf '%s\n' "$changed" | grep -v -E '^(\.team/(backlog|plans)/|\.team/ORDER\.md$|\.team/PAPERCUTS\.md$)' || true)"
     if [ -z "$changed" ] || [ -n "$bad" ]; then note "$run	$r	plan	dropped: ${bad:-no changes}"; drop_wt "$r" "$wt"; continue; fi
-    if git -C "$wt" diff --cached | grep -q -E 'github_pat_|gh[pousr]_[A-Za-z0-9]{30,}|sk-ant-'; then note "$run	$r	plan	dropped: token-shaped text in diff"; drop_wt "$r" "$wt"; continue; fi
+    git -C "$wt" diff --cached "$startrev" > "$rundir/staged.diff"
+    if grep -q -E 'github_pat_|gh[pousr]_[A-Za-z0-9]{30,}|sk-ant-' "$rundir/staged.diff"; then note "$run	$r	plan	dropped: token-shaped text in diff"; drop_wt "$r" "$wt"; continue; fi
     branch="board/$(date -u +%F)-$slug"
     git -C "$wt" -c user.name="$HUMAN (planner-claude)" -c user.email="noreply@users.noreply.github.com" commit --quiet -m "$title"
     gitc -C "$wt" push --quiet origin "HEAD:refs/heads/$branch" || { note "$run	$r	plan	push refused"; drop_wt "$r" "$wt"; continue; }

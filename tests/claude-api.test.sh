@@ -43,11 +43,18 @@ case "$method $url" in
   "GET search/issues"*) cat "$ST/search.json" | out ;;
   "GET repos/o/r/issues/1/comments"*) cat "$ST/comments.json" | out ;;
   "POST repos/o/r/issues/1/comments")
-    jq --arg b "$body" '(map(.id) | max + 1) as $i | . + [{id: $i, user: {login: "conwad-lab"}, body: $b}]' "$ST/comments.json" > "$ST/c.n" && mv "$ST/c.n" "$ST/comments.json"; echo 1 | out ;;
+    if [ -f "$ST/hook_race" ] && [[ "$body" == "claude-api: started "* ]]; then
+      jq '. + [{id: 11, user: {login: "conwad-lab"}, body: "claude-api: started other on mini for 10"}]' "$ST/comments.json" > "$ST/c.n" && mv "$ST/c.n" "$ST/comments.json"
+    fi
+    jq --arg b "$body" '(map(.id) | max + 1) as $i | . + [{id: $i, user: {login: "conwad-lab"}, body: $b}]' "$ST/comments.json" > "$ST/c.n" && mv "$ST/c.n" "$ST/comments.json"; jq '{id: ([.[].id] | max)}' "$ST/comments.json" | out ;;
+  "DELETE repos/o/r/issues/comments/"*) id="${url##*/}"; jq --argjson i "$id" 'map(select(.id != $i))' "$ST/comments.json" > "$ST/c.n" && mv "$ST/c.n" "$ST/comments.json"; echo '{}' ;;
   "GET repos/o/r/pulls/1") cat "$ST/pr.json" | out ;;
   "POST repos/o/r/pulls/1/reviews") echo "$body" > "$ST/review_posted"; echo '{}' ;;
   "DELETE repos/o/r/issues/1/labels/"*) echo '{}' ;;
-  "GET repos/o/r/pulls?"*) echo '[]' ;;
+  "GET repos/o/r/pulls?"*) echo '[]' | out ;;
+  "POST repos/o/r/pulls") echo '{"number":7}' | out ;;
+  "POST repos/o/r/issues/7/labels") echo '[]' ;;
+  "POST repos/o/r/issues/7/comments") echo '{"id":1}' | out ;;
   "GET repos/o/r") echo '{"default_branch":"main"}' | out ;;
   *) echo "fake gh: unhandled $method $url" >&2; exit 1 ;;
 esac
@@ -55,7 +62,19 @@ G
 cat > "$T/bin/claude" <<'C'
 #!/usr/bin/env bash
 # fake claude: writes review.md and result.json in the directory its prompt names, per $ST/claude_mode
-prompt="$2"; dir="$(printf '%s' "$prompt" | grep -o '[^ ]*/review\.md' | head -1)"; dir="${dir%/review.md}"
+prompt="$2"
+case "$(cat "$ST/claude_mode")" in plan*)
+  d="$(printf '%s' "$prompt" | grep -o '[^ ]*/result\.json' | head -1)"; d="${d%/result.json}"
+  mkdir -p .team/plans; echo plan > .team/plans/one.md
+  case "$(cat "$ST/claude_mode")" in
+    planfile)  echo x > code.py ;;
+    plancommit) echo x > code.py; git add code.py; git -c user.email=a@b -c user.name=t commit -qm sneaky ;;
+    plantoken) echo "github_pat_FAKE0123456789abcdefghijkl" >> .team/plans/one.md ;;
+  esac
+  echo '{"plan":true,"slug":"one","pr_title":"board: one","issue_title":"1: one","order":"codex-cli: build\nPlan: .team/plans/one.md"}' > "$d/result.json"
+  echo '{"total_cost_usd": 1.5}'; exit 0 ;;
+esac
+dir="$(printf '%s' "$prompt" | grep -o '[^ ]*/review\.md' | head -1)"; dir="${dir%/review.md}"
 echo "$ANTHROPIC_API_KEY" > "$ST/key_seen"; [ -z "${GH_TOKEN:-}" ] || echo leaked > "$ST/gh_leak"
 case "$(cat "$ST/claude_mode")" in
   approve) printf -- '---\nverdict: approve\n---\nok\n' > "$dir/review.md"; echo '{"verdict":"approve","needs_human":"","summary":"fine"}' > "$dir/result.json" ;;
@@ -144,6 +163,42 @@ check "cap reached: no claim posted" '! jq -e "any(.[]; .body | test(\"^claude-a
 reset; echo 'ACTIVE_UNTIL=2020-01-01' >> "$T/claude-api.env"; out="$(tick)"
 check "past the end date: no claim posted" '! jq -e "any(.[]; .body | test(\"^claude-api: started\"))" "$ST/comments.json" >/dev/null'
 sed -i '/^ACTIVE_UNTIL/d' "$T/claude-api.env"
+
+# 7c. a run budget that does not fit in what is left of the cap does not start (19.90 spent of 20, run budget 3)
+reset; mkdir -p "$T/work"; printf '%s\tjudge\t19.9\n' "$(date -u +%F)" > "$T/work/claude-spend.log"
+out="$(tick)"
+check "budget larger than the remainder: no claim" '! jq -e "any(.[]; .body | test(\"^claude-api: started\"))" "$ST/comments.json" >/dev/null'
+
+# 7d. a run that reports no cost is charged its whole budget
+reset; echo nofile > "$ST/claude_mode"; sed -i 's/echo .{"total_cost_usd": 0.42, "result": "done"}./echo "{}"/' "$T/bin/claude"; out="$(tick)"
+check "no cost report: the run budget goes in the ledger" 'grep -q "	3$" "$T/work/claude-spend.log"'
+sed -i 's/^echo "{}"$/echo '"'"'{"total_cost_usd": 0.42, "result": "done"}'"'"'/' "$T/bin/claude"
+
+# 7e. two claims for one order: the earlier one wins, the later withdraws and does not run
+reset; touch "$ST/hook_race"; out="$(tick)"
+check "losing claim withdrawn" '! jq -e "any(.[]; .body | test(\"^claude-api: started j\"))" "$ST/comments.json" >/dev/null'
+check "loser ran nothing" '[ ! -f "$ST/key_seen" ]'
+
+# 7f. planner: a board PR for a clean plan; refused for code, a Claude commit or a token in the diff
+cat > "$T/plan.env" <<ENVEOF
+ENABLED=1
+HOST=testmac
+WORK_DIR="$T/work"
+REPOS="o/r"
+PLAN_REPOS="o/r"
+ALLOW="conwad-lab"
+POLL_SEC=1
+ENVEOF
+ptick() { CLAUDE_API_ENV="$T/plan.env" bash "$SKILL/bin/claude-api-poll" 2>&1; }
+boards() { git -C "$T/gh/o/r.git" for-each-ref --format='%(refname)' 'refs/heads/board/*'; }
+reset; echo '{"items":[]}' > "$ST/search.json"; echo plan > "$ST/claude_mode"; out="$(ptick)"
+check "planner pushes a board branch" 'boards | grep -q one'
+check "planner opens the PR" 'grep -q "^POST repos/o/r/pulls$" "$ST/calls"'
+for m in planfile plancommit plantoken; do
+  reset; for b in $(boards); do git -C "$T/gh/o/r.git" update-ref -d "$b"; done
+  echo '{"items":[]}' > "$ST/search.json"; echo "$m" > "$ST/claude_mode"; out="$(ptick)"
+  check "planner refuses $m" '[ -z "$(boards)" ] && ! grep -q "^POST repos/o/r/pulls$" "$ST/calls"'
+done
 
 # 8. an order from a stranger is ignored
 reset; echo '[{"id":10,"user":{"login":"mallory"},"body":"judge-claude: review"}]' > "$ST/comments.json"; out="$(tick)"
