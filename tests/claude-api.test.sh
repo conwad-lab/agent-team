@@ -53,6 +53,13 @@ case "$method $url" in
   "DELETE repos/o/r/issues/1/labels/"*) echo '{}' ;;
   "GET repos/o/r/pulls/1/reviews"*) cat "$ST/pr_reviews.json" 2>/dev/null || echo '[]' ;;
   "GET repos/o/r/pulls/1/comments"*) [ ! -f "$ST/fail_inline" ] || { echo "HTTP 502" >&2; exit 1; }; cat "$ST/pr_inline.json" 2>/dev/null || echo '[]' ;;
+  "GET repos/o/r2/pulls?"*) echo "HTTP 502" >&2; exit 1 ;;
+  "GET repos/o/r/pulls?state=closed"*)
+    pp="$(printf '%s' "$url" | sed -E 's/.*per_page=([0-9]+).*/\1/')"
+    if [ -f "$ST/pulls_closed.json" ]; then jq --argjson n "$pp" '.[:$n]' "$ST/pulls_closed.json" | out; else echo '[]' | out; fi ;;
+  "POST repos/o/r/issues") echo '{"number":7}' | out ;;
+  "GET repos/o/r/issues/25/comments"*) echo '[]' ;;
+  "POST repos/o/r/issues/25/comments") echo "$body" >> "$ST/pr25_comments"; echo '{"id":1}' | out ;;
   "GET repos/o/r/pulls?"*) echo '[]' | out ;;
   "POST repos/o/r/pulls") echo '{"number":7}' | out ;;
   "POST repos/o/r/issues/7/labels") echo '[]' ;;
@@ -251,6 +258,30 @@ for m in planfile plancommit plantoken planrename; do
   echo '{"items":[]}' > "$ST/search.json"; echo "$m" > "$ST/claude_mode"; out="$(ptick)"
   check "planner refuses $m" '[ -z "$(boards)" ] && ! grep -q "^POST repos/o/r/pulls$" "$ST/calls"'
 done
+
+# 7g. a broken GitHub answer for one repo is logged with repo and phase and the other repos go on
+cat > "$T/plan2.env" <<ENVEOF
+ENABLED=1
+HOST=testmac
+WORK_DIR="$T/work"
+REPOS="o/r2 o/r"
+PLAN_REPOS="o/r2 o/r"
+ALLOW="conwad-lab"
+POLL_SEC=1
+ENVEOF
+reset; echo '{"items":[]}' > "$ST/search.json"; echo plan > "$ST/claude_mode"; for b in $(boards); do git -C "$T/gh/o/r.git" update-ref -d "$b"; done
+out="$(CLAUDE_API_ENV="$T/plan2.env" bash "$SKILL/bin/claude-api-poll" 2>&1)"
+check "failure logged with repo and phase (orders)" 'echo "$out" | grep -q "o/r2 orders: GitHub request failed"'
+check "failure logged with repo and phase (plan)" 'echo "$out" | grep -q "o/r2 plan: GitHub request failed"'
+check "the next repo is still planned" 'boards | grep -q one'
+
+# 7h. a merged planner PR deep in the closed list (place 25 of 30) still gets its order
+reset; echo '{"items":[]}' > "$ST/search.json"
+jq -n '[range(0;30) | {number: (100 + .), merged_at: null, labels: [], body: "x"}] | .[24] = {number: 25, merged_at: "2026-11-26T01:00:00Z", labels: [{name: "plan-claude"}], body: "<!-- issue-title: 9: later -->\n<!-- order\ncodex-cli: build\nPlan: .team/plans/later.md\n-->"}' > "$ST/pulls_closed.json"
+CLAUDE_API_ENV="$T/plan.env" bash "$SKILL/bin/claude-api-poll" >/dev/null 2>&1
+check "a planner PR at place 25 gets its order issue" 'grep -q "^POST repos/o/r/issues$" "$ST/calls" && grep -q "^POST repos/o/r/issues/7/comments$" "$ST/calls"'
+check "and is marked order-posted" 'grep -q "plan-claude: order-posted on #7" "$ST/pr25_comments"'
+rm -f "$ST/pulls_closed.json"
 
 # 8. an order from a stranger is ignored
 reset; echo '[{"id":10,"user":{"login":"mallory"},"body":"judge-claude: review"}]' > "$ST/comments.json"; out="$(tick)"

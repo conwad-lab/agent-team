@@ -163,12 +163,20 @@ order_of() {
 RUNS_LOG="$WORK_DIR/runs.log"
 note() { printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%MZ)" "$*" >> "$RUNS_LOG"; }
 
+# gh_lines PHASE REPO URL FILTER OUTFILE: gh itself filters the answer down to the few fields a phase reads (a repo's
+# closed PR list can run to hundreds of KB), and a failed or broken answer is logged with repo and phase, never skipped silently
+gh_lines() {
+  ghx api "$3" --jq "$4" > "$5" 2> "$5.err" \
+    || { log "$2 $1: GitHub request failed: $(head -c 200 "$5.err" 2>/dev/null | tr '\n' ' ')"; return 1; }
+}
+
 # ======================= merge: approved PRs whose checks are green =======================
 merge_phase() {
   local q r n c body sha pr state last_ok lastm age
   q="is:open is:pr label:judge-claude"; for r in $REPOS; do q="$q repo:$r"; done
-  ghx api "search/issues?q=$(jq -rn --arg q "$q" '$q|@uri')&per_page=50" \
-    --jq '.items[] | [(.repository_url | sub("^.*/repos/"; "")), .number] | @tsv' 2>/dev/null | while IFS=$'\t' read -r r n; do
+  gh_lines merge - "search/issues?q=$(jq -rn --arg q "$q" '$q|@uri')&per_page=50" \
+    '.items[] | [(.repository_url | sub("^.*/repos/"; "")), .number] | @tsv' "$WORK_DIR/.merge.candidates" || return 0
+  while IFS=$'\t' read -r r n; do
     in_repos "$r" || continue
     c="$(comments "$r" "$n")"
     # the loop's own newest approval, and whether a merge line for that sha is already there
@@ -202,18 +210,20 @@ $SIGN_J" >/dev/null
           [ "$DRY" = 1 ] || ghx api "repos/$r/issues/$n/labels/judge-claude" -X DELETE >/dev/null 2>&1 || true
         else log "$r#$n: waiting for checks (state $state)"; fi ;;
     esac
-  done
+  done < "$WORK_DIR/.merge.candidates"
 }
 
 # ======================= orders: a merged planner PR gets its work order posted =======================
 orders_phase() {
-  local r pr n body order title iss
+  local r pr n body order title iss lines="$WORK_DIR/.orders.lines"
   for r in $PLAN_REPOS; do
     in_repos "$r" || continue
-    ghx api "repos/$r/pulls?state=closed&per_page=30&sort=updated&direction=desc" 2>/dev/null \
-      | jq -c '.[] | select(.merged_at != null and ([.labels[].name] | index("plan-claude")) != null)' | while read -r pr; do
-      n="$(jq -r .number <<< "$pr")"
-      c="$(comments "$r" "$n")"
+    gh_lines orders "$r" "repos/$r/pulls?state=closed&per_page=30&sort=updated&direction=desc" \
+      '.[] | select(.merged_at != null and ([.labels[].name] | index("plan-claude")) != null) | {number, body} | tojson' "$lines" || continue
+    while read -r pr; do
+      n="$(jq -r '.number // empty' <<< "$pr" 2>/dev/null)" || n=""
+      [[ "$n" =~ ^[0-9]+$ ]] || { log "$r orders: unreadable PR record, skipped: $(printf '%s' "$pr" | head -c 120)"; continue; }
+      c="$(comments "$r" "$n")" || { log "$r orders: could not read the comments of #$n"; continue; }
       jq -e 'any(.[]; .body | test("^plan-claude: order-posted"))' <<< "$c" >/dev/null && continue
       body="$(jq -r '.body // ""' <<< "$pr")"
       title="$(printf '%s' "$body" | sed -n 's/^<!-- issue-title: \(.*\) -->$/\1/p' | head -1)"
@@ -226,7 +236,7 @@ orders_phase() {
 $SIGN_P" >/dev/null
       post "$r" "$n" "plan-claude: order-posted on #$iss" >/dev/null
       log "$r#$n: order posted on #$iss"
-    done
+    done < "$lines"
   done
 }
 
@@ -241,8 +251,8 @@ Edit nothing inside the repo.'
 judge_phase() {
   local mine winner q r n c ord oid pr head ref base slug run wt rundir out rc usd verdict human summ nh claim
   q="is:open is:pr label:judge-claude"; for r in $REPOS; do q="$q repo:$r"; done
-  ghx api "search/issues?q=$(jq -rn --arg q "$q" '$q|@uri')&sort=created&order=asc&per_page=50" \
-    --jq '.items[] | [(.repository_url | sub("^.*/repos/"; "")), .number] | @tsv' > "$WORK_DIR/.judge-candidates" 2>/dev/null || true
+  gh_lines judge - "search/issues?q=$(jq -rn --arg q "$q" '$q|@uri')&sort=created&order=asc&per_page=50" \
+    '.items[] | [(.repository_url | sub("^.*/repos/"; "")), .number] | @tsv' "$WORK_DIR/.judge-candidates" || return 1
   while IFS=$'\t' read -r r n; do
     [ -n "$r" ] || continue; in_repos "$r" || continue
     c="$(comments "$r" "$n")"; ord="$(order_of "$c" 'judge-claude: review')"; [ -n "$ord" ] || continue
@@ -377,7 +387,9 @@ plan_phase() {
     in_repos "$r" || continue
     stamp="$WORK_DIR/.planned.$(printf '%s' "$r" | tr '/' '_')"
     if [ -f "$stamp" ] && [ $(( $(date +%s) - $(mtime "$stamp") )) -lt $(( PLAN_EVERY_HOURS * 3600 )) ]; then continue; fi
-    open="$(ghx api "repos/$r/pulls?state=open&per_page=50" 2>/dev/null | jq '[.[] | select(([.labels[].name] | index("plan-claude")) != null)] | length' || echo 1)"
+    gh_lines plan "$r" "repos/$r/pulls?state=open&per_page=50" '[.[] | select(([.labels[].name] | index("plan-claude")) != null)] | length' "$WORK_DIR/.open.count" || continue
+    open="$(cat "$WORK_DIR/.open.count")"
+    [[ "$open" =~ ^[0-9]+$ ]] || { log "$r plan: unreadable open-PR count '$(printf '%s' "$open" | head -c 60)'; repo skipped"; continue; }
     [ "$open" = 0 ] || continue
     under_cap "$PLAN_BUDGET_USD" || { log "daily cap ${DAILY_CAP_USD} USD: $(spent_today) spent, a planner run needs $PLAN_BUDGET_USD; no planning until tomorrow"; return 0; }
     if [ "$DRY" = 1 ]; then log "dry-run: would plan for $r on $PLAN_MODEL"; continue; fi
