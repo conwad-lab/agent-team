@@ -377,6 +377,10 @@ $SIGN_P" >/dev/null
 
 merge_phase || true
 orders_phase || true
+# the loops are a bridge while the Max plan is spent: from ACTIVE_UNTIL (UTC date) no new judging or planning starts
+if [ -n "${ACTIVE_UNTIL:-}" ] && [[ "$(date -u +%F)" > "$ACTIVE_UNTIL" || "$(date -u +%F)" = "$ACTIVE_UNTIL" ]]; then
+  log "past ACTIVE_UNTIL $ACTIVE_UNTIL: no new judge or planner runs (finishing merges and orders only)"; exit 0
+fi
 if judge_phase; then exit 0; fi
 plan_phase || true
 exit 0

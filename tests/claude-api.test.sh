@@ -140,6 +140,11 @@ reset; mkdir -p "$T/work"; printf '%s\tjudge\t99\n' "$(date -u +%F)" > "$T/work/
 out="$(tick)"
 check "cap reached: no claim posted" '! jq -e "any(.[]; .body | test(\"^claude-api: started\"))" "$ST/comments.json" >/dev/null'
 
+# 7b. past ACTIVE_UNTIL nothing new starts
+reset; echo 'ACTIVE_UNTIL=2020-01-01' >> "$T/claude-api.env"; out="$(tick)"
+check "past the end date: no claim posted" '! jq -e "any(.[]; .body | test(\"^claude-api: started\"))" "$ST/comments.json" >/dev/null'
+sed -i '/^ACTIVE_UNTIL/d' "$T/claude-api.env"
+
 # 8. an order from a stranger is ignored
 reset; echo '[{"id":10,"user":{"login":"mallory"},"body":"judge-claude: review"}]' > "$ST/comments.json"; out="$(tick)"
 check "stranger's order ignored" '[ "$(jq length "$ST/comments.json")" = 1 ]'
