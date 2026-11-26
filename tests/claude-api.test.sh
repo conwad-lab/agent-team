@@ -191,6 +191,10 @@ reset; jq 'map(select(.user.login != "chatgpt-codex-connector[bot]"))' "$ST/comm
 jq -n --arg s "${HEAD0:0:10}" '[{id: 3, commit_id: "x", user: {login: "chatgpt-codex-connector[bot]"}, body: ("<!-- codex-review-receipt:v1 -->\n**Reviewed commit:** `" + $s + "`")}]' > "$ST/pr_reviews.json"
 out="$(tick)"
 check "a receipt review on the head counts as a finished review" 'jq -e "any(.[]; .body | test(\"^judge-claude: approved\"))" "$ST/comments.json" >/dev/null'
+reset; jq 'map(select(.user.login != "chatgpt-codex-connector[bot]"))' "$ST/comments.json" > "$ST/c.n" && mv "$ST/c.n" "$ST/comments.json"
+jq -n '[{id: 3, commit_id: "x", user: {login: "chatgpt-codex-connector[bot]"}, body: "<!-- codex-review-receipt:v1 -->\n**Reviewed commit:** `deadbeef00`"}]' > "$ST/pr_reviews.json"
+out="$(tick)"
+check "a receipt for another commit does not count" 'grep -q "none for $HEAD0" "$ST/context_seen/codex-status.txt" && jq -e "any(.[]; .body | test(\"needs the human: no finished Codex review\"))" "$ST/comments.json" >/dev/null'
 reset; jq --arg s "$HEAD0" 'map(if .user.login == "chatgpt-codex-connector[bot]" then .body = ("<!-- codex-review-state:v1 &#123;\"code_review\":&#123;\"commit_sha\":\"" + $s + "\",\"has_any_findings\":false,\"has_unresolved_findings\":false,\"status\":\"failed\"&#125;&#125; -->") else . end)' "$ST/comments.json" > "$ST/c.n" && mv "$ST/c.n" "$ST/comments.json"
 out="$(tick)"
 check "a failed Codex review does not count" 'grep -q "failed" "$ST/context_seen/codex-status.txt" && jq -e "any(.[]; .body | test(\"needs the human: no finished Codex review\"))" "$ST/comments.json" >/dev/null'

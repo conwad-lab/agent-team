@@ -310,7 +310,7 @@ $SIGN_J" >/dev/null; note "$run	$r#$n	judge	bounced: $1"; drop_wt "$r" "$wt"; }
       | ([$cm[] | select(bot and ((.body // "") | test("codex-review-state")))] | sort_by(.id) | last | .body // ""
          | (capture("code_review.:(&#123;|[{]).commit_sha.:.(?<s>[0-9a-f]{40}).[^}&]*status.:.(?<st>[a-z_]+)") // {s: "", st: ""})) as $sum
       | ([($cm + $rv)[] | select(bot and ((.body // "") | test("codex-review-receipt")))
-          | ((.body | capture("Reviewed commit:..\\s*`(?<x>[0-9a-f]{7,40})`").x) // "-")] | any(. != "-" and ($sha | startswith(.)))) as $rec
+          | ((.body | capture("Reviewed commit:..\\s*`(?<x>[0-9a-f]{7,40})`").x) // "-")] | any(. as $rs | $rs != "-" and ($sha | startswith($rs)))) as $rec
       | ([$rv[] | select(bot and .commit_id == $sha)] | length > 0) as $rvon
       | if $sha == "" then "none (no commit)"
         elif ($sum.s == $sha and ($sum.st | IN("running", "queued", "pending", "in_progress"))) then $sum.st
