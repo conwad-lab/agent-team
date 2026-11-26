@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# claude-api-install: set up the Claude API loops (judge and planner) on this Mac, once (team/CLAUDE-API.md).
+#
+#   bash <(curl -fsSL https://raw.githubusercontent.com/conwad-lab/agent-team/main/bin/claude-api-install)
+#   bin/claude-api-install --uninstall   stop the job, remove the plist, the API-key Keychain item and the config
+#
+# Stores the Anthropic API key in the login Keychain (typed into `security`'s own prompt, never on a command line),
+# reuses the fine-grained GitHub token of the Codex CLI poller (asks for it if absent), writes
+# ~/.config/agent-team/claude-api.env, loads the launchd job and runs one dry tick.
+set -euo pipefail
+MODE=install
+case "${1:-}" in --uninstall) MODE=uninstall ;; "") ;; *) echo "usage: claude-api-install [--uninstall]" >&2; exit 2 ;; esac
+
+LABEL=se.agent-team.claude-api
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+CONF="$HOME/.config/agent-team/claude-api.env"
+LOGS="$HOME/Library/Logs/agent-team"
+KEY_ITEM=agent-team-claude-api-key
+TOKEN_ITEM=agent-team-codex-cli
+RULEBOOK=https://github.com/conwad-lab/agent-team.git
+say() { printf '%s\n' "$*"; }
+die() { printf 'Stopp: %s\n' "$*" >&2; exit 1; }
+ask() { local a; read -r -p "$1 [$2]: " a < /dev/tty || true; printf '%s' "${a:-$2}"; }
+
+if [ "$MODE" = uninstall ]; then
+  launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
+  rm -f "$PLIST" "$CONF"
+  security delete-generic-password -s "$KEY_ITEM" >/dev/null 2>&1 || true
+  say "Avinstallerat: jobbet $LABEL, API-nyckeln i Keychain och $CONF är borta. Arbetsmappen och GitHub-token (Codex-pollerns) ligger kvar."
+  exit 0
+fi
+
+[ "$(uname -s)" = Darwin ] || die "det här är för macOS."
+for c in claude gh git jq security launchctl curl; do command -v "$c" >/dev/null || die "$c saknas (installera det och kör raden igen)."; done
+say "✓ claude $(claude --version 2>/dev/null | head -1)"
+
+DEF_HOST="$(scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z' || echo macbook)"
+HOST="$(ask 'Värdnamn i kommentarerna' "${DEF_HOST:-macbook}")"
+WORK_DIR="$(ask 'Arbetsmapp (samma som Codex-pollerns)' "$HOME/agent-team-builds")"
+case "$WORK_DIR" in "$HOME/WebProjects"|"$HOME/WebProjects/"*|*[Vv]ault*) die "arbetsmappen får inte ligga under ~/WebProjects eller i en vault." ;; esac
+CAP="$(ask 'Dagstak i USD för alla körningar' 20)"
+[[ "$CAP" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "dagstaket ska vara ett tal."
+
+say ""
+say "Klistra in Anthropic API-nyckeln (platform.claude.com → API keys) två gånger när security frågar. Den syns inte."
+security add-generic-password -U -s "$KEY_ITEM" -a agent-team -T /usr/bin/security -w
+KEY="$(security find-generic-password -s "$KEY_ITEM" -w)"
+code="$(curl -s -o /dev/null -w '%{http_code}' https://api.anthropic.com/v1/models -H "x-api-key: $KEY" -H 'anthropic-version: 2023-06-01' || true)"
+unset KEY
+[ "$code" = 200 ] || die "Anthropic tog inte emot nyckeln (HTTP $code). Kontrollera nyckeln och att kontot har krediter."
+say "✓ API-nyckeln fungerar"
+
+if ! security find-generic-password -s "$TOKEN_ITEM" -w >/dev/null 2>&1; then
+  say "GitHub-token saknas i Keychain (Codex-pollerns). Klistra in den fina token (team/CODEX-CLI.md § Install steg 2) två gånger:"
+  security add-generic-password -U -s "$TOKEN_ITEM" -a agent-team -T /usr/bin/security -w
+fi
+LOGIN="$(GH_TOKEN="$(security find-generic-password -s "$TOKEN_ITEM" -w)" gh api user --jq .login)" || die "GitHub tog inte emot token."
+say "✓ GitHub-token fungerar för $LOGIN"
+
+mkdir -p "$WORK_DIR" "$LOGS" "$(dirname "$CONF")" "$(dirname "$PLIST")"
+if [ -d "$WORK_DIR/agent-team/.git" ]; then git -C "$WORK_DIR/agent-team" pull --quiet --ff-only
+else git clone --quiet --depth 1 "$RULEBOOK" "$WORK_DIR/agent-team"; fi
+SRC="$WORK_DIR/agent-team"
+esc() { printf '%s' "$1" | sed -e 's/[#&\\]/\\&/g'; }
+sed -e "s#^HOST=.*#HOST=$(esc "$HOST")#" -e "s#^WORK_DIR=.*#WORK_DIR=\"$(esc "$WORK_DIR")\"#" \
+    -e "s#^ALLOW=.*#ALLOW=\"$(esc "$LOGIN")\"#" -e "s#^DAILY_CAP_USD=.*#DAILY_CAP_USD=$CAP#" \
+    "$SRC/assets/claude-api/claude-api.env.example" > "$CONF"
+chmod 600 "$CONF"
+say "✓ $CONF"
+
+PATH_FOR_JOB="$(for c in claude gh git jq node; do command -v "$c" >/dev/null && dirname "$(command -v "$c")"; done | awk '!s[$0]++' | paste -sd: -):/usr/bin:/bin:/usr/sbin:/sbin"
+sed -e "s#__POLLER__#$SRC/bin/claude-api-poll#" -e "s#__PATH__#$PATH_FOR_JOB#" -e "s#__LOGS__#$LOGS#" \
+    "$SRC/assets/claude-api/$LABEL.plist" > "$PLIST"
+launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$PLIST"
+say "✓ launchd-jobbet $LABEL laddat (var 5:e minut medan Macen är vaken)"
+say ""
+say "Provkörning (skriver inget):"
+"$SRC/bin/claude-api-poll" --dry-run || true
+say ""
+say "Klart. Loggar: $LOGS. Dagstak: $CAP USD. Ta bort: bin/claude-api-install --uninstall."
